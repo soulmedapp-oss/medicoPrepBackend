@@ -65,7 +65,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.options('/*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 
 const uploadsDir = path.join(__dirname, '..', 'uploads');
