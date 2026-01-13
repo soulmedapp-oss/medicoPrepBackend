@@ -31,7 +31,41 @@ const TeacherRequest = require('./models/TeacherRequest');
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+function resolveCorsOrigins() {
+  const raw = process.env.CORS_ORIGIN;
+  if (!raw) return true;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed === 'string') return [parsed];
+  } catch (err) {
+    return raw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return raw;
+}
+
+const corsOrigins = resolveCorsOrigins();
+const corsOptions = {
+  origin: (origin, cb) => {
+    if (!origin || corsOrigins === true) return cb(null, true);
+    if (Array.isArray(corsOrigins) && corsOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+    return cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 
 const uploadsDir = path.join(__dirname, '..', 'uploads');
