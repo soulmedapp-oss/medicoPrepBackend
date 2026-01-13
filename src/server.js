@@ -1239,13 +1239,21 @@ app.delete('/questions/:id', authMiddleware, requireStaff, async (req, res) => {
   }
 });
 
-app.get('/users', authMiddleware, requireStaff, async (req, res) => {
+app.get('/users', authMiddleware, async (req, res) => {
   try {
     const { role } = req.query;
     const filter = {};
-    if (req.user.role !== 'admin' && !req.user.is_teacher) {
-      filter.role = 'student';
-      filter.is_teacher = { $ne: true };
+    const user = await User.findById(req.userId).lean();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (user.role !== 'admin' && !user.is_teacher && user.role !== 'teacher') {
+      if (role === 'teacher') {
+        filter.role = 'teacher';
+      } else {
+        filter.role = 'student';
+        filter.is_teacher = { $ne: true };
+      }
     } else if (role) {
       filter.role = role;
     }
@@ -1298,6 +1306,17 @@ app.post('/doubts', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    let assignedTeacherId = data.assigned_teacher_id || null;
+    let assignedTeacherEmail = data.assigned_teacher_email || '';
+    let assignedTeacherName = data.assigned_teacher_name || '';
+    if (assignedTeacherId && (!assignedTeacherEmail || !assignedTeacherName)) {
+      const teacher = await User.findById(assignedTeacherId).lean();
+      if (teacher) {
+        assignedTeacherEmail = assignedTeacherEmail || teacher.email || '';
+        assignedTeacherName = assignedTeacherName || teacher.full_name || '';
+      }
+    }
+
     const doubt = await Doubt.create({
       student_id: user._id,
       student_email: user.email,
@@ -1307,7 +1326,10 @@ app.post('/doubts', authMiddleware, async (req, res) => {
       question: data.question,
       priority: data.priority || 'medium',
       image_url: data.image_url || '',
-      status: data.status || 'pending',
+      status: data.status || (assignedTeacherId ? 'assigned' : 'pending'),
+      assigned_teacher_id: assignedTeacherId,
+      assigned_teacher_email: assignedTeacherEmail,
+      assigned_teacher_name: assignedTeacherName,
     });
 
     await createNotification({
@@ -1316,12 +1338,15 @@ app.post('/doubts', authMiddleware, async (req, res) => {
       message: 'Your doubt has been submitted and will be reviewed shortly.',
       type: 'info',
     });
-    await createNotification({
-      userEmail: 'teachers',
-      title: 'New doubt submitted',
-      message: doubt.topic || 'A student submitted a new doubt.',
-      type: 'doubt',
-    });
+    if (assignedTeacherEmail) {
+      await createNotification({
+        userEmail: assignedTeacherEmail,
+        title: 'New doubt assigned',
+        message: doubt.topic || 'A new doubt has been assigned to you.',
+        type: 'doubt',
+        link: '/AdminDoubts',
+      });
+    }
 
     return res.status(201).json({ doubt });
   } catch (err) {
@@ -1345,12 +1370,15 @@ app.patch('/doubts/:id', authMiddleware, async (req, res) => {
     }
 
     const previousStatus = doubt.status;
+    const previousTeacherEmail = doubt.assigned_teacher_email || '';
+    const previousTeacherId = doubt.assigned_teacher_id ? String(doubt.assigned_teacher_id) : '';
     const updates = req.body || {};
     if (isStaff) {
       const allowed = [
         'status',
         'answer',
         'answer_image_url',
+        'assigned_teacher_id',
         'assigned_teacher_email',
         'assigned_teacher_name',
       ];
@@ -1370,7 +1398,26 @@ app.patch('/doubts/:id', authMiddleware, async (req, res) => {
 
     const wasResolved = previousStatus === 'resolved';
     const wasAssigned = previousStatus === 'assigned';
+
+    if (isStaff && updates.assigned_teacher_id && (!updates.assigned_teacher_email || !updates.assigned_teacher_name)) {
+      const teacher = await User.findById(updates.assigned_teacher_id).lean();
+      if (teacher) {
+        if (!updates.assigned_teacher_email) {
+          doubt.assigned_teacher_email = teacher.email || '';
+        }
+        if (!updates.assigned_teacher_name) {
+          doubt.assigned_teacher_name = teacher.full_name || '';
+        }
+      }
+    }
+
     await doubt.save();
+
+    const nextTeacherEmail = doubt.assigned_teacher_email || '';
+    const nextTeacherId = doubt.assigned_teacher_id ? String(doubt.assigned_teacher_id) : '';
+    const teacherChanged =
+      Boolean(nextTeacherEmail) &&
+      (nextTeacherEmail !== previousTeacherEmail || (nextTeacherId && nextTeacherId !== previousTeacherId));
 
     if (!wasAssigned && doubt.status === 'assigned') {
       await createNotification({
@@ -1378,6 +1425,23 @@ app.patch('/doubts/:id', authMiddleware, async (req, res) => {
         title: 'Doubt assigned',
         message: 'A teacher has started working on your doubt.',
         type: 'info',
+      });
+      if (doubt.assigned_teacher_email) {
+        await createNotification({
+          userEmail: doubt.assigned_teacher_email,
+          title: 'New doubt assigned',
+          message: doubt.topic || 'A new doubt has been assigned to you.',
+          type: 'doubt',
+          link: '/AdminDoubts',
+        });
+      }
+    } else if (teacherChanged) {
+      await createNotification({
+        userEmail: nextTeacherEmail,
+        title: 'Doubt reassigned',
+        message: doubt.topic || 'A doubt has been reassigned to you.',
+        type: 'doubt',
+        link: '/AdminDoubts',
       });
     }
 
