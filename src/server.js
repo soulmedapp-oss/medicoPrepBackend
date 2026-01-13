@@ -1346,6 +1346,14 @@ app.post('/doubts', authMiddleware, async (req, res) => {
         type: 'doubt',
         link: '/AdminDoubts',
       });
+    } else {
+      await createNotification({
+        userEmail: 'teachers',
+        title: 'New doubt submitted',
+        message: doubt.topic || 'A student submitted a new doubt.',
+        type: 'doubt',
+        link: '/AdminDoubts',
+      });
     }
 
     return res.status(201).json({ doubt });
