@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const path = require('path');
 const fs = require('fs');
@@ -30,6 +31,44 @@ const TeacherRequest = require('./models/TeacherRequest');
 
 const app = express();
 const server = http.createServer(app);
+
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'soulmedapp@gmail.com';
+let supportTransport;
+
+function getSupportTransport() {
+  if (supportTransport !== undefined) return supportTransport;
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = process.env;
+  if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
+    supportTransport = null;
+    return supportTransport;
+  }
+  supportTransport = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: SMTP_SECURE === 'true',
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+  return supportTransport;
+}
+
+async function sendSupportEmail({ subject, text }) {
+  const transport = getSupportTransport();
+  if (!transport) return;
+  const fromAddress = process.env.SMTP_FROM || SUPPORT_EMAIL;
+  try {
+    await transport.sendMail({
+      from: fromAddress,
+      to: SUPPORT_EMAIL,
+      subject,
+      text,
+    });
+  } catch (err) {
+    console.error('Failed to send support email:', err);
+  }
+}
 
 function resolveCorsOrigins() {
   const raw = process.env.CORS_ORIGIN;
@@ -1401,6 +1440,10 @@ app.post('/feedback', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const contactEmail = data.contact_email || user.email || '';
+    const contactPhone = data.contact_phone || '';
+    const contactName = data.contact_name || user.full_name || '';
+
     const feedback = await Feedback.create({
       student_id: user._id,
       student_email: user.email,
@@ -1410,6 +1453,9 @@ app.post('/feedback', authMiddleware, async (req, res) => {
       message: data.message,
       rating: Number(data.rating) || 0,
       status: 'open',
+      contact_email: contactEmail,
+      contact_phone: contactPhone,
+      source: data.source || 'app',
     });
 
     await createNotification({
@@ -1417,6 +1463,77 @@ app.post('/feedback', authMiddleware, async (req, res) => {
       title: 'New feedback submitted',
       message: feedback.subject || 'A student submitted feedback.',
       type: 'info',
+    });
+
+    await sendSupportEmail({
+      subject: 'New support query',
+      text: [
+        `Source: ${feedback.source || 'app'}`,
+        `Name: ${contactName || 'N/A'}`,
+        `Email: ${contactEmail || 'N/A'}`,
+        `Phone: ${contactPhone || 'N/A'}`,
+        `Subject: ${feedback.subject || 'Feedback'}`,
+        `Category: ${feedback.category || 'general'}`,
+        '',
+        feedback.message,
+      ].join('\n'),
+    });
+
+    return res.status(201).json({ feedback });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to create feedback' });
+  }
+});
+
+app.post('/feedback/public', async (req, res) => {
+  try {
+    const data = req.body || {};
+    if (!data.message) {
+      return res.status(400).json({ error: 'message is required' });
+    }
+
+    const contactEmail = data.contact_email || '';
+    const contactPhone = data.contact_phone || '';
+    if (!contactEmail && !contactPhone) {
+      return res.status(400).json({ error: 'contact_email or contact_phone is required' });
+    }
+
+    const contactName = data.contact_name || data.student_name || '';
+
+    const feedback = await Feedback.create({
+      student_id: null,
+      student_email: contactEmail,
+      student_name: contactName,
+      category: data.category || 'general',
+      subject: data.subject || 'Support query',
+      message: data.message,
+      rating: 0,
+      status: 'open',
+      contact_email: contactEmail,
+      contact_phone: contactPhone,
+      source: data.source || 'public',
+    });
+
+    await createNotification({
+      userEmail: 'teachers',
+      title: 'New support query',
+      message: feedback.subject || 'A visitor submitted a support query.',
+      type: 'info',
+    });
+
+    await sendSupportEmail({
+      subject: 'New support query',
+      text: [
+        `Source: ${feedback.source || 'public'}`,
+        `Name: ${contactName || 'N/A'}`,
+        `Email: ${contactEmail || 'N/A'}`,
+        `Phone: ${contactPhone || 'N/A'}`,
+        `Subject: ${feedback.subject || 'Support query'}`,
+        `Category: ${feedback.category || 'general'}`,
+        '',
+        feedback.message,
+      ].join('\n'),
     });
 
     return res.status(201).json({ feedback });
@@ -2525,3 +2642,4 @@ connectDb()
     console.error('Failed to start server:', err);
     process.exit(1);
   });
+
