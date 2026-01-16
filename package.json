@@ -6,6 +6,7 @@
     "scripts":  {
                     "dev":  "nodemon src/server.js",
                     "start":  "node src/server.js",
+                    "seed:psm":  "node src/scripts/seed-psm-test.js",
                     "test":  "echo \"Error: no test specified\" \u0026\u0026 exit 1"
                 },
     "keywords":  [
