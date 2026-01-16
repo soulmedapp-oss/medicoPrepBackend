@@ -354,6 +354,7 @@ function getPlanRank(plan) {
 }
 
 async function updateTestQuestionCount(testId) {
+  if (!testId) return;
   const count = await Question.countDocuments({ test_id: testId, is_active: true });
   await Test.findByIdAndUpdate(testId, { $set: { question_count: count } });
 }
@@ -953,6 +954,18 @@ app.post('/tests', authMiddleware, requireStaff, async (req, res) => {
       is_published: Boolean(data.is_published),
       created_by: req.user._id,
     });
+
+    if (Array.isArray(data.question_ids) && data.question_ids.length > 0) {
+      const ids = data.question_ids.filter(Boolean);
+      if (ids.length > 0) {
+        await Question.updateMany(
+          { _id: { $in: ids }, $or: [{ test_id: null }, { test_id: test._id }] },
+          { $set: { test_id: test._id } }
+        );
+        await updateTestQuestionCount(test._id);
+      }
+    }
+
     if (test.is_published) {
       await createNotification({
         userEmail: 'students',
@@ -1003,7 +1016,7 @@ app.delete('/tests/:id', authMiddleware, requireStaff, async (req, res) => {
     if (!test) {
       return res.status(404).json({ error: 'Test not found' });
     }
-    await Question.deleteMany({ test_id: req.params.id });
+    await Question.updateMany({ test_id: req.params.id }, { $set: { test_id: null } });
     return res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -1019,10 +1032,10 @@ app.get('/tests/:id/questions', authMiddleware, async (req, res) => {
     }
 
     const user = await User.findById(req.userId).lean();
-    const isAdmin = user?.role === 'admin';
+    const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
     const filter = { test_id: req.params.id, is_active: true };
 
-    if (!isAdmin) {
+    if (!isStaff) {
       const userRank = getPlanRank(user?.subscription_plan);
       const allowedPlans = Object.entries(PLAN_RANKS)
         .filter(([, rank]) => rank <= userRank)
@@ -1173,6 +1186,234 @@ app.post('/tests/:id/questions/bulk-csv', authMiddleware, requireStaff, csvUploa
   }
 });
 
+app.post('/tests/:id/questions/assign', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) {
+      return res.status(404).json({ error: 'Test not found' });
+    }
+    const { question_ids: questionIds } = req.body || {};
+    if (!Array.isArray(questionIds) || questionIds.length === 0) {
+      return res.status(400).json({ error: 'question_ids is required' });
+    }
+    const ids = questionIds.filter(Boolean);
+    await Question.updateMany(
+      { _id: { $in: ids }, $or: [{ test_id: null }, { test_id: test._id }] },
+      { $set: { test_id: test._id } }
+    );
+    await updateTestQuestionCount(test._id);
+    return res.json({ assigned: ids.length });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to assign questions' });
+  }
+});
+
+app.post('/tests/:id/questions/unassign', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) {
+      return res.status(404).json({ error: 'Test not found' });
+    }
+    const { question_ids: questionIds } = req.body || {};
+    if (!Array.isArray(questionIds) || questionIds.length === 0) {
+      return res.status(400).json({ error: 'question_ids is required' });
+    }
+    const ids = questionIds.filter(Boolean);
+    await Question.updateMany(
+      { _id: { $in: ids }, test_id: test._id },
+      { $set: { test_id: null } }
+    );
+    await updateTestQuestionCount(test._id);
+    return res.json({ unassigned: ids.length });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to unassign questions' });
+  }
+});
+
+app.get('/question-bank', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const { subject, difficulty, search, limit } = req.query;
+    const filter = { test_id: null, is_active: true };
+    if (subject) filter.subject = subject;
+    if (difficulty) filter.difficulty = difficulty;
+    if (search) {
+      filter.question_text = new RegExp(String(search), 'i');
+    }
+    const max = Number(limit) || 200;
+    const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
+    return res.json({ questions });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to load question bank' });
+  }
+});
+
+app.post('/question-bank', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const data = req.body || {};
+    if (!data.subject || !data.question_text) {
+      return res.status(400).json({ error: 'subject and question_text are required' });
+    }
+    if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
+      return res.status(400).json({ error: 'correct_answers is required' });
+    }
+    const question = await Question.create({
+      test_id: null,
+      subject: data.subject,
+      question_text: data.question_text,
+      question_type: data.question_type || 'single_choice',
+      options: data.options || [],
+      correct_answers: data.correct_answers || [],
+      explanation: data.explanation || '',
+      explanation_image_url: data.explanation_image_url || '',
+      difficulty: data.difficulty || 'medium',
+      marks: data.marks ?? 1,
+      negative_marks: data.negative_marks ?? 0,
+      required_plan: data.required_plan || 'free',
+      is_active: data.is_active !== false,
+    });
+    return res.status(201).json({ question });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to create question' });
+  }
+});
+
+app.post('/question-bank/bulk-csv', authMiddleware, requireStaff, csvUpload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: 'CSV file is required' });
+    }
+
+    const content = fs.readFileSync(file.path, 'utf8');
+    const records = parse(content, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    });
+
+    const created = [];
+    const errors = [];
+    const normalizePlan = (value) => {
+      const plan = String(value || 'free').toLowerCase();
+      if (['free', 'basic', 'premium', 'ultimate'].includes(plan)) return plan;
+      if (plan === 'medium') return 'premium';
+      if (plan === 'advance') return 'ultimate';
+      return 'free';
+    };
+
+    records.forEach((row, index) => {
+      try {
+        const questionText = row.question_text || row.question || row.Question;
+        if (!questionText) {
+          throw new Error('question_text is required');
+        }
+
+        const subject = row.subject || row.Subject || req.body.subject;
+        if (!subject) {
+          throw new Error('subject is required');
+        }
+
+        const optionA = row.option_a || row.optionA || row.a || row.A || '';
+        const optionB = row.option_b || row.optionB || row.b || row.B || '';
+        const optionC = row.option_c || row.optionC || row.c || row.C || '';
+        const optionD = row.option_d || row.optionD || row.d || row.D || '';
+        const options = [
+          { id: '1', text: String(optionA) },
+          { id: '2', text: String(optionB) },
+          { id: '3', text: String(optionC) },
+          { id: '4', text: String(optionD) },
+        ];
+
+        const correctRaw = row.correct_answers || row.correct || row.answer || '';
+        const correctTokens = String(correctRaw)
+          .split(/[,|;]/)
+          .map((token) => token.trim().toUpperCase())
+          .filter(Boolean);
+        const mapAnswer = { A: '1', B: '2', C: '3', D: '4' };
+        const correct_answers = correctTokens.map((token) => mapAnswer[token]).filter(Boolean);
+        if (correct_answers.length === 0) {
+          throw new Error('correct_answers is required');
+        }
+
+        const question_type =
+          String(row.question_type || row.type || 'single_choice').toLowerCase() === 'multiple_choice'
+            ? 'multiple_choice'
+            : 'single_choice';
+
+        const difficulty = String(row.difficulty || 'medium').toLowerCase();
+        const marks = Number(row.marks ?? 1) || 1;
+        const negative_marks = Number(row.negative_marks ?? 0) || 0;
+        const required_plan = normalizePlan(row.required_plan || row.plan);
+
+        created.push({
+          test_id: null,
+          subject: String(subject),
+          question_text: String(questionText),
+          question_type,
+          options,
+          correct_answers,
+          explanation: String(row.explanation || ''),
+          explanation_image_url: String(row.explanation_image_url || ''),
+          difficulty,
+          marks,
+          negative_marks,
+          required_plan,
+          is_active: true,
+        });
+      } catch (err) {
+        errors.push({ row: index + 1, error: err.message });
+      }
+    });
+
+    if (created.length === 0) {
+      return res.status(400).json({ error: 'No valid questions found', errors });
+    }
+
+    const inserted = await Question.insertMany(created);
+    return res.status(201).json({
+      inserted: inserted.length,
+      errors,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to import CSV' });
+  }
+});
+
+app.patch('/question-bank/:id', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const existing = await Question.findById(req.params.id);
+    if (!existing || existing.test_id) {
+      return res.status(404).json({ error: 'Question not found' });
+    }
+    const updates = req.body || {};
+    Object.assign(existing, updates);
+    await existing.save();
+    return res.json({ question: existing.toObject() });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to update question' });
+  }
+});
+
+app.delete('/question-bank/:id', authMiddleware, requireStaff, async (req, res) => {
+  try {
+    const existing = await Question.findById(req.params.id);
+    if (!existing || existing.test_id) {
+      return res.status(404).json({ error: 'Question not found' });
+    }
+    await Question.deleteOne({ _id: existing._id });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to delete question' });
+  }
+});
+
 app.post('/uploads/questions', authMiddleware, requireStaff, upload.single('file'), (req, res) => {
   const file = req.file;
   if (!file) {
@@ -1211,11 +1452,15 @@ app.patch('/questions/:id', authMiddleware, requireStaff, async (req, res) => {
     Object.assign(existing, updates);
     await existing.save();
 
-    if (String(previousTestId) !== String(existing.test_id)) {
+    const nextTestId = existing.test_id;
+    const previousId = previousTestId ? String(previousTestId) : '';
+    const nextId = nextTestId ? String(nextTestId) : '';
+
+    if (previousId && previousId !== nextId) {
       await updateTestQuestionCount(previousTestId);
-      await updateTestQuestionCount(existing.test_id);
-    } else {
-      await updateTestQuestionCount(existing.test_id);
+    }
+    if (nextId) {
+      await updateTestQuestionCount(nextTestId);
     }
 
     return res.json({ question: existing.toObject() });
