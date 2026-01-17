@@ -39,6 +39,44 @@ if (corsEnabled) {
 }
 app.use(express.json({ limit: '1mb' }));
 
+app.use((req, res, next) => {
+  const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
+  const correlationId = headerId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+  req.correlationId = correlationId;
+  res.setHeader('X-Correlation-Id', correlationId);
+
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body.error === 'string' && !res.locals.errorMessage) {
+      res.locals.errorMessage = body.error;
+    }
+    return originalJson(body);
+  };
+
+  res.on('finish', () => {
+    if (res.statusCode < 400) return;
+    const level = res.statusCode >= 500 ? 'error' : 'warn';
+    const userName =
+      req.user?.email ||
+      req.user?.full_name ||
+      req.body?.email ||
+      req.query?.email ||
+      'unknown';
+    const errorMessage =
+      res.locals.errorMessage ||
+      `HTTP ${res.statusCode} ${req.method} ${req.originalUrl}`;
+
+    logMessage(level, {
+      userName,
+      correlationId,
+      errorMessage,
+      statusCode: res.statusCode,
+    });
+  });
+
+  next();
+});
+
 const uploadsDir = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -133,6 +171,10 @@ const {
   SMTP_FROM,
   SMTP_SECURE,
   VERIFICATION_RESEND_COOLDOWN_SECONDS,
+  LOG_DIR,
+  LOG_FILE_PREFIX,
+  LOG_ENV_NAME,
+  LOG_APP_NAME,
 } = process.env;
 
 function requireEnv(name, value) {
@@ -157,6 +199,24 @@ const resendCooldownMs = Math.max(
   0,
   Number(VERIFICATION_RESEND_COOLDOWN_SECONDS || 120) * 1000
 );
+const logAppName = LOG_APP_NAME || 'SOULMED';
+const logEnvName = (LOG_ENV_NAME || process.env.NODE_ENV || 'DEV').toUpperCase();
+const logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
+const logFilePrefix = LOG_FILE_PREFIX || `${logAppName}_LOG`;
+const maxLogFileSize = 5 * 1024 * 1024;
+const LOG_LEVELS = {
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+const devEnvs = new Set(['DEV', 'LOCAL', 'DEVELOPMENT']);
+const isDevEnv = devEnvs.has(logEnvName);
+const consoleLevelName = String(
+  process.env.LOG_CONSOLE_LEVEL || (isDevEnv ? 'info' : 'error')
+).toLowerCase();
+const fileLevelName = String(process.env.LOG_FILE_LEVEL || 'info').toLowerCase();
+const consoleLevel = LOG_LEVELS[consoleLevelName] || LOG_LEVELS.info;
+const fileLevel = LOG_LEVELS[fileLevelName] || LOG_LEVELS.info;
 
 const emailTransport = SMTP_HOST
   ? nodemailer.createTransport({
@@ -260,6 +320,112 @@ function sendHtmlResponse(res, status, title, message) {
     </html>
   `);
 }
+
+function ensureLogDir() {
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+}
+
+function getLogFilePath() {
+  ensureLogDir();
+  const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const base = `${logFilePrefix}_${dateStamp}_${logEnvName}`;
+  const files = fs.readdirSync(logDir).filter((name) =>
+    name.startsWith(base) && name.endsWith('.log')
+  );
+
+  const indices = files.map((name) => {
+    const match = name.match(/_(\d{3})\.log$/);
+    return match ? Number(match[1]) : 1;
+  });
+
+  let index = indices.length ? Math.max(...indices) : 1;
+  let fileName = `${base}_${String(index).padStart(3, '0')}.log`;
+  let filePath = path.join(logDir, fileName);
+
+  if (fs.existsSync(filePath)) {
+    const size = fs.statSync(filePath).size;
+    if (size >= maxLogFileSize) {
+      index += 1;
+      fileName = `${base}_${String(index).padStart(3, '0')}.log`;
+      filePath = path.join(logDir, fileName);
+    }
+  }
+
+  return filePath;
+}
+
+function redactSensitive(value) {
+  if (!value) return value;
+  return String(value).replace(
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+    '[redacted-email]'
+  );
+}
+
+function formatLogEntry(
+  { logType, userName, correlationId, errorMessage, statusCode, errorStack },
+  redact
+) {
+  const safeUser = redact ? '[redacted]' : (userName || 'unknown');
+  const safeMessage = redact ? redactSensitive(errorMessage) : (errorMessage || '-');
+  const safeStack = redact ? undefined : errorStack;
+  return [
+    '------------------',
+    `APP Name: ${logAppName}`,
+    `Log Type: ${logType}`,
+    `Environment: ${logEnvName}`,
+    `Date Time: ${new Date().toISOString()}`,
+    `User Name: ${safeUser}`,
+    `Status Code: ${statusCode || '-'}`,
+    `Correlationid: ${correlationId || 'unknown'}`,
+    `Error Message: ${safeMessage}`,
+    safeStack ? `Stack Trace: ${safeStack}` : '',
+    '',
+  ].join('\n');
+}
+
+function writeLogEntry(entry) {
+  const payload = formatLogEntry(entry, false);
+
+  try {
+    const filePath = getLogFilePath();
+    fs.appendFileSync(filePath, `${payload}\n`, 'utf8');
+  } catch (err) {
+    try {
+      process.stderr.write(`Failed to write log file: ${err.message || err}\n`);
+    } catch (innerErr) {
+      // ignore logging failures
+    }
+  }
+}
+
+function writeConsoleEntry(entry, level) {
+  const payload = formatLogEntry(entry, !isDevEnv);
+  const stream = level === 'error' ? process.stderr : process.stdout;
+  stream.write(`${payload}\n`);
+}
+
+function logMessage(level, { userName, correlationId, errorMessage, statusCode, errorStack }) {
+  const logType = level.charAt(0).toUpperCase() + level.slice(1);
+  const entry = { logType, userName, correlationId, errorMessage, statusCode, errorStack };
+  const levelValue = LOG_LEVELS[level] || LOG_LEVELS.info;
+  if (levelValue >= fileLevel) {
+    writeLogEntry(entry);
+  }
+  if (levelValue >= consoleLevel) {
+    writeConsoleEntry(entry, level);
+  }
+}
+
+console.error = (...args) => {
+  const errorArg = args.find((arg) => arg instanceof Error);
+  const message = args
+    .map((arg) => (arg instanceof Error ? (arg.stack || arg.message) : String(arg)))
+    .join(' ');
+  logMessage('error', { errorMessage: message, errorStack: errorArg?.stack });
+};
 
 const wsClients = new Set();
 
