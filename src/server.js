@@ -33,7 +33,10 @@ const TeacherRequest = require('./models/TeacherRequest');
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
+if (corsEnabled) {
+  app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+}
 app.use(express.json({ limit: '1mb' }));
 
 const uploadsDir = path.join(__dirname, '..', 'uploads');
