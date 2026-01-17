@@ -24,6 +24,9 @@ const userSchema = new mongoose.Schema(
     email_verification_token: { type: String },
     email_verification_expires: { type: Date },
     email_verification_sent_at: { type: Date },
+    password_reset_token: { type: String },
+    password_reset_expires: { type: Date },
+    password_reset_requested_at: { type: Date },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

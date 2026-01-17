@@ -233,6 +233,12 @@ function createEmailVerificationToken() {
   return { token, tokenHash };
 }
 
+function createPasswordResetToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return { token, tokenHash };
+}
+
 async function sendVerificationEmail({ email, token, name }) {
   if (!emailTransport) {
     throw new Error('Email service is not configured');
@@ -284,6 +290,53 @@ async function sendVerificationEmail({ email, token, name }) {
   });
 }
 
+async function sendPasswordResetEmail({ email, token, name }) {
+  if (!emailTransport) {
+    throw new Error('Email service is not configured');
+  }
+  const from = SMTP_FROM || SMTP_USER;
+  if (!from) {
+    throw new Error('Email sender is not configured');
+  }
+  const base = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
+  const resetUrl = `${base}/ResetPassword?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+  const firstName = name ? name.split(' ')[0] : '';
+
+  const subject = 'Reset your password';
+  const text = [
+    `Hi ${firstName || 'there'},`,
+    '',
+    'We received a request to reset your password.',
+    'Use the link below to set a new password:',
+    resetUrl,
+    '',
+    'If you did not request this, you can safely ignore this email.',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <p>Hi ${firstName || 'there'},</p>
+      <p>We received a request to reset your password.</p>
+      <p>
+        <a href="${resetUrl}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">
+          Reset Password
+        </a>
+      </p>
+      <p>Or paste this link into your browser:</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p>If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  await emailTransport.sendMail({
+    from,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   const {
@@ -291,6 +344,8 @@ function sanitizeUser(user) {
     __v,
     email_verification_token,
     email_verification_expires,
+    password_reset_token,
+    password_reset_expires,
     ...rest
   } = user.toObject ? user.toObject() : user;
   return rest;
@@ -838,6 +893,89 @@ app.post('/auth/resend-verification', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to resend verification email' });
+  }
+});
+
+app.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.json({ ok: true });
+    }
+
+    const { token, tokenHash } = createPasswordResetToken();
+    user.password_reset_token = tokenHash;
+    user.password_reset_expires = new Date(Date.now() + 60 * 60 * 1000);
+    user.password_reset_requested_at = new Date();
+    await user.save();
+
+    await sendPasswordResetEmail({ email, token, name: user.full_name });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to send password reset email' });
+  }
+});
+
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { email, token, password } = req.body || {};
+    if (!email || !token || !password) {
+      return res.status(400).json({ error: 'email, token, and password are required' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      password_reset_token: tokenHash,
+      password_reset_expires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Reset link has expired' });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.password_reset_token = undefined;
+    user.password_reset_expires = undefined;
+    user.password_reset_requested_at = undefined;
+    await user.save();
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+app.post('/auth/validate-reset-token', async (req, res) => {
+  try {
+    const { email, token } = req.body || {};
+    if (!email || !token) {
+      return res.status(400).json({ error: 'email and token are required' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      password_reset_token: tokenHash,
+      password_reset_expires: { $gt: new Date() },
+    }).lean();
+
+    if (!user) {
+      return res.status(400).json({ error: 'Reset link has expired' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to validate reset link' });
   }
 });
 
