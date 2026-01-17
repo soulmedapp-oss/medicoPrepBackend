@@ -10,7 +10,9 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 const WebSocket = require('ws');
 const User = require('./models/User');
 const Test = require('./models/Test');
@@ -113,7 +115,22 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-const { MONGODB_URI, GOOGLE_CLIENT_ID, PORT, JWT_SECRET, JWT_EXPIRES_IN } = process.env;
+const {
+  MONGODB_URI,
+  GOOGLE_CLIENT_ID,
+  PORT,
+  JWT_SECRET,
+  JWT_EXPIRES_IN,
+  APP_BASE_URL,
+  API_BASE_URL,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_FROM,
+  SMTP_SECURE,
+  VERIFICATION_RESEND_COOLDOWN_SECONDS,
+} = process.env;
 
 function requireEnv(name, value) {
   if (!value) {
@@ -122,20 +139,123 @@ function requireEnv(name, value) {
 }
 
 requireEnv('MONGODB_URI', MONGODB_URI);
-requireEnv('GOOGLE_CLIENT_ID', GOOGLE_CLIENT_ID);
 requireEnv('JWT_SECRET', JWT_SECRET);
 
-const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 const tokenExpiry = JWT_EXPIRES_IN || '7d';
 
 function signToken(userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
 }
 
+const appBaseUrl = APP_BASE_URL || process.env.CORS_ORIGIN || 'http://localhost:5173';
+const apiBaseUrl = API_BASE_URL || APP_BASE_URL || 'http://localhost:4000';
+const resendCooldownMs = Math.max(
+  0,
+  Number(VERIFICATION_RESEND_COOLDOWN_SECONDS || 120) * 1000
+);
+
+const emailTransport = SMTP_HOST
+  ? nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT) || 587,
+    secure: SMTP_SECURE === 'true',
+    auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS || '' } : undefined,
+  })
+  : null;
+
+function createEmailVerificationToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return { token, tokenHash };
+}
+
+async function sendVerificationEmail({ email, token, name }) {
+  if (!emailTransport) {
+    throw new Error('Email service is not configured');
+  }
+  const from = SMTP_FROM || SMTP_USER;
+  if (!from) {
+    throw new Error('Email sender is not configured');
+  }
+  const base = apiBaseUrl.replace(/\/$/, '');
+  const verifyUrl = `${base}/auth/verify-email?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+  const appBase = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
+  const loginUrl = appBase ? `${appBase}/Login` : '';
+  const firstName = name ? name.split(' ')[0] : '';
+
+  const subject = 'Verify your email';
+  const text = [
+    `Hi ${firstName || 'there'},`,
+    '',
+    'Please verify your email address by clicking the link below:',
+    verifyUrl,
+    '',
+    loginUrl ? `After verification you can log in here: ${loginUrl}` : '',
+    '',
+    'If you did not sign up, you can safely ignore this email.',
+  ].filter(Boolean).join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <p>Hi ${firstName || 'there'},</p>
+      <p>Please verify your email address by clicking the button below:</p>
+      <p>
+        <a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">
+          Verify Email
+        </a>
+      </p>
+      <p>Or paste this link into your browser:</p>
+      <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+      ${loginUrl ? `<p>After verification you can log in here: <a href="${loginUrl}">${loginUrl}</a></p>` : ''}
+      <p>If you did not sign up, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  await emailTransport.sendMail({
+    from,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
-  const { passwordHash, __v, ...rest } = user.toObject ? user.toObject() : user;
+  const {
+    passwordHash,
+    __v,
+    email_verification_token,
+    email_verification_expires,
+    ...rest
+  } = user.toObject ? user.toObject() : user;
   return rest;
+}
+
+function sendHtmlResponse(res, status, title, message) {
+  res.status(status).send(`
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${title}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 32px; background: #f8fafc; color: #0f172a; }
+          .card { max-width: 520px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+          a { color: #2563eb; text-decoration: none; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>${title}</h2>
+          <p>${message}</p>
+          ${appBaseUrl ? `<p><a href="${appBaseUrl.replace(/\/$/, '')}/Login">Log in</a></p>` : ''}
+        </div>
+      </body>
+    </html>
+  `);
 }
 
 const wsClients = new Set();
@@ -417,10 +537,21 @@ app.post('/auth/register', async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, passwordHash, full_name });
-    const token = signToken(user.id);
+    const { token, tokenHash } = createEmailVerificationToken();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const user = await User.create({
+      email,
+      passwordHash,
+      full_name,
+      email_verified: false,
+      email_verification_token: tokenHash,
+      email_verification_expires: expiresAt,
+      email_verification_sent_at: new Date(),
+    });
 
-    return res.json({ user: sanitizeUser(user), token });
+    await sendVerificationEmail({ email, token, name: full_name });
+
+    return res.json({ user: sanitizeUser(user), requires_verification: true });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Registration failed' });
@@ -439,6 +570,10 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    if (user.email_verified === false) {
+      return res.status(403).json({ error: 'Email not verified', requires_verification: true });
+    }
+
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -449,6 +584,91 @@ app.post('/auth/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.get('/auth/verify-email', async (req, res) => {
+  try {
+    const { email, token } = req.query;
+    if (!email || !token) {
+      const message = 'Missing email or token.';
+      if (req.headers.accept?.includes('text/html')) {
+        return sendHtmlResponse(res, 400, 'Verification failed', message);
+      }
+      return res.status(400).json({ error: message });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      email_verification_token: tokenHash,
+      email_verification_expires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      const message = 'Verification link is invalid or expired.';
+      if (req.headers.accept?.includes('text/html')) {
+        return sendHtmlResponse(res, 400, 'Verification failed', message);
+      }
+      return res.status(400).json({ error: message });
+    }
+
+    user.email_verified = true;
+    user.email_verified_at = new Date();
+    user.email_verification_token = undefined;
+    user.email_verification_expires = undefined;
+    await user.save();
+
+    const message = 'Your email is verified. Click Log in to continue.';
+    if (req.headers.accept?.includes('text/html')) {
+      return sendHtmlResponse(res, 200, 'Email verified', message);
+    }
+    return res.json({ ok: true, message });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+app.post('/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.email_verified) {
+      return res.json({ ok: true, message: 'Email already verified' });
+    }
+
+    if (user.email_verification_sent_at && resendCooldownMs > 0) {
+      const elapsed = Date.now() - new Date(user.email_verification_sent_at).getTime();
+      if (elapsed < resendCooldownMs) {
+        const retryAfter = Math.ceil((resendCooldownMs - elapsed) / 1000);
+        return res.status(429).json({
+          error: 'Please wait before requesting another verification email.',
+          retry_after_seconds: retryAfter,
+        });
+      }
+    }
+
+    const { token, tokenHash } = createEmailVerificationToken();
+    user.email_verification_token = tokenHash;
+    user.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    user.email_verification_sent_at = new Date();
+    await user.save();
+
+    await sendVerificationEmail({ email, token, name: user.full_name });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to resend verification email' });
   }
 });
 
@@ -787,6 +1007,9 @@ app.post('/auth/google', async (req, res) => {
     if (!idToken) {
       return res.status(400).json({ error: 'idToken is required' });
     }
+    if (!oauthClient) {
+      return res.status(503).json({ error: 'Google sign-in is not configured' });
+    }
 
     const ticket = await oauthClient.verifyIdToken({
       idToken,
@@ -809,6 +1032,10 @@ app.post('/auth/google', async (req, res) => {
       user.email = email;
       user.full_name = name || user.full_name;
       user.profile_image = picture || user.profile_image;
+      user.email_verified = true;
+      user.email_verified_at = user.email_verified_at || new Date();
+      user.email_verification_token = undefined;
+      user.email_verification_expires = undefined;
       await user.save();
     } else {
       user = await User.create({
@@ -816,6 +1043,8 @@ app.post('/auth/google', async (req, res) => {
         email,
         full_name: name || email,
         profile_image: picture,
+        email_verified: true,
+        email_verified_at: new Date(),
       });
     }
 
@@ -2100,10 +2329,17 @@ app.post('/users', authMiddleware, requireAdmin, async (req, res) => {
       permissions: data.permissions || [],
       admin_status: data.admin_status || 'active',
       subscription_plan: data.subscription_plan || 'free',
+      email_verified: data.email_verified ?? true,
     };
 
     if (data.password) {
       userPayload.passwordHash = await bcrypt.hash(data.password, 10);
+    }
+
+    if (userPayload.email_verified) {
+      userPayload.email_verified_at = new Date();
+      userPayload.email_verification_token = undefined;
+      userPayload.email_verification_expires = undefined;
     }
 
     const user = await User.create(userPayload);
@@ -2128,6 +2364,7 @@ app.patch('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
       'college',
       'year_of_study',
       'target_exam',
+      'email_verified',
     ];
 
     const payload = {};
@@ -2139,6 +2376,12 @@ app.patch('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
 
     if (updates.password) {
       payload.passwordHash = await bcrypt.hash(updates.password, 10);
+    }
+
+    if (updates.email_verified === true) {
+      payload.email_verified_at = new Date();
+      payload.email_verification_token = undefined;
+      payload.email_verification_expires = undefined;
     }
 
     const user = await User.findByIdAndUpdate(
