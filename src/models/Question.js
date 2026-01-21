@@ -23,6 +23,11 @@ const questionSchema = new mongoose.Schema(
     negative_marks: { type: Number, default: 0 },
     required_plan: { type: String, default: 'free' },
     is_active: { type: Boolean, default: true },
+    is_through_upload: { type: Boolean, default: false },
+    created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    created_by_name: { type: String, default: '' },
+    updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updated_by_name: { type: String, default: '' },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

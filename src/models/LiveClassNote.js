@@ -6,6 +6,7 @@ const liveClassNoteSchema = new mongoose.Schema(
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     timestamp: { type: String },
     text: { type: String, required: true },
+    is_active: { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

@@ -11,9 +11,13 @@ const testSchema = new mongoose.Schema(
     passing_marks: { type: Number, default: 40 },
     is_free: { type: Boolean, default: true },
     is_published: { type: Boolean, default: false },
+    is_active: { type: Boolean, default: true },
     question_count: { type: Number, default: 0 },
     attempt_count: { type: Number, default: 0 },
     created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    created_by_name: { type: String, default: '' },
+    updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updated_by_name: { type: String, default: '' },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

@@ -3,7 +3,7 @@ const User = require('../models/User');
 
 const { JWT_SECRET } = process.env;
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) {
@@ -12,6 +12,11 @@ function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.userId = payload.sub;
+    const user = await User.findById(req.userId).lean();
+    if (!user || user.is_active === false) {
+      return res.status(401).json({ error: 'Account is inactive' });
+    }
+    req.user = user;
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
@@ -20,8 +25,8 @@ function authMiddleware(req, res, next) {
 
 async function requireAdmin(req, res, next) {
   try {
-    const user = await User.findById(req.userId).lean();
-    if (!user || user.role !== 'admin') {
+    const user = req.user || await User.findById(req.userId).lean();
+    if (!user || user.is_active === false || user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required' });
     }
     req.user = user;
@@ -33,8 +38,8 @@ async function requireAdmin(req, res, next) {
 
 async function requireStaff(req, res, next) {
   try {
-    const user = await User.findById(req.userId).lean();
-    if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+    const user = req.user || await User.findById(req.userId).lean();
+    if (!user || user.is_active === false || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
       return res.status(403).json({ error: 'Staff access required' });
     }
     req.user = user;

@@ -219,9 +219,12 @@ const csvUpload = multer({
     const isCsv =
       file.mimetype === 'text/csv' ||
       file.mimetype === 'application/vnd.ms-excel' ||
-      file.originalname.toLowerCase().endsWith('.csv');
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.originalname.toLowerCase().endsWith('.csv') ||
+      file.originalname.toLowerCase().endsWith('.xls') ||
+      file.originalname.toLowerCase().endsWith('.xlsx');
     if (!isCsv) {
-      return cb(new Error('Only CSV uploads are allowed'));
+      return cb(new Error('Only CSV or Excel uploads are allowed'));
     }
     return cb(null, true);
   },
