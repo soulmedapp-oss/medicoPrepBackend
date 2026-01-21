@@ -136,6 +136,9 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       }
 
       const actor = getActor(req);
+      const requestedPlan = String(
+        data.required_plan || (data.is_free ? 'free' : 'premium')
+      ).toLowerCase();
       const test = await Test.create({
         title: data.title,
         description: data.description || '',
@@ -144,7 +147,8 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         duration_minutes: data.duration_minutes ?? 60,
         total_marks: data.total_marks ?? 100,
         passing_marks: data.passing_marks ?? 40,
-        is_free: Boolean(data.is_free),
+        is_free: requestedPlan === 'free',
+        required_plan: requestedPlan,
         is_published: Boolean(data.is_published),
         created_by: actor.id,
         created_by_name: actor.name,
@@ -186,6 +190,13 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       }
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'required_plan')) {
+        const plan = String(updates.required_plan || 'free').toLowerCase();
+        updates.required_plan = plan;
+        updates.is_free = plan === 'free';
+      } else if (Object.prototype.hasOwnProperty.call(updates, 'is_free')) {
+        updates.required_plan = updates.is_free ? 'free' : 'premium';
       }
       const actor = getActor(req);
       updates.updated_by = actor.id;
