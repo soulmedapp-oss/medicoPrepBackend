@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const { parse } = require('csv-parse/sync');
 const Test = require('../models/Test');
 const Question = require('../models/Question');
@@ -14,6 +15,44 @@ const PLAN_RANKS = {
   premium: 4,
   ultimate: 5,
 };
+
+function loadBulkRecords(file) {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  if (ext === '.xlsx' || ext === '.xls') {
+    let xlsx;
+    try {
+      // Optional dependency: only needed for Excel uploads.
+      // eslint-disable-next-line global-require
+      xlsx = require('xlsx');
+    } catch (err) {
+      throw new Error('Excel uploads require the "xlsx" package. Please upload CSV instead.');
+    }
+    const workbook = xlsx.readFile(file.path, { cellDates: false });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return [];
+    const sheet = workbook.Sheets[sheetName];
+    return xlsx.utils.sheet_to_json(sheet, {
+      defval: '',
+      raw: false,
+      blankrows: false,
+    });
+  }
+
+  const content = fs.readFileSync(file.path, 'utf8');
+  return parse(content, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+  });
+}
+
+function getActor(req) {
+  const user = req.user || {};
+  return {
+    id: user._id || req.userId || null,
+    name: user.full_name || user.name || user.email || '',
+  };
+}
 
 function getPlanRank(plan) {
   if (!plan) return 0;
@@ -52,7 +91,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
-      const filter = all === 'true' ? {} : { is_published: true };
+      const filter = all === 'true' ? {} : { is_published: true, is_active: true };
       const tests = await Test.find(filter).sort({ created_date: -1 }).lean();
       return res.json({ tests });
     } catch (err) {
@@ -66,6 +105,12 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       const test = await Test.findById(req.params.id).lean();
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
+      }
+      if (!test.is_active) {
+        const user = await User.findById(req.userId).lean();
+        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+          return res.status(404).json({ error: 'Test not found' });
+        }
       }
       if (!test.is_published) {
         const user = await User.findById(req.userId).lean();
@@ -90,6 +135,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
 
+      const actor = getActor(req);
       const test = await Test.create({
         title: data.title,
         description: data.description || '',
@@ -100,7 +146,10 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         passing_marks: data.passing_marks ?? 40,
         is_free: Boolean(data.is_free),
         is_published: Boolean(data.is_published),
-        created_by: req.user._id,
+        created_by: actor.id,
+        created_by_name: actor.name,
+        updated_by: actor.id,
+        updated_by_name: actor.name,
       });
 
       if (Array.isArray(data.question_ids) && data.question_ids.length > 0) {
@@ -138,6 +187,9 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
+      const actor = getActor(req);
+      updates.updated_by = actor.id;
+      updates.updated_by_name = actor.name;
       const existing = await Test.findById(req.params.id).lean();
       const test = await Test.findByIdAndUpdate(
         req.params.id,
@@ -166,15 +218,20 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
 
   async function deleteTest(req, res) {
     try {
-      const test = await Test.findByIdAndDelete(req.params.id).lean();
+      const actor = getActor(req);
+      const test = await Test.findById(req.params.id);
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
-      await Question.updateMany({ test_id: req.params.id }, { $set: { test_id: null } });
-      return res.json({ ok: true });
+      test.is_active = false;
+      test.is_published = false;
+      test.updated_by = actor.id;
+      test.updated_by_name = actor.name;
+      await test.save();
+      return res.json({ ok: true, test: test.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete test' });
+      return res.status(500).json({ error: 'Failed to deactivate test' });
     }
   }
 
@@ -184,12 +241,19 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
+      if (!test.is_active) {
+        const user = await User.findById(req.userId).lean();
+        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+          return res.status(404).json({ error: 'Test not found' });
+        }
+      }
 
       const user = await User.findById(req.userId).lean();
       const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
-      const filter = { test_id: req.params.id, is_active: true };
+      const filter = { test_id: req.params.id };
 
       if (!isStaff) {
+        filter.is_active = true;
         const userRank = getPlanRank(user?.subscription_plan);
         const allowedPlans = Object.entries(PLAN_RANKS)
           .filter(([, rank]) => rank <= userRank)
@@ -220,6 +284,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         return res.status(400).json({ error: 'correct_answers is required' });
       }
 
+      const actor = getActor(req);
       const question = await Question.create({
         test_id: req.params.id,
         subject: test.subject,
@@ -234,6 +299,11 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         negative_marks: data.negative_marks ?? 0,
         required_plan: data.required_plan || 'free',
         is_active: data.is_active !== false,
+        is_through_upload: false,
+        created_by: actor.id,
+        created_by_name: actor.name,
+        updated_by: actor.id,
+        updated_by_name: actor.name,
       });
 
       await updateTestQuestionCount(req.params.id);
@@ -252,16 +322,12 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       }
       const file = req.file;
       if (!file) {
-        return res.status(400).json({ error: 'CSV file is required' });
+        return res.status(400).json({ error: 'CSV or Excel file is required' });
       }
 
-      const content = fs.readFileSync(file.path, 'utf8');
-      const records = parse(content, {
-        columns: true,
-        skip_empty_lines: true,
-        trim: true,
-      });
+      const records = loadBulkRecords(file);
 
+      const actor = getActor(req);
       const created = [];
       const errors = [];
       const normalizePlan = (value) => {
@@ -325,6 +391,11 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
             negative_marks,
             required_plan,
             is_active: true,
+            is_through_upload: true,
+            created_by: actor.id,
+            created_by_name: actor.name,
+            updated_by: actor.id,
+            updated_by_name: actor.name,
           });
         } catch (err) {
           errors.push({ row: index + 1, error: err.message });
@@ -343,7 +414,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to import CSV' });
+      return res.status(500).json({ error: 'Failed to import questions' });
     }
   }
 
@@ -396,7 +467,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
   async function listQuestionBank(req, res) {
     try {
       const { subject, difficulty, search, limit } = req.query;
-      const filter = { test_id: null, is_active: true };
+      const filter = { test_id: null };
       if (subject) filter.subject = subject;
       if (difficulty) filter.difficulty = difficulty;
       if (search) {
@@ -423,6 +494,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
         return res.status(400).json({ error: 'correct_answers is required' });
       }
+      const actor = getActor(req);
       const question = await Question.create({
         test_id: null,
         subject: data.subject,
@@ -437,6 +509,11 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
         negative_marks: data.negative_marks ?? 0,
         required_plan: data.required_plan || 'free',
         is_active: data.is_active !== false,
+        is_through_upload: false,
+        created_by: actor.id,
+        created_by_name: actor.name,
+        updated_by: actor.id,
+        updated_by_name: actor.name,
       });
       return res.status(201).json({ question });
     } catch (err) {
@@ -449,16 +526,12 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
     try {
       const file = req.file;
       if (!file) {
-        return res.status(400).json({ error: 'CSV file is required' });
+        return res.status(400).json({ error: 'CSV or Excel file is required' });
       }
 
-      const content = fs.readFileSync(file.path, 'utf8');
-      const records = parse(content, {
-        columns: true,
-        skip_empty_lines: true,
-        trim: true,
-      });
+      const records = loadBulkRecords(file);
 
+      const actor = getActor(req);
       const created = [];
       const errors = [];
       const normalizePlan = (value) => {
@@ -527,6 +600,11 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
             negative_marks,
             required_plan,
             is_active: true,
+            is_through_upload: true,
+            created_by: actor.id,
+            created_by_name: actor.name,
+            updated_by: actor.id,
+            updated_by_name: actor.name,
           });
         } catch (err) {
           errors.push({ row: index + 1, error: err.message });
@@ -544,7 +622,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to import CSV' });
+      return res.status(500).json({ error: 'Failed to import questions' });
     }
   }
 
@@ -558,7 +636,10 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
         return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
       }
+      const actor = getActor(req);
       Object.assign(existing, updates);
+      existing.updated_by = actor.id;
+      existing.updated_by_name = actor.name;
       await existing.save();
       return res.json({ question: existing.toObject() });
     } catch (err) {
@@ -573,11 +654,12 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (!existing || existing.test_id) {
         return res.status(404).json({ error: 'Question not found' });
       }
-      await Question.deleteOne({ _id: existing._id });
-      return res.json({ ok: true });
+      existing.is_active = false;
+      await existing.save();
+      return res.json({ ok: true, question: existing.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete question' });
+      return res.status(500).json({ error: 'Failed to deactivate question' });
     }
   }
 
@@ -591,8 +673,11 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
         return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
       }
+      const actor = getActor(req);
       const previousTestId = existing.test_id;
       Object.assign(existing, updates);
+      existing.updated_by = actor.id;
+      existing.updated_by_name = actor.name;
       await existing.save();
 
       const nextTestId = existing.test_id;
@@ -615,15 +700,17 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
 
   async function deleteQuestion(req, res) {
     try {
-      const question = await Question.findByIdAndDelete(req.params.id);
+      const question = await Question.findById(req.params.id);
       if (!question) {
         return res.status(404).json({ error: 'Question not found' });
       }
+      question.is_active = false;
+      await question.save();
       await updateTestQuestionCount(question.test_id);
-      return res.json({ ok: true });
+      return res.json({ ok: true, question: question.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete question' });
+      return res.status(500).json({ error: 'Failed to deactivate question' });
     }
   }
 

@@ -13,6 +13,7 @@ const liveClassSchema = new mongoose.Schema(
     youtube_url: { type: String },
     is_free: { type: Boolean, default: false },
     is_published: { type: Boolean, default: false },
+    is_active: { type: Boolean, default: true },
     status: { type: String, default: 'scheduled' },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }

@@ -237,6 +237,9 @@ async function login(req, res) {
     if (!user || typeof user.passwordHash !== 'string' || !user.passwordHash.length) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Account is inactive' });
+    }
 
     if (user.email_verified === false) {
       return res.status(403).json({ error: 'Email not verified', requires_verification: true });
@@ -280,6 +283,13 @@ async function verifyEmail(req, res) {
       }
       return res.status(400).json({ error: message });
     }
+    if (user.is_active === false) {
+      const message = 'Account is inactive.';
+      if (req.headers.accept?.includes('text/html')) {
+        return sendHtmlResponse(res, 403, 'Verification failed', message);
+      }
+      return res.status(403).json({ error: message });
+    }
 
     user.email_verified = true;
     user.email_verified_at = new Date();
@@ -311,6 +321,9 @@ async function resendVerification(req, res) {
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Account is inactive' });
     }
 
     if (user.email_verified) {
@@ -355,7 +368,7 @@ async function forgotPassword(req, res) {
     }
 
     const user = await User.findOne({ email });
-    if (!user) {
+    if (!user || user.is_active === false) {
       return res.json({ ok: true });
     }
 
@@ -395,7 +408,7 @@ async function resetPassword(req, res) {
       password_reset_expires: { $gt: new Date() },
     });
 
-    if (!user) {
+    if (!user || user.is_active === false) {
       return res.status(400).json({ error: 'Reset link has expired' });
     }
 
@@ -429,7 +442,7 @@ async function validateResetToken(req, res) {
       password_reset_expires: { $gt: new Date() },
     }).lean();
 
-    if (!user) {
+    if (!user || user.is_active === false) {
       return res.status(400).json({ error: 'Reset link has expired' });
     }
 
@@ -443,7 +456,7 @@ async function validateResetToken(req, res) {
 async function getMe(req, res) {
   try {
     const user = await User.findById(req.userId);
-    if (!user) {
+    if (!user || user.is_active === false) {
       return res.status(404).json({ error: 'User not found' });
     }
     return res.json({ user: sanitizeUser(user) });
@@ -524,6 +537,9 @@ async function googleAuth(req, res) {
     }
 
     let user = await User.findOne({ $or: [{ googleId }, { email }] });
+    if (user && user.is_active === false) {
+      return res.status(403).json({ error: 'Account is inactive' });
+    }
     if (user) {
       user.googleId = googleId;
       user.email = email;

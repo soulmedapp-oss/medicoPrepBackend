@@ -82,15 +82,17 @@ function createSubscriptionsController({
 
   async function deletePlan(req, res) {
     try {
-      const plan = await SubscriptionPlan.findByIdAndDelete(req.params.id).lean();
+      const plan = await SubscriptionPlan.findById(req.params.id);
       if (!plan) {
         return res.status(404).json({ error: 'Plan not found' });
       }
+      plan.is_active = false;
+      await plan.save();
       clearPlansCache();
-      return res.json({ ok: true });
+      return res.json({ ok: true, plan: plan.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete plan' });
+      return res.status(500).json({ error: 'Failed to deactivate plan' });
     }
   }
 
@@ -108,6 +110,7 @@ function createSubscriptionsController({
         }
       } else {
         filter.user_id = req.userId;
+        filter.is_active = true;
       }
 
       const max = Number(limit) || 100;
@@ -218,11 +221,13 @@ function createSubscriptionsController({
       if (!isAdmin && String(subscription.user_id) !== String(req.userId)) {
         return res.status(403).json({ error: 'Not authorized' });
       }
-      await subscription.deleteOne();
-      return res.json({ ok: true });
+      subscription.is_active = false;
+      subscription.status = 'cancelled';
+      await subscription.save();
+      return res.json({ ok: true, subscription: subscription.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete subscription' });
+      return res.status(500).json({ error: 'Failed to deactivate subscription' });
     }
   }
 

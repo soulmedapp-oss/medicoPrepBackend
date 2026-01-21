@@ -27,6 +27,7 @@ const userSchema = new mongoose.Schema(
     password_reset_token: { type: String },
     password_reset_expires: { type: Date },
     password_reset_requested_at: { type: Date },
+    is_active: { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

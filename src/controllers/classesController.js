@@ -15,6 +15,7 @@ function createClassesController({ createNotification }) {
         }
       } else {
         filter.is_published = true;
+        filter.is_active = true;
       }
 
       const classes = await LiveClass.find(filter).sort({ scheduled_date: -1 }).lean();
@@ -126,14 +127,17 @@ function createClassesController({ createNotification }) {
 
   async function deleteClass(req, res) {
     try {
-      const liveClass = await LiveClass.findByIdAndDelete(req.params.id).lean();
+      const liveClass = await LiveClass.findById(req.params.id);
       if (!liveClass) {
         return res.status(404).json({ error: 'Class not found' });
       }
-      return res.json({ ok: true });
+      liveClass.is_active = false;
+      liveClass.is_published = false;
+      await liveClass.save();
+      return res.json({ ok: true, liveClass: liveClass.toObject() });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete class' });
+      return res.status(500).json({ error: 'Failed to deactivate class' });
     }
   }
 
@@ -142,6 +146,7 @@ function createClassesController({ createNotification }) {
       const notes = await LiveClassNote.find({
         class_id: req.params.id,
         user_id: req.userId,
+        is_active: true,
       }).sort({ created_date: -1 }).lean();
 
       return res.json({ notes });
@@ -177,7 +182,7 @@ function createClassesController({ createNotification }) {
 
   async function deleteClassNote(req, res) {
     try {
-      const note = await LiveClassNote.findOneAndDelete({
+      const note = await LiveClassNote.findOne({
         _id: req.params.noteId,
         class_id: req.params.classId,
         user_id: req.userId,
@@ -185,6 +190,8 @@ function createClassesController({ createNotification }) {
       if (!note) {
         return res.status(404).json({ error: 'Note not found' });
       }
+      note.is_active = false;
+      await note.save();
       return res.json({ ok: true });
     } catch (err) {
       console.error(err);

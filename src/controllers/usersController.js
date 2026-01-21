@@ -19,6 +19,7 @@ function createUsersController() {
           filter.role = 'student';
           filter.is_teacher = { $ne: true };
         }
+        filter.is_active = true;
       } else if (role) {
         filter.role = role;
       }
@@ -59,6 +60,7 @@ function createUsersController() {
         admin_status: data.admin_status || 'active',
         subscription_plan: data.subscription_plan || 'free',
         email_verified: data.email_verified ?? true,
+        is_active: data.is_active ?? true,
       };
 
       if (data.password) {
@@ -94,6 +96,7 @@ function createUsersController() {
         'year_of_study',
         'target_exam',
         'email_verified',
+        'is_active',
       ];
 
       const payload = {};
@@ -147,14 +150,19 @@ function createUsersController() {
       if (String(req.params.id) === String(req.userId)) {
         return res.status(400).json({ error: 'Cannot delete your own account' });
       }
-      const user = await User.findByIdAndDelete(req.params.id);
+      const user = await User.findById(req.params.id);
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      return res.json({ ok: true });
+      user.is_active = false;
+      if (user.admin_status === 'active') {
+        user.admin_status = 'inactive';
+      }
+      await user.save();
+      return res.json({ ok: true, user: sanitizeUser(user) });
     } catch (err) {
       console.error(err);
-      return res.status(500).json({ error: 'Failed to delete user' });
+      return res.status(500).json({ error: 'Failed to deactivate user' });
     }
   }
 

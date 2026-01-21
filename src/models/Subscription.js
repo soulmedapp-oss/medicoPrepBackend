@@ -9,6 +9,7 @@ const subscriptionSchema = new mongoose.Schema(
     status: { type: String, default: 'active' },
     start_date: { type: Date, required: true },
     end_date: { type: Date, required: true },
+    is_active: { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
