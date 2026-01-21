@@ -13,6 +13,7 @@ const doubtSchema = new mongoose.Schema(
     image_url: { type: String, default: '' },
     answer: { type: String, default: '' },
     answer_image_url: { type: String, default: '' },
+    assigned_teacher_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     assigned_teacher_email: { type: String, default: '' },
     assigned_teacher_name: { type: String, default: '' },
   },

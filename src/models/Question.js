@@ -10,7 +10,7 @@ const optionSchema = new mongoose.Schema(
 
 const questionSchema = new mongoose.Schema(
   {
-    test_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Test', required: true, index: true },
+    test_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Test', index: true, default: null },
     subject: { type: String },
     question_text: { type: String, required: true },
     question_type: { type: String, default: 'single_choice' },
