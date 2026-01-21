@@ -10,6 +10,7 @@ const testSchema = new mongoose.Schema(
     total_marks: { type: Number, default: 100 },
     passing_marks: { type: Number, default: 40 },
     is_free: { type: Boolean, default: true },
+    required_plan: { type: String, default: 'free' },
     is_published: { type: Boolean, default: false },
     is_active: { type: Boolean, default: true },
     question_count: { type: Number, default: 0 },
