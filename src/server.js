@@ -11,7 +11,9 @@ const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 const WebSocket = require('ws');
 const User = require('./models/User');
 const Test = require('./models/Test');
@@ -32,6 +34,10 @@ const TeacherRequest = require('./models/TeacherRequest');
 const app = express();
 const server = http.createServer(app);
 
+const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
+if (corsEnabled) {
+  app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+}
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'soulmedapp@gmail.com';
 let supportTransport;
 
@@ -106,6 +112,44 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
+  const correlationId = headerId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+  req.correlationId = correlationId;
+  res.setHeader('X-Correlation-Id', correlationId);
+
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body.error === 'string' && !res.locals.errorMessage) {
+      res.locals.errorMessage = body.error;
+    }
+    return originalJson(body);
+  };
+
+  res.on('finish', () => {
+    if (res.statusCode < 400) return;
+    const level = res.statusCode >= 500 ? 'error' : 'warn';
+    const userName =
+      req.user?.email ||
+      req.user?.full_name ||
+      req.body?.email ||
+      req.query?.email ||
+      'unknown';
+    const errorMessage =
+      res.locals.errorMessage ||
+      `HTTP ${res.statusCode} ${req.method} ${req.originalUrl}`;
+
+    logMessage(level, {
+      userName,
+      correlationId,
+      errorMessage,
+      statusCode: res.statusCode,
+    });
+  });
+
+  next();
+});
 
 const uploadsDir = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -186,7 +230,26 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-const { MONGODB_URI, GOOGLE_CLIENT_ID, PORT, JWT_SECRET, JWT_EXPIRES_IN } = process.env;
+const {
+  MONGODB_URI,
+  GOOGLE_CLIENT_ID,
+  PORT,
+  JWT_SECRET,
+  JWT_EXPIRES_IN,
+  APP_BASE_URL,
+  API_BASE_URL,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_FROM,
+  SMTP_SECURE,
+  VERIFICATION_RESEND_COOLDOWN_SECONDS,
+  LOG_DIR,
+  LOG_FILE_PREFIX,
+  LOG_ENV_NAME,
+  LOG_APP_NAME,
+} = process.env;
 
 function requireEnv(name, value) {
   if (!value) {
@@ -195,21 +258,303 @@ function requireEnv(name, value) {
 }
 
 requireEnv('MONGODB_URI', MONGODB_URI);
-requireEnv('GOOGLE_CLIENT_ID', GOOGLE_CLIENT_ID);
 requireEnv('JWT_SECRET', JWT_SECRET);
 
-const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 const tokenExpiry = JWT_EXPIRES_IN || '7d';
 
 function signToken(userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
 }
 
+const appBaseUrl = APP_BASE_URL || process.env.CORS_ORIGIN || 'http://localhost:5173';
+const apiBaseUrl = API_BASE_URL || APP_BASE_URL || 'http://localhost:4000';
+const resendCooldownMs = Math.max(
+  0,
+  Number(VERIFICATION_RESEND_COOLDOWN_SECONDS || 120) * 1000
+);
+const logAppName = LOG_APP_NAME || 'SOULMED';
+const logEnvName = (LOG_ENV_NAME || process.env.NODE_ENV || 'DEV').toUpperCase();
+const logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
+const logFilePrefix = LOG_FILE_PREFIX || `${logAppName}_LOG`;
+const maxLogFileSize = 5 * 1024 * 1024;
+const LOG_LEVELS = {
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+const devEnvs = new Set(['DEV', 'LOCAL', 'DEVELOPMENT']);
+const isDevEnv = devEnvs.has(logEnvName);
+const consoleLevelName = String(
+  process.env.LOG_CONSOLE_LEVEL || (isDevEnv ? 'info' : 'error')
+).toLowerCase();
+const fileLevelName = String(process.env.LOG_FILE_LEVEL || 'info').toLowerCase();
+const consoleLevel = LOG_LEVELS[consoleLevelName] || LOG_LEVELS.info;
+const fileLevel = LOG_LEVELS[fileLevelName] || LOG_LEVELS.info;
+
+const emailTransport = SMTP_HOST
+  ? nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT) || 587,
+    secure: SMTP_SECURE === 'true',
+    auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS || '' } : undefined,
+  })
+  : null;
+
+function createEmailVerificationToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return { token, tokenHash };
+}
+
+function createPasswordResetToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return { token, tokenHash };
+}
+
+async function sendVerificationEmail({ email, token, name }) {
+  if (!emailTransport) {
+    throw new Error('Email service is not configured');
+  }
+  const from = SMTP_FROM || SMTP_USER;
+  if (!from) {
+    throw new Error('Email sender is not configured');
+  }
+  const base = apiBaseUrl.replace(/\/$/, '');
+  const verifyUrl = `${base}/auth/verify-email?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+  const appBase = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
+  const loginUrl = appBase ? `${appBase}/Login` : '';
+  const firstName = name ? name.split(' ')[0] : '';
+
+  const subject = 'Verify your email';
+  const text = [
+    `Hi ${firstName || 'there'},`,
+    '',
+    'Please verify your email address by clicking the link below:',
+    verifyUrl,
+    '',
+    loginUrl ? `After verification you can log in here: ${loginUrl}` : '',
+    '',
+    'If you did not sign up, you can safely ignore this email.',
+  ].filter(Boolean).join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <p>Hi ${firstName || 'there'},</p>
+      <p>Please verify your email address by clicking the button below:</p>
+      <p>
+        <a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">
+          Verify Email
+        </a>
+      </p>
+      <p>Or paste this link into your browser:</p>
+      <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+      ${loginUrl ? `<p>After verification you can log in here: <a href="${loginUrl}">${loginUrl}</a></p>` : ''}
+      <p>If you did not sign up, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  await emailTransport.sendMail({
+    from,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+}
+
+async function sendPasswordResetEmail({ email, token, name }) {
+  if (!emailTransport) {
+    throw new Error('Email service is not configured');
+  }
+  const from = SMTP_FROM || SMTP_USER;
+  if (!from) {
+    throw new Error('Email sender is not configured');
+  }
+  const base = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
+  const resetUrl = `${base}/ResetPassword?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+  const firstName = name ? name.split(' ')[0] : '';
+
+  const subject = 'Reset your password';
+  const text = [
+    `Hi ${firstName || 'there'},`,
+    '',
+    'We received a request to reset your password.',
+    'Use the link below to set a new password:',
+    resetUrl,
+    '',
+    'If you did not request this, you can safely ignore this email.',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <p>Hi ${firstName || 'there'},</p>
+      <p>We received a request to reset your password.</p>
+      <p>
+        <a href="${resetUrl}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">
+          Reset Password
+        </a>
+      </p>
+      <p>Or paste this link into your browser:</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p>If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  await emailTransport.sendMail({
+    from,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
-  const { passwordHash, __v, ...rest } = user.toObject ? user.toObject() : user;
+  const {
+    passwordHash,
+    __v,
+    email_verification_token,
+    email_verification_expires,
+    password_reset_token,
+    password_reset_expires,
+    ...rest
+  } = user.toObject ? user.toObject() : user;
   return rest;
 }
+
+function sendHtmlResponse(res, status, title, message) {
+  res.status(status).send(`
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${title}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 32px; background: #f8fafc; color: #0f172a; }
+          .card { max-width: 520px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+          a { color: #2563eb; text-decoration: none; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>${title}</h2>
+          <p>${message}</p>
+          ${appBaseUrl ? `<p><a href="${appBaseUrl.replace(/\/$/, '')}/Login">Log in</a></p>` : ''}
+        </div>
+      </body>
+    </html>
+  `);
+}
+
+function ensureLogDir() {
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+}
+
+function getLogFilePath() {
+  ensureLogDir();
+  const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const base = `${logFilePrefix}_${dateStamp}_${logEnvName}`;
+  const files = fs.readdirSync(logDir).filter((name) =>
+    name.startsWith(base) && name.endsWith('.log')
+  );
+
+  const indices = files.map((name) => {
+    const match = name.match(/_(\d{3})\.log$/);
+    return match ? Number(match[1]) : 1;
+  });
+
+  let index = indices.length ? Math.max(...indices) : 1;
+  let fileName = `${base}_${String(index).padStart(3, '0')}.log`;
+  let filePath = path.join(logDir, fileName);
+
+  if (fs.existsSync(filePath)) {
+    const size = fs.statSync(filePath).size;
+    if (size >= maxLogFileSize) {
+      index += 1;
+      fileName = `${base}_${String(index).padStart(3, '0')}.log`;
+      filePath = path.join(logDir, fileName);
+    }
+  }
+
+  return filePath;
+}
+
+function redactSensitive(value) {
+  if (!value) return value;
+  return String(value).replace(
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+    '[redacted-email]'
+  );
+}
+
+function formatLogEntry(
+  { logType, userName, correlationId, errorMessage, statusCode, errorStack },
+  redact
+) {
+  const safeUser = redact ? '[redacted]' : (userName || 'unknown');
+  const safeMessage = redact ? redactSensitive(errorMessage) : (errorMessage || '-');
+  const safeStack = redact ? undefined : errorStack;
+  return [
+    '------------------',
+    `APP Name: ${logAppName}`,
+    `Log Type: ${logType}`,
+    `Environment: ${logEnvName}`,
+    `Date Time: ${new Date().toISOString()}`,
+    `User Name: ${safeUser}`,
+    `Status Code: ${statusCode || '-'}`,
+    `Correlationid: ${correlationId || 'unknown'}`,
+    `Error Message: ${safeMessage}`,
+    safeStack ? `Stack Trace: ${safeStack}` : '',
+    '',
+  ].join('\n');
+}
+
+function writeLogEntry(entry) {
+  const payload = formatLogEntry(entry, false);
+
+  try {
+    const filePath = getLogFilePath();
+    fs.appendFileSync(filePath, `${payload}\n`, 'utf8');
+  } catch (err) {
+    try {
+      process.stderr.write(`Failed to write log file: ${err.message || err}\n`);
+    } catch (innerErr) {
+      // ignore logging failures
+    }
+  }
+}
+
+function writeConsoleEntry(entry, level) {
+  const payload = formatLogEntry(entry, !isDevEnv);
+  const stream = level === 'error' ? process.stderr : process.stdout;
+  stream.write(`${payload}\n`);
+}
+
+function logMessage(level, { userName, correlationId, errorMessage, statusCode, errorStack }) {
+  const logType = level.charAt(0).toUpperCase() + level.slice(1);
+  const entry = { logType, userName, correlationId, errorMessage, statusCode, errorStack };
+  const levelValue = LOG_LEVELS[level] || LOG_LEVELS.info;
+  if (levelValue >= fileLevel) {
+    writeLogEntry(entry);
+  }
+  if (levelValue >= consoleLevel) {
+    writeConsoleEntry(entry, level);
+  }
+}
+
+console.error = (...args) => {
+  const errorArg = args.find((arg) => arg instanceof Error);
+  const message = args
+    .map((arg) => (arg instanceof Error ? (arg.stack || arg.message) : String(arg)))
+    .join(' ');
+  logMessage('error', { errorMessage: message, errorStack: errorArg?.stack });
+};
 
 const wsClients = new Set();
 
@@ -491,10 +836,21 @@ app.post('/auth/register', async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, passwordHash, full_name });
-    const token = signToken(user.id);
+    const { token, tokenHash } = createEmailVerificationToken();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const user = await User.create({
+      email,
+      passwordHash,
+      full_name,
+      email_verified: false,
+      email_verification_token: tokenHash,
+      email_verification_expires: expiresAt,
+      email_verification_sent_at: new Date(),
+    });
 
-    return res.json({ user: sanitizeUser(user), token });
+    await sendVerificationEmail({ email, token, name: full_name });
+
+    return res.json({ user: sanitizeUser(user), requires_verification: true });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Registration failed' });
@@ -513,6 +869,10 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    if (user.email_verified === false) {
+      return res.status(403).json({ error: 'Email not verified', requires_verification: true });
+    }
+
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -523,6 +883,174 @@ app.post('/auth/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.get('/auth/verify-email', async (req, res) => {
+  try {
+    const { email, token } = req.query;
+    if (!email || !token) {
+      const message = 'Missing email or token.';
+      if (req.headers.accept?.includes('text/html')) {
+        return sendHtmlResponse(res, 400, 'Verification failed', message);
+      }
+      return res.status(400).json({ error: message });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      email_verification_token: tokenHash,
+      email_verification_expires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      const message = 'Verification link is invalid or expired.';
+      if (req.headers.accept?.includes('text/html')) {
+        return sendHtmlResponse(res, 400, 'Verification failed', message);
+      }
+      return res.status(400).json({ error: message });
+    }
+
+    user.email_verified = true;
+    user.email_verified_at = new Date();
+    user.email_verification_token = undefined;
+    user.email_verification_expires = undefined;
+    await user.save();
+
+    const message = 'Your email is verified. Click Log in to continue.';
+    if (req.headers.accept?.includes('text/html')) {
+      return sendHtmlResponse(res, 200, 'Email verified', message);
+    }
+    return res.json({ ok: true, message });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+app.post('/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.email_verified) {
+      return res.json({ ok: true, message: 'Email already verified' });
+    }
+
+    if (user.email_verification_sent_at && resendCooldownMs > 0) {
+      const elapsed = Date.now() - new Date(user.email_verification_sent_at).getTime();
+      if (elapsed < resendCooldownMs) {
+        const retryAfter = Math.ceil((resendCooldownMs - elapsed) / 1000);
+        return res.status(429).json({
+          error: 'Please wait before requesting another verification email.',
+          retry_after_seconds: retryAfter,
+        });
+      }
+    }
+
+    const { token, tokenHash } = createEmailVerificationToken();
+    user.email_verification_token = tokenHash;
+    user.email_verification_expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    user.email_verification_sent_at = new Date();
+    await user.save();
+
+    await sendVerificationEmail({ email, token, name: user.full_name });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to resend verification email' });
+  }
+});
+
+app.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.json({ ok: true });
+    }
+
+    const { token, tokenHash } = createPasswordResetToken();
+    user.password_reset_token = tokenHash;
+    user.password_reset_expires = new Date(Date.now() + 60 * 60 * 1000);
+    user.password_reset_requested_at = new Date();
+    await user.save();
+
+    await sendPasswordResetEmail({ email, token, name: user.full_name });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to send password reset email' });
+  }
+});
+
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { email, token, password } = req.body || {};
+    if (!email || !token || !password) {
+      return res.status(400).json({ error: 'email, token, and password are required' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      password_reset_token: tokenHash,
+      password_reset_expires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Reset link has expired' });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.password_reset_token = undefined;
+    user.password_reset_expires = undefined;
+    user.password_reset_requested_at = undefined;
+    await user.save();
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+app.post('/auth/validate-reset-token', async (req, res) => {
+  try {
+    const { email, token } = req.body || {};
+    if (!email || !token) {
+      return res.status(400).json({ error: 'email and token are required' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const user = await User.findOne({
+      email: String(email),
+      password_reset_token: tokenHash,
+      password_reset_expires: { $gt: new Date() },
+    }).lean();
+
+    if (!user) {
+      return res.status(400).json({ error: 'Reset link has expired' });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to validate reset link' });
   }
 });
 
@@ -861,6 +1389,9 @@ app.post('/auth/google', async (req, res) => {
     if (!idToken) {
       return res.status(400).json({ error: 'idToken is required' });
     }
+    if (!oauthClient) {
+      return res.status(503).json({ error: 'Google sign-in is not configured' });
+    }
 
     const ticket = await oauthClient.verifyIdToken({
       idToken,
@@ -883,6 +1414,10 @@ app.post('/auth/google', async (req, res) => {
       user.email = email;
       user.full_name = name || user.full_name;
       user.profile_image = picture || user.profile_image;
+      user.email_verified = true;
+      user.email_verified_at = user.email_verified_at || new Date();
+      user.email_verification_token = undefined;
+      user.email_verification_expires = undefined;
       await user.save();
     } else {
       user = await User.create({
@@ -890,6 +1425,8 @@ app.post('/auth/google', async (req, res) => {
         email,
         full_name: name || email,
         profile_image: picture,
+        email_verified: true,
+        email_verified_at: new Date(),
       });
     }
 
@@ -2568,10 +3105,17 @@ app.post('/users', authMiddleware, requireAdmin, async (req, res) => {
       permissions: data.permissions || [],
       admin_status: data.admin_status || 'active',
       subscription_plan: data.subscription_plan || 'free',
+      email_verified: data.email_verified ?? true,
     };
 
     if (data.password) {
       userPayload.passwordHash = await bcrypt.hash(data.password, 10);
+    }
+
+    if (userPayload.email_verified) {
+      userPayload.email_verified_at = new Date();
+      userPayload.email_verification_token = undefined;
+      userPayload.email_verification_expires = undefined;
     }
 
     const user = await User.create(userPayload);
@@ -2596,6 +3140,7 @@ app.patch('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
       'college',
       'year_of_study',
       'target_exam',
+      'email_verified',
     ];
 
     const payload = {};
@@ -2607,6 +3152,12 @@ app.patch('/users/:id', authMiddleware, requireAdmin, async (req, res) => {
 
     if (updates.password) {
       payload.passwordHash = await bcrypt.hash(updates.password, 10);
+    }
+
+    if (updates.email_verified === true) {
+      payload.email_verified_at = new Date();
+      payload.email_verification_token = undefined;
+      payload.email_verification_expires = undefined;
     }
 
     const user = await User.findByIdAndUpdate(
