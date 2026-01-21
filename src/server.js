@@ -13,7 +13,6 @@ const { OAuth2Client } = require('google-auth-library');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const WebSocket = require('ws');
 const User = require('./models/User');
 const Test = require('./models/Test');
