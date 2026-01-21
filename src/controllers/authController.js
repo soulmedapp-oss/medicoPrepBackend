@@ -6,6 +6,7 @@ const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
+const { enqueueJob } = require('../utils/inMemoryQueue');
 
 const {
   GOOGLE_CLIENT_ID,
@@ -40,6 +41,17 @@ const emailTransport = SMTP_HOST
   })
   : null;
 
+function ensureEmailConfigured() {
+  if (!emailTransport) {
+    throw new Error('Email service is not configured');
+  }
+  const from = SMTP_FROM || SMTP_USER;
+  if (!from) {
+    throw new Error('Email sender is not configured');
+  }
+  return from;
+}
+
 function signToken(userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
 }
@@ -57,13 +69,7 @@ function createPasswordResetToken() {
 }
 
 async function sendVerificationEmail({ email, token, name }) {
-  if (!emailTransport) {
-    throw new Error('Email service is not configured');
-  }
-  const from = SMTP_FROM || SMTP_USER;
-  if (!from) {
-    throw new Error('Email sender is not configured');
-  }
+  const from = ensureEmailConfigured();
   const base = apiBaseUrl.replace(/\/$/, '');
   const verifyUrl = `${base}/auth/verify-email?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
   const appBase = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
@@ -108,13 +114,7 @@ async function sendVerificationEmail({ email, token, name }) {
 }
 
 async function sendPasswordResetEmail({ email, token, name }) {
-  if (!emailTransport) {
-    throw new Error('Email service is not configured');
-  }
-  const from = SMTP_FROM || SMTP_USER;
-  if (!from) {
-    throw new Error('Email sender is not configured');
-  }
+  const from = ensureEmailConfigured();
   const base = appBaseUrl ? appBaseUrl.replace(/\/$/, '') : '';
   const resetUrl = `${base}/ResetPassword?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
   const firstName = name ? name.split(' ')[0] : '';
@@ -213,7 +213,8 @@ async function register(req, res) {
       email_verification_sent_at: new Date(),
     });
 
-    await sendVerificationEmail({ email, token, name: full_name });
+    ensureEmailConfigured();
+    enqueueJob(() => sendVerificationEmail({ email, token, name: full_name }));
 
     return res.json({ user: sanitizeUser(user), requires_verification: true });
   } catch (err) {
@@ -333,7 +334,8 @@ async function resendVerification(req, res) {
     user.email_verification_sent_at = new Date();
     await user.save();
 
-    await sendVerificationEmail({ email, token, name: user.full_name });
+    ensureEmailConfigured();
+    enqueueJob(() => sendVerificationEmail({ email, token, name: user.full_name }));
 
     return res.json({ ok: true });
   } catch (err) {
@@ -363,7 +365,8 @@ async function forgotPassword(req, res) {
     user.password_reset_requested_at = new Date();
     await user.save();
 
-    await sendPasswordResetEmail({ email, token, name: user.full_name });
+    ensureEmailConfigured();
+    enqueueJob(() => sendPasswordResetEmail({ email, token, name: user.full_name }));
 
     return res.json({ ok: true });
   } catch (err) {

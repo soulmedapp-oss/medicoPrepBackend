@@ -11,6 +11,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const WebSocket = require('ws');
+const { enqueueJob } = require('./utils/inMemoryQueue');
 const authRoutes = require('./routes/authRoutes');
 const createTestsRoutes = require('./routes/testsRoutes');
 const createDoubtsRoutes = require('./routes/doubtsRoutes');
@@ -104,6 +105,10 @@ async function sendSupportEmail({ subject, text }) {
   } catch (err) {
     console.error('Failed to send support email:', err);
   }
+}
+
+function scheduleSupportEmail(payload) {
+  enqueueJob(() => sendSupportEmail(payload));
 }
 
 function resolveCorsOrigins() {
@@ -603,7 +608,7 @@ app.use(
   createFeedbackRoutes({
     authMiddleware,
     createNotification,
-    sendSupportEmail,
+    sendSupportEmail: scheduleSupportEmail,
     broadcastFeedback,
   })
 );
