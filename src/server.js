@@ -24,6 +24,7 @@ const createNotificationsRoutes = require('./routes/notificationsRoutes');
 const createTeacherRequestsRoutes = require('./routes/teacherRequestsRoutes');
 const createUsersRoutes = require('./routes/usersRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
+const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const {
   authMiddleware,
   requireAdmin,
@@ -33,6 +34,7 @@ const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
 const ConnectionRequest = require('./models/ConnectionRequest');
+const { enqueueTutorSession } = require('./services/tutorService');
 
 const app = express();
 const server = http.createServer(app);
@@ -633,6 +635,7 @@ app.use(
     csvUpload,
     createNotification,
     broadcastUserEvent,
+    enqueueTutorSession,
   })
 );
 app.use(
@@ -698,6 +701,11 @@ app.use(
     authMiddleware,
     requireStaff,
     createNotification,
+  })
+);
+app.use(
+  createTutorSessionsRoutes({
+    authMiddleware,
   })
 );
 
