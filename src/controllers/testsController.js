@@ -91,7 +91,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
-      const filter = all === 'true' ? {} : { is_published: true, is_active: true };
+      const filter = all === 'true' ? {} : { is_published: true, is_active: { $ne: false } };
       const tests = await Test.find(filter).sort({ created_date: -1 }).lean();
       return res.json({ tests });
     } catch (err) {
@@ -106,7 +106,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
-      if (!test.is_active) {
+      if (test.is_active === false) {
         const user = await User.findById(req.userId).lean();
         if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(404).json({ error: 'Test not found' });
@@ -252,7 +252,7 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
-      if (!test.is_active) {
+      if (test.is_active === false) {
         const user = await User.findById(req.userId).lean();
         if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(404).json({ error: 'Test not found' });
