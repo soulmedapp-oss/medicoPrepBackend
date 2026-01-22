@@ -7,9 +7,10 @@ function createTestsRoutes({
   csvUpload,
   createNotification,
   broadcastUserEvent,
+  enqueueTutorSession,
 }) {
   const router = express.Router();
-  const controller = createTestsController({ createNotification, broadcastUserEvent });
+  const controller = createTestsController({ createNotification, broadcastUserEvent, enqueueTutorSession });
 
   router.get('/tests', authMiddleware, controller.listTests);
   router.get('/tests/:id', authMiddleware, controller.getTest);

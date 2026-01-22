@@ -81,7 +81,7 @@ async function updateUserAttemptStats(userId) {
   });
 }
 
-function createTestsController({ createNotification, broadcastUserEvent }) {
+function createTestsController({ createNotification, broadcastUserEvent, enqueueTutorSession }) {
   async function listTests(req, res) {
     try {
       const { all } = req.query;
@@ -846,6 +846,14 @@ function createTestsController({ createNotification, broadcastUserEvent }) {
           type: 'attempt_completed',
           data: { attemptId: attempt._id, testId: attempt.test_id },
         });
+        if (enqueueTutorSession) {
+          try {
+            await enqueueTutorSession(attempt._id);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Failed to enqueue tutor session:', err);
+          }
+        }
       }
 
       return res.json({ attempt: attempt.toObject() });
