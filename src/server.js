@@ -7,6 +7,7 @@ const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const multer = require('multer');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
@@ -186,10 +187,28 @@ app.use((req, res, next) => {
   next();
 });
 
-const uploadsDir = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+function resolveUploadsDir() {
+  const configured = process.env.UPLOADS_DIR;
+  const defaultDir = configured || path.join(__dirname, '..', 'uploads');
+  try {
+    if (!fs.existsSync(defaultDir)) {
+      fs.mkdirSync(defaultDir, { recursive: true });
+    }
+    return defaultDir;
+  } catch (err) {
+    const fallback = path.join(os.tmpdir(), 'uploads');
+    try {
+      if (!fs.existsSync(fallback)) {
+        fs.mkdirSync(fallback, { recursive: true });
+      }
+      return fallback;
+    } catch (fallbackErr) {
+      return defaultDir;
+    }
+  }
 }
+
+const uploadsDir = resolveUploadsDir();
 app.use('/uploads', express.static(uploadsDir));
 
 const uploadStorage = multer.diskStorage({
@@ -289,7 +308,7 @@ requireEnv('JWT_SECRET', JWT_SECRET);
 
 const logAppName = LOG_APP_NAME || 'SOULMED';
 const logEnvName = (LOG_ENV_NAME || process.env.NODE_ENV || 'DEV').toUpperCase();
-const logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
+let logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
 const logFilePrefix = LOG_FILE_PREFIX || `${logAppName}_LOG`;
 const maxLogFileSize = 5 * 1024 * 1024;
 const LOG_LEVELS = {
@@ -307,13 +326,27 @@ const consoleLevel = LOG_LEVELS[consoleLevelName] || LOG_LEVELS.info;
 const fileLevel = LOG_LEVELS[fileLevelName] || LOG_LEVELS.info;
 
 function ensureLogDir() {
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
+  try {
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    return true;
+  } catch (err) {
+    const fallback = path.join(os.tmpdir(), 'logs');
+    try {
+      if (!fs.existsSync(fallback)) {
+        fs.mkdirSync(fallback, { recursive: true });
+      }
+      logDir = fallback;
+      return true;
+    } catch (fallbackErr) {
+      return false;
+    }
   }
 }
 
 function getLogFilePath() {
-  ensureLogDir();
+  if (!ensureLogDir()) return null;
   const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const base = `${logFilePrefix}_${dateStamp}_${logEnvName}`;
   const files = fs.readdirSync(logDir).filter((name) =>
@@ -376,6 +409,7 @@ function writeLogEntry(entry) {
 
   try {
     const filePath = getLogFilePath();
+    if (!filePath) return;
     fs.appendFileSync(filePath, `${payload}\n`, 'utf8');
   } catch (err) {
     try {
