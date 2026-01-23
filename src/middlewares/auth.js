@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Role = require('../models/Role');
 
 const { JWT_SECRET } = process.env;
 
@@ -15,6 +16,23 @@ async function authMiddleware(req, res, next) {
     const user = await User.findById(req.userId).lean();
     if (!user || user.is_active === false) {
       return res.status(401).json({ error: 'Account is inactive' });
+    }
+    if (!Array.isArray(user.permissions) || user.permissions.length === 0) {
+      const roleNames = Array.isArray(user.roles) && user.roles.length > 0
+        ? user.roles
+        : (user.role ? [user.role] : []);
+      const normalized = roleNames
+        .map((role) => String(role || '').toLowerCase())
+        .filter(Boolean);
+      if (normalized.length > 0 && !normalized.includes('admin')) {
+        const roles = await Role.find({ name: { $in: normalized }, is_active: true }).lean();
+        const merged = roles
+          .flatMap((role) => role.permissions || [])
+          .filter(Boolean);
+        if (merged.length > 0) {
+          user.effective_permissions = Array.from(new Set(merged));
+        }
+      }
     }
     req.user = user;
     return next();
@@ -57,6 +75,8 @@ function hasPermission(user, permission) {
     if (permission === 'manage_feedback') return true;
     return false;
   }
+  if (Array.isArray(user.permissions) && user.permissions.includes(permission)) return true;
+  if (Array.isArray(user.effective_permissions) && user.effective_permissions.includes(permission)) return true;
   return false;
 }
 
