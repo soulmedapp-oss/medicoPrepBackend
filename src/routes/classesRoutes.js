@@ -12,6 +12,8 @@ function createClassesRoutes({ authMiddleware, requireStaff, createNotification 
   router.get('/classes/:id/notes', authMiddleware, controller.listClassNotes);
   router.post('/classes/:id/notes', authMiddleware, controller.createClassNote);
   router.delete('/classes/:classId/notes/:noteId', authMiddleware, controller.deleteClassNote);
+  router.get('/classes/:id/recording', authMiddleware, controller.getClassRecording);
+  router.get('/classes/:id/join', authMiddleware, controller.getClassJoinLink);
 
   return router;
 }

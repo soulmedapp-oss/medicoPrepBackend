@@ -25,15 +25,19 @@ const createTeacherRequestsRoutes = require('./routes/teacherRequestsRoutes');
 const createUsersRoutes = require('./routes/usersRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
+const createRolesRoutes = require('./routes/rolesRoutes');
+const { handleZoomWebhook } = require('./controllers/zoomController');
 const {
   authMiddleware,
   requireAdmin,
   requireStaff,
+  hasPermission,
 } = require('./middlewares/auth');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
 const ConnectionRequest = require('./models/ConnectionRequest');
+const Role = require('./models/Role');
 const { enqueueTutorSession } = require('./services/tutorService');
 
 const app = express();
@@ -149,6 +153,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
+app.post('/webhooks/zoom', express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
 app.use(express.json({ limit: '1mb' }));
 
 app.use((req, res, next) => {
@@ -246,6 +251,17 @@ const csvUpload = multer({
       file.originalname.toLowerCase().endsWith('.xlsx');
     if (!isCsv) {
       return cb(new Error('Only CSV or Excel uploads are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
+const videoUpload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 200 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('video/')) {
+      return cb(new Error('Only video uploads are allowed'));
     }
     return cb(null, true);
   },
@@ -529,6 +545,7 @@ async function connectDb() {
     autoIndex: true,
   });
   await ensureDefaultSubscriptionPlans();
+  await ensureDefaultRoles();
   // eslint-disable-next-line no-console
   console.log('MongoDB connected');
 }
@@ -623,6 +640,53 @@ async function ensureDefaultSubscriptionPlans() {
   await SubscriptionPlan.insertMany(defaults);
 }
 
+async function ensureDefaultRoles() {
+  const defaults = [
+    {
+      name: 'student',
+      description: 'Default student role',
+      permissions: [
+        'view_dashboard',
+        'view_tests',
+        'view_live_classes',
+        'view_doubts',
+        'view_progress',
+        'view_subscription',
+        'view_feedback',
+        'view_community',
+      ],
+      is_active: true,
+    },
+    {
+      name: 'teacher',
+      description: 'Default teacher role',
+      permissions: [
+        'manage_tests',
+        'manage_questions',
+        'manage_classes',
+        'manage_doubts',
+        'manage_students',
+      ],
+      is_active: true,
+    },
+    {
+      name: 'admin',
+      description: 'Default admin role',
+      permissions: [],
+      is_active: true,
+    },
+  ];
+  await Promise.all(
+    defaults.map((role) =>
+      Role.updateOne(
+        { name: role.name },
+        { $setOnInsert: role },
+        { upsert: true }
+      )
+    )
+  );
+}
+
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
@@ -632,6 +696,7 @@ app.use(
   createTestsRoutes({
     authMiddleware,
     requireStaff,
+    hasPermission,
     csvUpload,
     createNotification,
     broadcastUserEvent,
@@ -704,12 +769,36 @@ app.use(
   })
 );
 app.use(
+  createRolesRoutes({
+    authMiddleware,
+    requireAdmin,
+  })
+);
+app.use(
   createTutorSessionsRoutes({
     authMiddleware,
   })
 );
 
 app.post('/uploads/questions', authMiddleware, requireStaff, upload.single('file'), (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'File is required' });
+  }
+  const url = `/uploads/${file.filename}`;
+  return res.json({ url });
+});
+
+app.post('/uploads/classes', authMiddleware, requireStaff, upload.single('file'), (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'File is required' });
+  }
+  const url = `/uploads/${file.filename}`;
+  return res.json({ url });
+});
+
+app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) => {
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'File is required' });

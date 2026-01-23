@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
+const Role = require('../models/Role');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
@@ -54,6 +55,50 @@ function ensureEmailConfigured() {
 
 function signToken(userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
+}
+
+async function attachEffectivePermissions(payload) {
+  if (!payload) return payload;
+  if (Array.isArray(payload.permissions) && payload.permissions.length > 0) {
+    return payload;
+  }
+  const roleNames = Array.isArray(payload.roles) && payload.roles.length > 0
+    ? payload.roles
+    : (payload.role ? [payload.role] : []);
+  const normalized = roleNames
+    .map((role) => String(role || '').toLowerCase())
+    .filter(Boolean);
+  if (normalized.length === 0 || normalized.includes('admin')) {
+    return payload;
+  }
+  const roles = await Role.find({ name: { $in: normalized }, is_active: true }).lean();
+  const merged = roles
+    .flatMap((role) => role.permissions || [])
+    .filter(Boolean);
+  if (merged.length > 0) {
+    payload.effective_permissions = Array.from(new Set(merged));
+  }
+  return payload;
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const realIp = req.headers['x-real-ip'];
+  const candidate = (Array.isArray(forwarded) ? forwarded[0] : String(forwarded || ''))
+    .split(',')[0]
+    .trim() || String(realIp || '').trim() || req.ip || '';
+  return candidate.replace(/^::ffff:/, '');
+}
+
+async function updateLoginMeta(userId, req) {
+  const ip = getClientIp(req);
+  const userAgent = String(req.headers['user-agent'] || '');
+  const updates = {
+    last_login_date: new Date(),
+    last_login_ip: ip || undefined,
+    last_login_user_agent: userAgent || undefined,
+  };
+  await User.findByIdAndUpdate(userId, { $set: updates }).catch(() => {});
 }
 
 function createEmailVerificationToken() {
@@ -251,7 +296,9 @@ async function login(req, res) {
     }
 
     const token = signToken(user.id);
-    return res.json({ user: sanitizeUser(user), token });
+    const payload = await attachEffectivePermissions(sanitizeUser(user));
+    enqueueJob(() => updateLoginMeta(user.id, req));
+    return res.json({ user: payload, token });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Login failed' });
@@ -459,7 +506,9 @@ async function getMe(req, res) {
     if (!user || user.is_active === false) {
       return res.status(404).json({ error: 'User not found' });
     }
-    return res.json({ user: sanitizeUser(user) });
+    const payload = sanitizeUser(user);
+    await attachEffectivePermissions(payload);
+    return res.json({ user: payload });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to load user' });
@@ -478,6 +527,7 @@ async function updateMe(req, res) {
       'last_login_date',
       'subscription_plan',
       'role',
+      'roles',
       'permissions',
       'admin_status',
       'is_teacher',
@@ -526,12 +576,12 @@ async function googleAuth(req, res) {
       audience: GOOGLE_CLIENT_ID,
     });
 
-    const payload = ticket.getPayload();
-    if (!payload) {
+    const googlePayload = ticket.getPayload();
+    if (!googlePayload) {
       return res.status(401).json({ error: 'Invalid Google token' });
     }
 
-    const { sub: googleId, email, name, picture } = payload;
+    const { sub: googleId, email, name, picture } = googlePayload;
     if (!email) {
       return res.status(400).json({ error: 'Google account has no email' });
     }
@@ -562,7 +612,9 @@ async function googleAuth(req, res) {
     }
 
     const token = signToken(user.id);
-    return res.json({ user: sanitizeUser(user), token });
+    const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
+    enqueueJob(() => updateLoginMeta(user.id, req));
+    return res.json({ user: responsePayload, token });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(err);

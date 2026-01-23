@@ -3,6 +3,21 @@ const User = require('../models/User');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 
+function normalizeRoles(input) {
+  if (!Array.isArray(input)) return [];
+  const roles = input
+    .map((role) => String(role || '').toLowerCase().trim())
+    .filter(Boolean);
+  return Array.from(new Set(roles));
+}
+
+function derivePrimaryRole(roles, fallback = 'student') {
+  if (roles.includes('admin')) return 'admin';
+  if (roles.includes('teacher')) return 'teacher';
+  if (roles.includes('student')) return 'student';
+  return fallback;
+}
+
 function createUsersController() {
   async function listUsers(req, res) {
     try {
@@ -21,7 +36,7 @@ function createUsersController() {
         }
         filter.is_active = true;
       } else if (role) {
-        filter.role = role;
+        filter.$or = [{ role }, { roles: role }];
       }
       const users = await User.find(filter).sort({ created_date: -1 }).lean();
       return res.json({ users });
@@ -52,10 +67,13 @@ function createUsersController() {
         return res.status(409).json({ error: 'Email already exists' });
       }
 
+      const normalizedRoles = normalizeRoles(data.roles);
+      const primaryRole = derivePrimaryRole(normalizedRoles, data.role || 'student');
       const userPayload = {
         email: data.email,
         full_name: data.full_name,
-        role: data.role || 'student',
+        role: primaryRole,
+        roles: normalizedRoles,
         permissions: data.permissions || [],
         admin_status: data.admin_status || 'active',
         subscription_plan: data.subscription_plan || 'free',
@@ -88,6 +106,7 @@ function createUsersController() {
         'email',
         'full_name',
         'role',
+        'roles',
         'permissions',
         'admin_status',
         'subscription_plan',
@@ -113,6 +132,12 @@ function createUsersController() {
       }
       if (payload.phone && !isValidPhone(String(payload.phone))) {
         return res.status(400).json({ error: 'Invalid phone number' });
+      }
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'roles')) {
+        const normalizedRoles = normalizeRoles(payload.roles);
+        payload.roles = normalizedRoles;
+        payload.role = derivePrimaryRole(normalizedRoles, payload.role || 'student');
       }
 
       if (updates.password) {

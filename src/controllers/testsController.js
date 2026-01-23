@@ -6,6 +6,7 @@ const Question = require('../models/Question');
 const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { hasPermission } = require('../middlewares/auth');
 
 const PLAN_RANKS = {
   free: 0,
@@ -86,8 +87,9 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     try {
       const { all } = req.query;
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        const user = req.user || await User.findById(req.userId).lean();
+        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
@@ -107,14 +109,16 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not found' });
       }
       if (test.is_active === false) {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        const user = req.user || await User.findById(req.userId).lean();
+        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(404).json({ error: 'Test not found' });
         }
       }
       if (!test.is_published) {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        const user = req.user || await User.findById(req.userId).lean();
+        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
@@ -253,14 +257,15 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not found' });
       }
       if (test.is_active === false) {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        const user = req.user || await User.findById(req.userId).lean();
+        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(404).json({ error: 'Test not found' });
         }
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
+      const user = req.user || await User.findById(req.userId).lean();
+      const isStaff = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions') || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
       const filter = { test_id: req.params.id };
 
       if (!isStaff) {
@@ -490,6 +495,24 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load question bank' });
+    }
+  }
+
+  async function listAllQuestions(req, res) {
+    try {
+      const { subject, difficulty, search, limit } = req.query;
+      const filter = {};
+      if (subject) filter.subject = subject;
+      if (difficulty) filter.difficulty = difficulty;
+      if (search) {
+        filter.question_text = new RegExp(String(search), 'i');
+      }
+      const max = Number(limit) || 500;
+      const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
+      return res.json({ questions });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to load questions' });
     }
   }
 
@@ -738,8 +761,9 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        const user = req.user || await User.findById(req.userId).lean();
+        const canManageTests = hasPermission(user, 'manage_tests');
+        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
@@ -875,6 +899,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     assignQuestions,
     unassignQuestions,
     listQuestionBank,
+    listAllQuestions,
     createQuestionBank,
     bulkCsvQuestionBank,
     updateQuestionBank,

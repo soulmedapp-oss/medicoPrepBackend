@@ -30,7 +30,7 @@ function createTutorSessionsController() {
       const session = await enqueueTutorSession(attempt._id);
       return res.status(202).json({ session });
     } catch (err) {
-      return res.status(500).json({ error: err.message || 'Failed to start tutor session' });
+      return res.status(500).json({ error: 'Failed to start tutor session. Check server configuration.' });
     }
   }
 
@@ -71,7 +71,7 @@ function createTutorSessionsController() {
       const response = await requestChatResponse(message.trim(), context);
       return res.json({ reply: response });
     } catch (err) {
-      return res.status(500).json({ error: err.message || 'Tutor chat failed' });
+      return res.status(500).json({ error: 'Tutor chat failed. Check server configuration.' });
     }
   }
 
