@@ -252,6 +252,8 @@ async function register(req, res) {
       email,
       passwordHash,
       full_name,
+      role: 'student',
+      roles: ['student'],
       email_verified: false,
       email_verification_token: tokenHash,
       email_verification_expires: expiresAt,
@@ -261,7 +263,11 @@ async function register(req, res) {
     ensureEmailConfigured();
     enqueueJob(() => sendVerificationEmail({ email, token, name: full_name }));
 
-    return res.json({ user: sanitizeUser(user), requires_verification: true });
+    return res.json({
+      user: sanitizeUser(user),
+      requires_verification: true,
+      message: 'Verification email has been sent.',
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Registration failed' });
