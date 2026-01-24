@@ -44,6 +44,23 @@ async function handleZoomWebhook(req, res) {
       }
     }
 
+    if (payload?.event === 'recording.started') {
+      const meeting = payload?.payload?.object || {};
+      const meetingId = meeting?.id ? String(meeting.id) : '';
+      const meetingUuid = meeting?.uuid ? String(meeting.uuid) : '';
+      const update = {
+        zoom_meeting_id: meetingId || undefined,
+        zoom_meeting_uuid: meetingUuid || undefined,
+        zoom_recording_started_at: meeting?.recording_start || meeting?.start_time || new Date().toISOString(),
+      };
+      const byMeetingId = meetingId
+        ? await LiveClass.findOneAndUpdate({ zoom_meeting_id: meetingId }, { $set: update }, { new: true })
+        : null;
+      if (!byMeetingId && meetingUuid) {
+        await LiveClass.findOneAndUpdate({ zoom_meeting_uuid: meetingUuid }, { $set: update });
+      }
+    }
+
     if (payload?.event === 'recording.completed') {
       const meeting = payload?.payload?.object || {};
       const meetingId = meeting?.id ? String(meeting.id) : '';

@@ -6,9 +6,9 @@ const cors = require('cors');
 const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const path = require('path');
-const fs = require('fs');
 const os = require('os');
 const multer = require('multer');
+const fs = require('fs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const WebSocket = require('ws');
@@ -23,9 +23,12 @@ const createSubscriptionsRoutes = require('./routes/subscriptionsRoutes');
 const createNotificationsRoutes = require('./routes/notificationsRoutes');
 const createTeacherRequestsRoutes = require('./routes/teacherRequestsRoutes');
 const createUsersRoutes = require('./routes/usersRoutes');
+const createVideosRoutes = require('./routes/videosRoutes');
+const createVideoProgressRoutes = require('./routes/videoProgressRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const createRolesRoutes = require('./routes/rolesRoutes');
+const createSettingsRoutes = require('./routes/settingsRoutes');
 const { handleZoomWebhook } = require('./controllers/zoomController');
 const {
   authMiddleware,
@@ -251,6 +254,24 @@ const csvUpload = multer({
       file.originalname.toLowerCase().endsWith('.xlsx');
     if (!isCsv) {
       return cb(new Error('Only CSV or Excel uploads are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
+const transcriptUpload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    const ok =
+      file.mimetype === 'text/vtt' ||
+      file.mimetype === 'text/plain' ||
+      name.endsWith('.vtt') ||
+      name.endsWith('.srt') ||
+      name.endsWith('.txt');
+    if (!ok) {
+      return cb(new Error('Only VTT, SRT, or TXT files are allowed'));
     }
     return cb(null, true);
   },
@@ -769,6 +790,12 @@ app.use(
   })
 );
 app.use(
+  createVideosRoutes({
+    authMiddleware,
+    requireStaff,
+  })
+);
+app.use(
   createRolesRoutes({
     authMiddleware,
     requireAdmin,
@@ -777,6 +804,17 @@ app.use(
 app.use(
   createTutorSessionsRoutes({
     authMiddleware,
+  })
+);
+app.use(
+  createVideoProgressRoutes({
+    authMiddleware,
+  })
+);
+app.use(
+  createSettingsRoutes({
+    authMiddleware,
+    requireAdmin,
   })
 );
 
@@ -805,6 +843,41 @@ app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single
   }
   const url = `/uploads/${file.filename}`;
   return res.json({ url });
+});
+
+app.post('/uploads/videos', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'File is required' });
+  }
+  const url = `/uploads/${file.filename}`;
+  return res.json({ url });
+});
+
+app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.single('file'), (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'File is required' });
+  }
+  const url = `/uploads/${file.filename}`;
+  let text = '';
+  try {
+    const raw = fs.readFileSync(file.path, 'utf8');
+    text = raw
+      .replace(/\uFEFF/g, '')
+      .replace(/^\d+\s*$/gm, '')
+      .replace(/\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*/g, '')
+      .replace(/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}.*/g, '')
+      .replace(/WEBVTT/g, '')
+      .replace(/\r/g, '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(' ');
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to read transcript' });
+  }
+  return res.json({ url, text });
 });
 
 app.post('/uploads/doubts', authMiddleware, upload.single('file'), (req, res) => {

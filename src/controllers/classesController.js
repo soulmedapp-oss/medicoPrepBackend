@@ -3,6 +3,8 @@ const LiveClassNote = require('../models/LiveClassNote');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { getZoomAccessToken, pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
+const { getOpenAiKey } = require('../services/settingsService');
+const { requestClassSummary, requestClassChat } = require('../services/tutorService');
 const { sendEmail } = require('../services/emailService');
 
 function buildClassInviteIcs(liveClass) {
@@ -136,6 +138,12 @@ function createClassesController({ createNotification }) {
       if (data.recording_url && !isValidTextLength(String(data.recording_url), 5, 500)) {
         return res.status(400).json({ error: 'recording_url must be between 5 and 500 characters' });
       }
+      if (data.transcript_url && !isValidTextLength(String(data.transcript_url), 5, 500)) {
+        return res.status(400).json({ error: 'transcript_url must be between 5 and 500 characters' });
+      }
+      if (data.transcript_text && !isValidTextLength(String(data.transcript_text), 5, 200000)) {
+        return res.status(400).json({ error: 'transcript_text is too long' });
+      }
       if (data.zoom_meeting_id && !isValidTextLength(String(data.zoom_meeting_id), 3, 120)) {
         return res.status(400).json({ error: 'zoom_meeting_id must be between 3 and 120 characters' });
       }
@@ -163,7 +171,7 @@ function createClassesController({ createNotification }) {
           agenda: data.description || '',
           settings: {
             join_before_host: false,
-            waiting_room: true,
+            waiting_room: false,
             approval_type: 2,
             auto_recording: 'cloud',
           },
@@ -181,6 +189,8 @@ function createClassesController({ createNotification }) {
         meeting_link: data.meeting_link || '',
         youtube_url: data.youtube_url || '',
         recording_url: data.recording_url || '',
+        transcript_url: data.transcript_url || '',
+        transcript_text: data.transcript_text || '',
         thumbnail_url: data.thumbnail_url || '',
         zoom_meeting_id: zoomMeeting?.id ? String(zoomMeeting.id) : (data.zoom_meeting_id || ''),
         zoom_meeting_uuid: zoomMeeting?.uuid ? String(zoomMeeting.uuid) : (data.zoom_meeting_uuid || ''),
@@ -252,6 +262,12 @@ function createClassesController({ createNotification }) {
       }
       if (updates.recording_url && !isValidTextLength(String(updates.recording_url), 5, 500)) {
         return res.status(400).json({ error: 'recording_url must be between 5 and 500 characters' });
+      }
+      if (updates.transcript_url && !isValidTextLength(String(updates.transcript_url), 5, 500)) {
+        return res.status(400).json({ error: 'transcript_url must be between 5 and 500 characters' });
+      }
+      if (updates.transcript_text && !isValidTextLength(String(updates.transcript_text), 5, 200000)) {
+        return res.status(400).json({ error: 'transcript_text is too long' });
       }
       if (updates.zoom_meeting_id && !isValidTextLength(String(updates.zoom_meeting_id), 3, 120)) {
         return res.status(400).json({ error: 'zoom_meeting_id must be between 3 and 120 characters' });
@@ -400,6 +416,72 @@ function createClassesController({ createNotification }) {
     }
   }
 
+  async function getClassSummary(req, res) {
+    try {
+      const { value } = await getOpenAiKey();
+      if (!value) {
+        return res.status(400).json({ error: 'Tutor service is not configured' });
+      }
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+
+      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
+      if (!isStaff) {
+        if (!liveClass.is_published || liveClass.is_active === false) {
+          return res.status(404).json({ error: 'Class not found' });
+        }
+        const user = await User.findById(req.userId).lean();
+        const planName = user?.subscription_plan || 'free';
+        if (!canAccessClass(liveClass, planName)) {
+          return res.status(403).json({ error: 'Upgrade required' });
+        }
+      }
+
+      const summary = await requestClassSummary(liveClass);
+      return res.json({ summary });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to generate summary' });
+    }
+  }
+
+  async function chatAboutClass(req, res) {
+    try {
+      const { value } = await getOpenAiKey();
+      if (!value) {
+        return res.status(400).json({ error: 'Tutor service is not configured' });
+      }
+      const { message } = req.body || {};
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: 'message is required' });
+      }
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+
+      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
+      if (!isStaff) {
+        if (!liveClass.is_published || liveClass.is_active === false) {
+          return res.status(404).json({ error: 'Class not found' });
+        }
+        const user = await User.findById(req.userId).lean();
+        const planName = user?.subscription_plan || 'free';
+        if (!canAccessClass(liveClass, planName)) {
+          return res.status(403).json({ error: 'Upgrade required' });
+        }
+      }
+
+      const answer = await requestClassChat(message.trim(), liveClass);
+      return res.json({ answer });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to generate response' });
+    }
+  }
+
   async function createClassNote(req, res) {
     try {
       const { text, timestamp } = req.body || {};
@@ -453,6 +535,8 @@ function createClassesController({ createNotification }) {
     deleteClassNote,
     getClassRecording,
     getClassJoinLink,
+    getClassSummary,
+    chatAboutClass,
   };
 }
 

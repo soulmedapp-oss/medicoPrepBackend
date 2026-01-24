@@ -14,6 +14,8 @@ function createClassesRoutes({ authMiddleware, requireStaff, createNotification 
   router.delete('/classes/:classId/notes/:noteId', authMiddleware, controller.deleteClassNote);
   router.get('/classes/:id/recording', authMiddleware, controller.getClassRecording);
   router.get('/classes/:id/join', authMiddleware, controller.getClassJoinLink);
+  router.get('/classes/:id/ai-summary', authMiddleware, controller.getClassSummary);
+  router.post('/classes/:id/ai-chat', authMiddleware, controller.chatAboutClass);
 
   return router;
 }

@@ -5,22 +5,31 @@ const Question = require('../models/Question');
 const { enqueueJob } = require('../utils/inMemoryQueue');
 
 const {
-  OPENAI_API_KEY,
   TUTOR_MODEL = 'gpt-4o-mini',
   TUTOR_MAX_TOKENS = '600',
   TUTOR_BATCH_SIZE = '5',
+  VIDEO_AI_MODEL,
+  VIDEO_AI_MAX_TOKENS = '400',
+  VIDEO_AI_CHAT_MAX_TOKENS = '600',
 } = process.env;
+const { getOpenAiKey } = require('./settingsService');
 
 const maxTokens = Math.max(200, Number(TUTOR_MAX_TOKENS) || 600);
 const batchSize = Math.min(10, Math.max(1, Number(TUTOR_BATCH_SIZE) || 5));
+const videoModel = VIDEO_AI_MODEL || TUTOR_MODEL;
+const videoSummaryMaxTokens = Math.max(150, Number(VIDEO_AI_MAX_TOKENS) || 400);
+const videoChatMaxTokens = Math.max(200, Number(VIDEO_AI_CHAT_MAX_TOKENS) || 600);
 
 let client;
-function getOpenAiClient() {
-  if (!OPENAI_API_KEY) {
+let clientKey;
+async function getOpenAiClient() {
+  const { value } = await getOpenAiKey();
+  if (!value) {
     throw new Error('OPENAI_API_KEY is not configured');
   }
-  if (!client) {
-    client = new OpenAI({ apiKey: OPENAI_API_KEY });
+  if (!client || clientKey !== value) {
+    client = new OpenAI({ apiKey: value });
+    clientKey = value;
   }
   return client;
 }
@@ -53,7 +62,7 @@ function buildFeedbackPrompt(batch) {
 }
 
 async function requestBatchFeedback(batch) {
-  const openai = getOpenAiClient();
+  const openai = await getOpenAiClient();
   const response = await openai.chat.completions.create({
     model: TUTOR_MODEL,
     temperature: 0.2,
@@ -77,7 +86,7 @@ async function requestBatchFeedback(batch) {
 }
 
 async function requestSummary(items) {
-  const openai = getOpenAiClient();
+  const openai = await getOpenAiClient();
   const payload = items.map((item) => ({
     concept_gap: item.concept_gap,
     next_step: item.next_step,
@@ -102,7 +111,7 @@ async function requestSummary(items) {
 }
 
 async function requestChatResponse(message, context) {
-  const openai = getOpenAiClient();
+  const openai = await getOpenAiClient();
   const contextBlock = context
     ? [
       'Context:',
@@ -120,6 +129,56 @@ async function requestChatResponse(message, context) {
     messages: [
       { role: 'system', content: 'You are a concise medical tutor. Answer clearly in 3-6 sentences.' },
       { role: 'user', content: [contextBlock, message].filter(Boolean).join('\n\n') },
+    ],
+  });
+  return response.choices?.[0]?.message?.content?.trim() || '';
+}
+
+function buildVideoContext(video) {
+  return [
+    `Title: ${video.title || ''}`,
+    `Subject: ${video.subject || ''}`,
+    `Teacher: ${video.teacher_name || ''}`,
+    video.subtopic ? `Subtopic: ${video.subtopic}` : '',
+    video.description ? `Description: ${video.description}` : '',
+    video.transcript_text ? `Transcript:\n${video.transcript_text}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function requestVideoSummary(video) {
+  const openai = await getOpenAiClient();
+  const context = buildVideoContext(video);
+  const response = await openai.chat.completions.create({
+    model: videoModel,
+    temperature: 0.2,
+    max_tokens: Math.min(videoSummaryMaxTokens, 700),
+    messages: [
+      { role: 'system', content: 'You are a concise medical tutor.' },
+      {
+        role: 'user',
+        content: [
+          'Provide a short summary of this video in 4-6 sentences.',
+          'Base it only on the provided context (no guessing beyond it).',
+          'If context is limited, say so briefly.',
+          '',
+          context,
+        ].join('\n'),
+      },
+    ],
+  });
+  return response.choices?.[0]?.message?.content?.trim() || '';
+}
+
+async function requestVideoChat(message, video) {
+  const openai = await getOpenAiClient();
+  const context = buildVideoContext(video);
+  const response = await openai.chat.completions.create({
+    model: videoModel,
+    temperature: 0.2,
+    max_tokens: Math.min(videoChatMaxTokens, 800),
+    messages: [
+      { role: 'system', content: 'You are a helpful medical tutor. Answer concisely in 3-6 sentences.' },
+      { role: 'user', content: [context, message].filter(Boolean).join('\n\n') },
     ],
   });
   return response.choices?.[0]?.message?.content?.trim() || '';
@@ -211,4 +270,61 @@ async function enqueueTutorSession(attemptId) {
   return session;
 }
 
-module.exports = { enqueueTutorSession, requestChatResponse };
+function buildClassContext(liveClass) {
+  return [
+    `Title: ${liveClass.title || ''}`,
+    `Subject: ${liveClass.subject || ''}`,
+    `Teacher: ${liveClass.teacher_name || ''}`,
+    liveClass.topic_covered ? `Topic covered: ${liveClass.topic_covered}` : '',
+    liveClass.description ? `Description: ${liveClass.description}` : '',
+    liveClass.transcript_text ? `Transcript:\n${liveClass.transcript_text}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function requestClassSummary(liveClass) {
+  const openai = await getOpenAiClient();
+  const context = buildClassContext(liveClass);
+  const response = await openai.chat.completions.create({
+    model: videoModel,
+    temperature: 0.2,
+    max_tokens: Math.min(videoSummaryMaxTokens, 700),
+    messages: [
+      { role: 'system', content: 'You are a concise medical tutor.' },
+      {
+        role: 'user',
+        content: [
+          'Provide a short summary of this class recording in 4-6 sentences.',
+          'Base it only on the provided context (no guessing beyond it).',
+          'If context is limited, say so briefly.',
+          '',
+          context,
+        ].join('\n'),
+      },
+    ],
+  });
+  return response.choices?.[0]?.message?.content?.trim() || '';
+}
+
+async function requestClassChat(message, liveClass) {
+  const openai = await getOpenAiClient();
+  const context = buildClassContext(liveClass);
+  const response = await openai.chat.completions.create({
+    model: videoModel,
+    temperature: 0.2,
+    max_tokens: Math.min(videoChatMaxTokens, 800),
+    messages: [
+      { role: 'system', content: 'You are a helpful medical tutor. Answer concisely in 3-6 sentences.' },
+      { role: 'user', content: [context, message].filter(Boolean).join('\n\n') },
+    ],
+  });
+  return response.choices?.[0]?.message?.content?.trim() || '';
+}
+
+module.exports = {
+  enqueueTutorSession,
+  requestChatResponse,
+  requestVideoSummary,
+  requestVideoChat,
+  requestClassSummary,
+  requestClassChat,
+};
