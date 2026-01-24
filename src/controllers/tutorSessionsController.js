@@ -2,6 +2,7 @@ const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const TutorSession = require('../models/TutorSession');
 const { enqueueTutorSession, requestChatResponse } = require('../services/tutorService');
+const { getOpenAiKey } = require('../services/settingsService');
 
 async function ensureAccess(req, attempt) {
   if (String(attempt.user_id) === String(req.userId)) return true;
@@ -12,7 +13,8 @@ async function ensureAccess(req, attempt) {
 function createTutorSessionsController() {
   async function requestTutorSession(req, res) {
     try {
-      if (!process.env.OPENAI_API_KEY) {
+      const { value } = await getOpenAiKey();
+      if (!value) {
         return res.status(503).json({ error: 'Tutor service is not configured' });
       }
       const attempt = await TestAttempt.findById(req.params.id).lean();
@@ -61,7 +63,8 @@ function createTutorSessionsController() {
 
   async function chatWithTutor(req, res) {
     try {
-      if (!process.env.OPENAI_API_KEY) {
+      const { value } = await getOpenAiKey();
+      if (!value) {
         return res.status(503).json({ error: 'Tutor service is not configured' });
       }
       const { message, context } = req.body || {};
