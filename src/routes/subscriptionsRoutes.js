@@ -27,6 +27,7 @@ function createSubscriptionsRoutes({
   router.post('/subscriptions', authMiddleware, controller.createSubscription);
   router.patch('/subscriptions/:id', authMiddleware, controller.updateSubscription);
   router.delete('/subscriptions/:id', authMiddleware, controller.deleteSubscription);
+  router.post('/subscriptions/:id/extend', authMiddleware, requireAdmin, controller.extendSubscription);
 
   return router;
 }

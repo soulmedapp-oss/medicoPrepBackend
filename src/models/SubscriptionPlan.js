@@ -20,6 +20,9 @@ const subscriptionPlanSchema = new mongoose.Schema(
     is_popular: { type: Boolean, default: false },
     is_active: { type: Boolean, default: true },
     sort_order: { type: Number, default: 0 },
+    duration_value: { type: Number, default: 1 },
+    duration_unit: { type: String, default: 'months' },
+    is_lifetime: { type: Boolean, default: false },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

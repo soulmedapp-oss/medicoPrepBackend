@@ -1,6 +1,7 @@
 const SubscriptionPlan = require('../models/SubscriptionPlan');
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
+const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
 
 function createSubscriptionsController({
   createNotification,
@@ -144,10 +145,7 @@ function createSubscriptionsController({
       }
 
       const startDate = data.start_date ? new Date(data.start_date) : new Date();
-      const endDate = data.end_date ? new Date(data.end_date) : new Date(startDate);
-      if (!data.end_date) {
-        endDate.setMonth(endDate.getMonth() + 1);
-      }
+      const endDate = data.end_date ? new Date(data.end_date) : computeSubscriptionEndDate(plan, startDate);
 
       const subscription = await Subscription.create({
         user_id: user._id,
@@ -156,11 +154,18 @@ function createSubscriptionsController({
         plan: data.plan,
         status: data.status || 'active',
         start_date: startDate,
-        end_date: endDate,
+        end_date: endDate || null,
       });
 
       if (subscription.status === 'active') {
-        await User.findByIdAndUpdate(user._id, { $set: { subscription_plan: data.plan } });
+        await User.findByIdAndUpdate(user._id, {
+          $set: {
+            subscription_plan: data.plan,
+            subscription_status: subscription.status,
+            subscription_start_date: startDate,
+            subscription_end_date: endDate || null,
+          },
+        });
         await createNotification({
           userEmail: user.email,
           title: 'Subscription activated',
@@ -199,9 +204,14 @@ function createSubscriptionsController({
 
       await subscription.save();
 
-      if (subscription.status === 'active') {
-        await User.findByIdAndUpdate(subscription.user_id, { $set: { subscription_plan: subscription.plan } });
-      }
+      await User.findByIdAndUpdate(subscription.user_id, {
+        $set: {
+          subscription_plan: subscription.status === 'active' ? subscription.plan : 'free',
+          subscription_status: subscription.status,
+          subscription_start_date: subscription.start_date,
+          subscription_end_date: subscription.end_date || null,
+        },
+      });
 
       return res.json({ subscription: subscription.toObject() });
     } catch (err) {
@@ -231,6 +241,43 @@ function createSubscriptionsController({
     }
   }
 
+  async function extendSubscription(req, res) {
+    try {
+      const { extend_days } = req.body || {};
+      const days = Number(extend_days);
+      if (!days || Number.isNaN(days) || days <= 0) {
+        return res.status(400).json({ error: 'extend_days must be a positive number' });
+      }
+      const user = await User.findById(req.userId).lean();
+      if (!user || user.role !== 'admin') {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const subscription = await Subscription.findById(req.params.id);
+      if (!subscription) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+      const base = subscription.end_date ? new Date(subscription.end_date) : new Date();
+      base.setDate(base.getDate() + days);
+      subscription.end_date = base;
+      subscription.status = 'active';
+      await subscription.save();
+
+      await User.findByIdAndUpdate(subscription.user_id, {
+        $set: {
+          subscription_plan: subscription.plan,
+          subscription_status: subscription.status,
+          subscription_start_date: subscription.start_date,
+          subscription_end_date: subscription.end_date,
+        },
+      });
+
+      return res.json({ subscription: subscription.toObject() });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to extend subscription' });
+    }
+  }
+
   return {
     listPlans,
     listAllPlans,
@@ -241,6 +288,7 @@ function createSubscriptionsController({
     createSubscription,
     updateSubscription,
     deleteSubscription,
+    extendSubscription,
   };
 }
 

@@ -8,7 +8,7 @@ const subscriptionSchema = new mongoose.Schema(
     plan: { type: String, required: true },
     status: { type: String, default: 'active' },
     start_date: { type: Date, required: true },
-    end_date: { type: Date, required: true },
+    end_date: { type: Date },
     is_active: { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }

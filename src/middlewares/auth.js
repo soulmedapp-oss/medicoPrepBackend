@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Role = require('../models/Role');
+const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 
 const { JWT_SECRET } = process.env;
 
@@ -13,10 +14,11 @@ async function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.userId = payload.sub;
-    const user = await User.findById(req.userId).lean();
+    let user = await User.findById(req.userId).lean();
     if (!user || user.is_active === false) {
       return res.status(401).json({ error: 'Account is inactive' });
     }
+    user = await expireSubscriptionIfNeeded(user);
     if (!Array.isArray(user.permissions) || user.permissions.length === 0) {
       const roleNames = Array.isArray(user.roles) && user.roles.length > 0
         ? user.roles
