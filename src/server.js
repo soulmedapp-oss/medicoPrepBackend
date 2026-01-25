@@ -29,7 +29,10 @@ const createClassesRoutes = require('./routes/classesRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const createRolesRoutes = require('./routes/rolesRoutes');
 const createSettingsRoutes = require('./routes/settingsRoutes');
+const createPaymentsRoutes = require('./routes/paymentsRoutes');
+const createCouponsRoutes = require('./routes/couponsRoutes');
 const { handleZoomWebhook } = require('./controllers/zoomController');
+const { createPaymentsController } = require('./controllers/paymentsController');
 const {
   authMiddleware,
   requireAdmin,
@@ -157,6 +160,11 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 app.post('/webhooks/zoom', express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
+const paymentsController = createPaymentsController();
+app.get('/webhooks/razorpay', (req, res) => {
+  res.json({ ok: true });
+});
+app.post('/webhooks/razorpay', express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
 app.use(express.json({ limit: '1mb' }));
 
 app.use((req, res, next) => {
@@ -601,6 +609,9 @@ async function ensureDefaultSubscriptionPlans() {
       display_name: 'Basic',
       description: 'Unlock premium tests and live classes.',
       price: 999,
+      duration_value: 1,
+      duration_unit: 'months',
+      is_lifetime: false,
       video_hours: 50,
       live_classes_per_month: '5',
       practice_questions: '500+',
@@ -621,6 +632,9 @@ async function ensureDefaultSubscriptionPlans() {
       display_name: 'Premium',
       description: 'Advanced analytics, mentoring, and priority support.',
       price: 2499,
+      duration_value: 1,
+      duration_unit: 'months',
+      is_lifetime: false,
       video_hours: 150,
       live_classes_per_month: 'Unlimited',
       practice_questions: '2000+',
@@ -641,6 +655,9 @@ async function ensureDefaultSubscriptionPlans() {
       display_name: 'Ultimate',
       description: 'Dedicated mentor with full access.',
       price: 4999,
+      duration_value: 1,
+      duration_unit: 'months',
+      is_lifetime: false,
       video_hours: 300,
       live_classes_per_month: 'Unlimited',
       practice_questions: '5000+',
@@ -670,9 +687,11 @@ async function ensureDefaultRoles() {
         'view_dashboard',
         'view_tests',
         'view_live_classes',
+        'view_videos',
         'view_doubts',
         'view_progress',
         'view_subscription',
+        'view_payments',
         'view_feedback',
         'view_community',
       ],
@@ -698,13 +717,14 @@ async function ensureDefaultRoles() {
     },
   ];
   await Promise.all(
-    defaults.map((role) =>
-      Role.updateOne(
-        { name: role.name },
-        { $setOnInsert: role },
-        { upsert: true }
-      )
-    )
+    defaults.map((role) => {
+      const { permissions, ...roleBase } = role;
+      const update = { $setOnInsert: roleBase };
+      if (role.permissions && role.permissions.length > 0) {
+        update.$addToSet = { permissions: { $each: role.permissions } };
+      }
+      return Role.updateOne({ name: role.name }, update, { upsert: true });
+    })
   );
 }
 
@@ -797,6 +817,18 @@ app.use(
 );
 app.use(
   createRolesRoutes({
+    authMiddleware,
+    requireAdmin,
+  })
+);
+app.use(
+  createPaymentsRoutes({
+    authMiddleware,
+    requireAdmin,
+  })
+);
+app.use(
+  createCouponsRoutes({
     authMiddleware,
     requireAdmin,
   })

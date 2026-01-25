@@ -5,6 +5,7 @@ const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const Role = require('../models/Role');
+const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
@@ -301,8 +302,9 @@ async function login(req, res) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    const updatedUser = await expireSubscriptionIfNeeded(user);
     const token = signToken(user.id);
-    const payload = await attachEffectivePermissions(sanitizeUser(user));
+    const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
   } catch (err) {
@@ -512,7 +514,8 @@ async function getMe(req, res) {
     if (!user || user.is_active === false) {
       return res.status(404).json({ error: 'User not found' });
     }
-    const payload = sanitizeUser(user);
+    const refreshed = await expireSubscriptionIfNeeded(user);
+    const payload = sanitizeUser(refreshed || user);
     await attachEffectivePermissions(payload);
     return res.json({ user: payload });
   } catch (err) {
