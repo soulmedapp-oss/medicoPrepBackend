@@ -96,6 +96,7 @@ async function updateLoginMeta(userId, req) {
   const userAgent = String(req.headers['user-agent'] || '');
   const updates = {
     last_login_date: new Date(),
+    last_seen_date: new Date(),
     last_login_ip: ip || undefined,
     last_login_user_agent: userAgent || undefined,
   };
@@ -534,6 +535,7 @@ async function updateMe(req, res) {
       'target_exam',
       'profile_image',
       'last_login_date',
+      'last_seen_date',
       'subscription_plan',
       'role',
       'roles',

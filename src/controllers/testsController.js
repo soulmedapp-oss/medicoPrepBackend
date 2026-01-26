@@ -60,6 +60,16 @@ function getPlanRank(plan) {
   return PLAN_RANKS[plan] ?? 0;
 }
 
+function computeMedian(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
 async function updateTestQuestionCount(testId) {
   if (!testId) return;
   const count = await Question.countDocuments({ test_id: testId, is_active: true });
@@ -779,7 +789,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (attempts.length > 0) {
         const testIds = [...new Set(attempts.map((a) => String(a.test_id)))];
         const tests = await Test.find({ _id: { $in: testIds } })
-          .select('title subject total_marks')
+          .select('title subject total_marks difficulty')
           .lean();
         const testMap = new Map(tests.map((test) => [String(test._id), test]));
         attempts.forEach((attempt) => {
@@ -788,6 +798,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
             attempt.test_title = test.title;
             attempt.test_subject = test.subject;
             attempt.test_total_marks = test.total_marks;
+            attempt.test_difficulty = test.difficulty;
           }
         });
       }
@@ -796,6 +807,95 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load attempts' });
+    }
+  }
+
+  async function getTestStats(req, res) {
+    try {
+      const test = await Test.findById(req.params.id).lean();
+      if (!test) {
+        return res.status(404).json({ error: 'Test not found' });
+      }
+
+      const user = req.user || await User.findById(req.userId).lean();
+      const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+      const isStaff = Boolean(
+        canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
+      );
+
+      if (test.is_active === false && !isStaff) {
+        return res.status(404).json({ error: 'Test not found' });
+      }
+      if (!test.is_published && !isStaff) {
+        return res.status(403).json({ error: 'Staff access required' });
+      }
+
+      const attempts = await TestAttempt.find({ test_id: test._id, status: 'completed' })
+        .select('percentage score total_marks')
+        .lean();
+      const percentages = attempts
+        .map((attempt) => Number(attempt.percentage))
+        .filter((value) => Number.isFinite(value));
+
+      const stats = {
+        total_attempts: attempts.length,
+        median_percentage: computeMedian(percentages),
+        top_percentage: null,
+        top_score: null,
+        top_total_marks: null,
+        percentile: null,
+        user_percentage: null,
+      };
+
+      if (percentages.length > 0) {
+        const topAttempt = attempts.reduce((best, current) => {
+          if (!best) return current;
+          const bestPct = Number(best.percentage);
+          const currentPct = Number(current.percentage);
+          if (!Number.isFinite(bestPct)) return current;
+          if (!Number.isFinite(currentPct)) return best;
+          if (currentPct > bestPct) return current;
+          if (currentPct === bestPct && (current.score ?? -Infinity) > (best.score ?? -Infinity)) {
+            return current;
+          }
+          return best;
+        }, null);
+
+        stats.top_percentage = Math.max(...percentages);
+        if (topAttempt) {
+          stats.top_score = topAttempt.score ?? null;
+          stats.top_total_marks = topAttempt.total_marks ?? test.total_marks ?? null;
+        }
+      }
+
+      let userAttempt = null;
+      if (req.query.attempt_id) {
+        userAttempt = await TestAttempt.findOne({
+          _id: req.query.attempt_id,
+          test_id: test._id,
+          status: 'completed',
+        }).select('percentage').lean();
+      }
+
+      if (!userAttempt && req.userId) {
+        userAttempt = await TestAttempt.findOne({
+          test_id: test._id,
+          user_id: req.userId,
+          status: 'completed',
+        }).sort({ completed_at: -1 }).select('percentage').lean();
+      }
+
+      if (userAttempt && Number.isFinite(Number(userAttempt.percentage)) && percentages.length > 0) {
+        const userPercentage = Number(userAttempt.percentage);
+        const belowCount = percentages.filter((value) => value < userPercentage).length;
+        stats.user_percentage = userPercentage;
+        stats.percentile = Math.round((belowCount / percentages.length) * 1000) / 10;
+      }
+
+      return res.json({ stats });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to load test stats' });
     }
   }
 
@@ -907,6 +1007,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     updateQuestion,
     deleteQuestion,
     listAttempts,
+    getTestStats,
     createAttempt,
     updateAttempt,
   };

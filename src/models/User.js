@@ -24,6 +24,7 @@ const userSchema = new mongoose.Schema(
     average_score: { type: Number, default: 0 },
     last_login_date: { type: Date },
     last_login_ip: { type: String },
+    last_seen_date: { type: Date, index: true },
     last_login_city: { type: String },
     last_login_region: { type: String },
     last_login_country: { type: String },
