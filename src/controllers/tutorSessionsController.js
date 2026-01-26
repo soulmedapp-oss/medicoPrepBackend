@@ -15,7 +15,7 @@ function createTutorSessionsController() {
     try {
       const { value } = await getOpenAiKey();
       if (!value) {
-        return res.status(503).json({ error: 'Tutor service is not configured' });
+        return res.status(503).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
       }
       const attempt = await TestAttempt.findById(req.params.id).lean();
       if (!attempt) {
@@ -32,7 +32,7 @@ function createTutorSessionsController() {
       const session = await enqueueTutorSession(attempt._id);
       return res.status(202).json({ session });
     } catch (err) {
-      return res.status(500).json({ error: 'Failed to start tutor session. Check server configuration.' });
+      return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }
 
@@ -65,7 +65,7 @@ function createTutorSessionsController() {
     try {
       const { value } = await getOpenAiKey();
       if (!value) {
-        return res.status(503).json({ error: 'Tutor service is not configured' });
+        return res.status(503).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
       }
       const { message, context } = req.body || {};
       if (!message || typeof message !== 'string' || !message.trim()) {
@@ -74,7 +74,7 @@ function createTutorSessionsController() {
       const response = await requestChatResponse(message.trim(), context);
       return res.json({ reply: response });
     } catch (err) {
-      return res.status(500).json({ error: 'Tutor chat failed. Check server configuration.' });
+      return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }
 

@@ -21,6 +21,7 @@ function createTestsRoutes({
 
   router.get('/tests', authMiddleware, controller.listTests);
   router.get('/tests/:id', authMiddleware, controller.getTest);
+  router.get('/tests/:id/stats', authMiddleware, controller.getTestStats);
   router.post('/tests', authMiddleware, requirePermission('manage_tests'), controller.createTest);
   router.patch('/tests/:id', authMiddleware, requirePermission('manage_tests'), controller.updateTest);
   router.delete('/tests/:id', authMiddleware, requirePermission('manage_tests'), controller.deleteTest);

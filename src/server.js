@@ -31,6 +31,8 @@ const createRolesRoutes = require('./routes/rolesRoutes');
 const createSettingsRoutes = require('./routes/settingsRoutes');
 const createPaymentsRoutes = require('./routes/paymentsRoutes');
 const createCouponsRoutes = require('./routes/couponsRoutes');
+const createDashboardRoutes = require('./routes/dashboardRoutes');
+// removed: engagement routes (case of day, precision review, boss week)
 const { handleZoomWebhook } = require('./controllers/zoomController');
 const { createPaymentsController } = require('./controllers/paymentsController');
 const {
@@ -831,6 +833,11 @@ app.use(
   createCouponsRoutes({
     authMiddleware,
     requireAdmin,
+  })
+);
+app.use(
+  createDashboardRoutes({
+    authMiddleware,
   })
 );
 app.use(
