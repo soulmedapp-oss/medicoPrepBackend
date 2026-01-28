@@ -4,7 +4,9 @@ const { isValidTextLength } = require('../utils/validation');
 function createRolesController() {
   async function listRoles(req, res) {
     try {
-      const roles = await Role.find({ is_active: true }).sort({ name: 1 }).lean();
+      const { all } = req.query;
+      const filter = all === 'true' ? {} : { is_active: true };
+      const roles = await Role.find(filter).sort({ name: 1 }).lean();
       return res.json({ roles });
     } catch (err) {
       console.error(err);
