@@ -1,6 +1,7 @@
 const Doubt = require('../models/Doubt');
 const User = require('../models/User');
 const { isValidEmail, isValidTextLength } = require('../utils/validation');
+const { validateSubjectIfConfigured } = require('../utils/subjects');
 
 function createDoubtsController({ createNotification }) {
   async function listDoubts(req, res) {
@@ -70,11 +71,12 @@ function createDoubtsController({ createNotification }) {
         }
       }
 
+      const subjectName = await validateSubjectIfConfigured(data.subject);
       const doubt = await Doubt.create({
         student_id: user._id,
         student_email: user.email,
         student_name: user.full_name || '',
-        subject: data.subject,
+        subject: subjectName,
         topic: data.topic || '',
         question: data.question,
         priority: data.priority || 'medium',
@@ -147,6 +149,9 @@ function createDoubtsController({ createNotification }) {
         return res.status(400).json({ error: 'topic must be between 2 and 200 characters' });
       }
 
+      if (updates.subject) {
+        updates.subject = await validateSubjectIfConfigured(updates.subject);
+      }
       if (isStaff) {
         const allowed = [
           'status',

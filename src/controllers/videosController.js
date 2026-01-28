@@ -1,6 +1,7 @@
 const Video = require('../models/Video');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
 
@@ -112,10 +113,11 @@ function createVideosController() {
         : [];
       const isFreePlan = allowedPlans.includes('free');
 
+      const subjectName = await validateSubjectIfConfigured(data.subject);
       const video = await Video.create({
         title: data.title,
         description: data.description || '',
-        subject: data.subject,
+        subject: subjectName,
         teacher_name: data.teacher_name,
         teacher_email: data.teacher_email || '',
         subtopic: data.subtopic || '',
@@ -147,6 +149,9 @@ function createVideosController() {
       }
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
+      }
+      if (updates.subject) {
+        updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
       if (updates.teacher_name !== undefined && !isValidTextLength(String(updates.teacher_name), 2, 120)) {
         return res.status(400).json({ error: 'teacher_name is required' });

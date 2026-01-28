@@ -6,6 +6,7 @@ const Question = require('../models/Question');
 const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { hasPermission } = require('../middlewares/auth');
 
 const PLAN_RANKS = {
@@ -150,13 +151,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       const actor = getActor(req);
+      const subjectName = await validateSubjectIfConfigured(data.subject);
       const requestedPlan = String(
         data.required_plan || (data.is_free ? 'free' : 'premium')
       ).toLowerCase();
       const test = await Test.create({
         title: data.title,
         description: data.description || '',
-        subject: data.subject,
+        subject: subjectName,
         difficulty: data.difficulty || 'medium',
         duration_minutes: data.duration_minutes ?? 60,
         total_marks: data.total_marks ?? 100,
@@ -204,6 +206,9 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
+      }
+      if (updates.subject) {
+        updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
       if (Object.prototype.hasOwnProperty.call(updates, 'required_plan')) {
         const plan = String(updates.required_plan || 'free').toLowerCase();
@@ -539,9 +544,10 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(400).json({ error: 'correct_answers is required' });
       }
       const actor = getActor(req);
+      const subjectName = await validateSubjectIfConfigured(data.subject);
       const question = await Question.create({
         test_id: null,
-        subject: data.subject,
+        subject: subjectName,
         question_text: data.question_text,
         question_type: data.question_type || 'single_choice',
         options: data.options || [],
@@ -677,6 +683,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Question not found' });
       }
       const updates = req.body || {};
+      if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
+        return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
+      }
+      if (updates.subject) {
+        updates.subject = await validateSubjectIfConfigured(updates.subject);
+      }
       if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
         return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
       }
