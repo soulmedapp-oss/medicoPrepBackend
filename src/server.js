@@ -49,8 +49,9 @@ const ConnectionRequest = require('./models/ConnectionRequest');
 const Role = require('./models/Role');
 const { enqueueTutorSession } = require('./services/tutorService');
 
+const runningOnVercel = Boolean(process.env.VERCEL);
 const app = express();
-const server = http.createServer(app);
+let server;
 
 const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
 if (corsEnabled) {
@@ -299,43 +300,45 @@ const videoUpload = multer({
   },
 });
 
-const wss = new WebSocket.Server({ server, path: '/ws' });
+function initRealtime(serverInstance) {
+  const wss = new WebSocket.Server({ server: serverInstance, path: '/ws' });
 
-wss.on('connection', (ws, req) => {
-  const closeUnauthorized = () => {
+  wss.on('connection', (ws, req) => {
+    const closeUnauthorized = () => {
+      try {
+        ws.close(1008, 'Unauthorized');
+      } catch (err) {
+        // ignore close errors
+      }
+    };
+
     try {
-      ws.close(1008, 'Unauthorized');
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const token = url.searchParams.get('token');
+      if (!token) {
+        closeUnauthorized();
+        return;
+      }
+      const payload = jwt.verify(token, JWT_SECRET);
+      User.findById(payload.sub).lean()
+        .then((user) => {
+          if (!user) {
+            closeUnauthorized();
+            return;
+          }
+          ws.userEmail = user.email;
+          ws.userId = user._id;
+          ws.userRole = user.role;
+          ws.isTeacher = Boolean(user.is_teacher);
+          wsClients.add(ws);
+          ws.on('close', () => wsClients.delete(ws));
+        })
+        .catch(() => closeUnauthorized());
     } catch (err) {
-      // ignore close errors
-    }
-  };
-
-  try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const token = url.searchParams.get('token');
-    if (!token) {
       closeUnauthorized();
-      return;
     }
-    const payload = jwt.verify(token, JWT_SECRET);
-    User.findById(payload.sub).lean()
-      .then((user) => {
-        if (!user) {
-          closeUnauthorized();
-          return;
-        }
-        ws.userEmail = user.email;
-        ws.userId = user._id;
-        ws.userRole = user.role;
-        ws.isTeacher = Boolean(user.is_teacher);
-        wsClients.add(ws);
-        ws.on('close', () => wsClients.delete(ws));
-      })
-      .catch(() => closeUnauthorized());
-  } catch (err) {
-    closeUnauthorized();
-  }
-});
+  });
+}
 
 const {
   MONGODB_URI,
@@ -573,6 +576,9 @@ async function createNotification({ userEmail, title, message, type = 'info', li
 }
 
 async function connectDb() {
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
   await mongoose.connect(MONGODB_URI, {
     autoIndex: true,
   });
@@ -946,16 +952,36 @@ app.post('/uploads/profile', authMiddleware, upload.single('file'), (req, res) =
 
 const port = Number(PORT) || 4000;
 
-connectDb()
-  .then(() => {
-    server.listen(port, () => {
-      // eslint-disable-next-line no-console
-      console.log(`Server listening on http://localhost:${port}`);
-    });
-  })
-  .catch((err) => {
+async function startLocalServer() {
+  server = http.createServer(app);
+  initRealtime(server);
+  await connectDb();
+  server.listen(port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Server listening on http://localhost:${port}`);
+  });
+}
+
+if (!runningOnVercel && require.main === module) {
+  startLocalServer().catch((err) => {
     // eslint-disable-next-line no-console
     console.error('Failed to start server:', err);
     process.exit(1);
   });
+}
+
+let dbReady;
+async function ensureDbConnected() {
+  if (!dbReady) {
+    dbReady = connectDb();
+  }
+  await dbReady;
+}
+
+module.exports = async (req, res) => {
+  if (runningOnVercel) {
+    await ensureDbConnected();
+  }
+  return app(req, res);
+};
 
