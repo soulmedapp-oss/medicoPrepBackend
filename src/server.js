@@ -26,6 +26,7 @@ const createUsersRoutes = require('./routes/usersRoutes');
 const createVideosRoutes = require('./routes/videosRoutes');
 const createVideoProgressRoutes = require('./routes/videoProgressRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
+const createSubjectsRoutes = require('./routes/subjectsRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const createRolesRoutes = require('./routes/rolesRoutes');
 const createSettingsRoutes = require('./routes/settingsRoutes');
@@ -802,6 +803,12 @@ app.use(
   createUsersRoutes({
     authMiddleware,
     requireAdmin,
+  })
+);
+app.use(
+  createSubjectsRoutes({
+    authMiddleware,
+    requireStaff,
   })
 );
 app.use(

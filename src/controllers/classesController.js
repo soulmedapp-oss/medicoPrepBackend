@@ -2,6 +2,7 @@ const LiveClass = require('../models/LiveClass');
 const LiveClassNote = require('../models/LiveClassNote');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { getZoomAccessToken, pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
 const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
@@ -123,6 +124,7 @@ function createClassesController({ createNotification }) {
       if (data.subject && !isValidTextLength(String(data.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
+      const subjectName = await validateSubjectIfConfigured(data.subject);
       if (!data.teacher_name || !isValidTextLength(String(data.teacher_name), 2, 120)) {
         return res.status(400).json({ error: 'teacher_name is required' });
       }
@@ -181,7 +183,7 @@ function createClassesController({ createNotification }) {
         title: data.title,
         description: data.description || '',
         topic_covered: data.topic_covered || '',
-        subject: data.subject,
+        subject: subjectName,
         teacher_name: data.teacher_name,
         teacher_email: data.teacher_email || '',
         scheduled_date: data.scheduled_date,
@@ -247,6 +249,9 @@ function createClassesController({ createNotification }) {
       }
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
+      }
+      if (updates.subject) {
+        updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
       if (updates.teacher_name !== undefined && !isValidTextLength(String(updates.teacher_name), 2, 120)) {
         return res.status(400).json({ error: 'teacher_name is required' });
