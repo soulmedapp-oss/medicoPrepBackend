@@ -10,6 +10,12 @@ async function ensureAccess(req, attempt) {
   return Boolean(user && (user.role === 'admin' || user.role === 'teacher' || user.is_teacher));
 }
 
+function attachLogContext(res, err) {
+  if (!err) return;
+  res.locals.logErrorMessage = err.message || 'Unknown error';
+  res.locals.logErrorStack = err.stack;
+}
+
 function createTutorSessionsController() {
   async function requestTutorSession(req, res) {
     try {
@@ -32,6 +38,7 @@ function createTutorSessionsController() {
       const session = await enqueueTutorSession(attempt._id);
       return res.status(202).json({ session });
     } catch (err) {
+      attachLogContext(res, err);
       return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }
@@ -57,6 +64,7 @@ function createTutorSessionsController() {
       }
       return res.json({ session });
     } catch (err) {
+      attachLogContext(res, err);
       return res.status(500).json({ error: 'Failed to load tutor session' });
     }
   }
@@ -74,6 +82,7 @@ function createTutorSessionsController() {
       const response = await requestChatResponse(message.trim(), context);
       return res.json({ reply: response });
     } catch (err) {
+      attachLogContext(res, err);
       return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }

@@ -242,8 +242,10 @@ async function processTutorSession(sessionId) {
     session.error_message = '';
     await session.save();
   } catch (err) {
+    // Keep a detailed log for debugging while exposing only a generic message to users
+    console.error('Tutor session processing failed', err);
     session.status = 'failed';
-    session.error_message = err.message || 'Tutor generation failed';
+    session.error_message = 'AI tutor is unavailable right now. Please try again later.';
     await session.save();
   }
 }

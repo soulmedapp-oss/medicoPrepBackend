@@ -42,6 +42,9 @@ const {
   requireStaff,
   hasPermission,
 } = require('./middlewares/auth');
+const { getRateLimitStats } = require('./middlewares/rateLimit');
+const swaggerUi = require('swagger-ui-express');
+const swaggerDocument = require('./docs/swagger');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
@@ -170,6 +173,7 @@ app.get('/webhooks/razorpay', (req, res) => {
 });
 app.post('/webhooks/razorpay', express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
 app.use(express.json({ limit: '1mb' }));
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 app.use((req, res, next) => {
   const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
@@ -194,15 +198,18 @@ app.use((req, res, next) => {
       req.body?.email ||
       req.query?.email ||
       'unknown';
-    const errorMessage =
+    const logErrorMessage =
+      res.locals.logErrorMessage ||
       res.locals.errorMessage ||
       `HTTP ${res.statusCode} ${req.method} ${req.originalUrl}`;
+    const logErrorStack = res.locals.logErrorStack;
 
     logMessage(level, {
       userName,
       correlationId,
-      errorMessage,
+      errorMessage: logErrorMessage,
       statusCode: res.statusCode,
+      errorStack: logErrorStack,
     });
   });
 
@@ -742,6 +749,9 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/auth', authRoutes);
+app.get('/admin/debug/rate-limit', authMiddleware, requireAdmin, (req, res) => {
+  return res.json({ ok: true, stats: getRateLimitStats() });
+});
 app.use(
   createTestsRoutes({
     authMiddleware,

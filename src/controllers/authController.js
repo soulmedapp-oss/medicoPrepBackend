@@ -536,15 +536,29 @@ async function updateMe(req, res) {
       'profile_image',
       'last_login_date',
       'last_seen_date',
+    ];
+    const forbiddenFields = [
       'subscription_plan',
+      'subscription_status',
+      'subscription_start_date',
+      'subscription_end_date',
       'role',
       'roles',
       'permissions',
       'admin_status',
       'is_teacher',
+      'email_verified',
+      'is_active',
       'tests_taken',
       'average_score',
     ];
+    
+    const attemptedForbidden = forbiddenFields.filter((field) =>
+      Object.prototype.hasOwnProperty.call(req.body || {}, field)
+    );
+    if (attemptedForbidden.length > 0) {
+      return res.status(403).json({ error: 'Not allowed to update sensitive fields' });
+    }
 
     const updates = {};
     for (const field of allowedFields) {

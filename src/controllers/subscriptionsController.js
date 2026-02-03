@@ -134,6 +134,11 @@ function createSubscriptionsController({
         return res.status(400).json({ error: 'plan is required' });
       }
 
+      const adminUser = req.user || await User.findById(req.userId).lean();
+      if (!adminUser || adminUser.role !== 'admin') {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+
       const plan = await SubscriptionPlan.findOne({ plan_name: data.plan, is_active: true }).lean();
       if (!plan) {
         return res.status(400).json({ error: 'Plan is not available' });
@@ -188,9 +193,9 @@ function createSubscriptionsController({
         return res.status(404).json({ error: 'Subscription not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
+      const user = req.user || await User.findById(req.userId).lean();
       const isAdmin = user?.role === 'admin';
-      if (!isAdmin && String(subscription.user_id) !== String(req.userId)) {
+      if (!isAdmin) {
         return res.status(403).json({ error: 'Not authorized' });
       }
 
@@ -226,9 +231,9 @@ function createSubscriptionsController({
       if (!subscription) {
         return res.status(404).json({ error: 'Subscription not found' });
       }
-      const user = await User.findById(req.userId).lean();
+      const user = req.user || await User.findById(req.userId).lean();
       const isAdmin = user?.role === 'admin';
-      if (!isAdmin && String(subscription.user_id) !== String(req.userId)) {
+      if (!isAdmin) {
         return res.status(403).json({ error: 'Not authorized' });
       }
       subscription.is_active = false;
