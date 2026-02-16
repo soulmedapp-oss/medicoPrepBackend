@@ -115,6 +115,8 @@ function createUsersController() {
         'year_of_study',
         'target_exam',
         'email_verified',
+        'email_verified_by',
+        'email_verified_reason',
         'is_active',
       ];
 
@@ -151,6 +153,14 @@ function createUsersController() {
         payload.email_verified_at = new Date();
         payload.email_verification_token = undefined;
         payload.email_verification_expires = undefined;
+        if (!payload.email_verified_by && req.user?.email) {
+          payload.email_verified_by = req.user.email;
+        }
+      }
+      if (updates.email_verified === false) {
+        payload.email_verified_at = undefined;
+        payload.email_verified_by = undefined;
+        payload.email_verified_reason = undefined;
       }
 
       const user = await User.findByIdAndUpdate(
