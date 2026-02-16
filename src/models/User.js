@@ -34,6 +34,8 @@ const userSchema = new mongoose.Schema(
     last_login_user_agent: { type: String },
     email_verified: { type: Boolean, default: false },
     email_verified_at: { type: Date },
+    email_verified_by: { type: String },
+    email_verified_reason: { type: String },
     email_verification_token: { type: String },
     email_verification_expires: { type: Date },
     email_verification_sent_at: { type: Date },
