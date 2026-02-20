@@ -4,6 +4,7 @@ const optionSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
     text: { type: String, required: true },
+    image_url: { type: String, default: '' },
   },
   { _id: false }
 );

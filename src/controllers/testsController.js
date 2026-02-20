@@ -380,11 +380,15 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           const optionB = row.option_b || row.optionB || row.b || row.B || '';
           const optionC = row.option_c || row.optionC || row.c || row.C || '';
           const optionD = row.option_d || row.optionD || row.d || row.D || '';
+          const optionAImage = row.option_a_image_url || row.optionAImage || row.option_a_image || '';
+          const optionBImage = row.option_b_image_url || row.optionBImage || row.option_b_image || '';
+          const optionCImage = row.option_c_image_url || row.optionCImage || row.option_c_image || '';
+          const optionDImage = row.option_d_image_url || row.optionDImage || row.option_d_image || '';
           const options = [
-            { id: '1', text: String(optionA) },
-            { id: '2', text: String(optionB) },
-            { id: '3', text: String(optionC) },
-            { id: '4', text: String(optionD) },
+            { id: '1', text: String(optionA), image_url: String(optionAImage || '') },
+            { id: '2', text: String(optionB), image_url: String(optionBImage || '') },
+            { id: '3', text: String(optionC), image_url: String(optionCImage || '') },
+            { id: '4', text: String(optionD), image_url: String(optionDImage || '') },
           ];
 
           const correctRaw = row.correct_answers || row.correct || row.answer || '';
@@ -608,11 +612,15 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           const optionB = row.option_b || row.optionB || row.b || row.B || '';
           const optionC = row.option_c || row.optionC || row.c || row.C || '';
           const optionD = row.option_d || row.optionD || row.d || row.D || '';
+          const optionAImage = row.option_a_image_url || row.optionAImage || row.option_a_image || '';
+          const optionBImage = row.option_b_image_url || row.optionBImage || row.option_b_image || '';
+          const optionCImage = row.option_c_image_url || row.optionCImage || row.option_c_image || '';
+          const optionDImage = row.option_d_image_url || row.optionDImage || row.option_d_image || '';
           const options = [
-            { id: '1', text: String(optionA) },
-            { id: '2', text: String(optionB) },
-            { id: '3', text: String(optionC) },
-            { id: '4', text: String(optionD) },
+            { id: '1', text: String(optionA), image_url: String(optionAImage || '') },
+            { id: '2', text: String(optionB), image_url: String(optionBImage || '') },
+            { id: '3', text: String(optionC), image_url: String(optionCImage || '') },
+            { id: '4', text: String(optionD), image_url: String(optionDImage || '') },
           ];
 
           const correctRaw = row.correct_answers || row.correct || row.answer || '';
