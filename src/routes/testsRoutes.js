@@ -52,6 +52,8 @@ function createTestsRoutes({
 
   router.patch('/questions/:id', authMiddleware, requirePermission('manage_questions'), controller.updateQuestion);
   router.delete('/questions/:id', authMiddleware, requirePermission('manage_questions'), controller.deleteQuestion);
+  router.post('/questions/bulk-delete', authMiddleware, requirePermission('manage_questions'), controller.bulkDeleteQuestions);
+  router.post('/questions/bulk-activate', authMiddleware, requirePermission('manage_questions'), controller.bulkActivateQuestions);
 
   router.get('/attempts', authMiddleware, controller.listAttempts);
   router.post('/tests/:id/attempts', authMiddleware, controller.createAttempt);
