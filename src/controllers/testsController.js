@@ -596,7 +596,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return 'free';
       };
 
-      records.forEach((row, index) => {
+      for (let index = 0; index < records.length; index += 1) {
+        const row = records[index];
         try {
           const questionText = row.question_text || row.question || row.Question;
           if (!questionText) {
@@ -606,6 +607,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           const subject = row.subject || row.Subject || req.body.subject;
           if (!subject) {
             throw new Error('subject is required');
+          }
+          let subjectName;
+          try {
+            subjectName = await validateSubjectIfConfigured(subject);
+          } catch (err) {
+            const message = `Subject "${subject}" does not exist. Please create it.`;
+            errors.push({ row: index + 1, error: message });
+            return;
           }
 
           const optionA = row.option_a || row.optionA || row.a || row.A || '';
@@ -646,7 +655,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
           created.push({
             test_id: null,
-            subject: String(subject),
+            subject: String(subjectName || subject),
             question_text: String(questionText),
             question_type,
             options,
@@ -667,7 +676,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         } catch (err) {
           errors.push({ row: index + 1, error: err.message });
         }
-      });
+      }
 
       if (created.length === 0) {
         return res.status(400).json({ error: 'No valid questions found', errors });
@@ -775,6 +784,75 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to deactivate question' });
+    }
+  }
+
+  async function bulkDeleteQuestions(req, res) {
+    try {
+      const { question_ids: questionIds } = req.body || {};
+      if (!Array.isArray(questionIds) || questionIds.length === 0) {
+        return res.status(400).json({ error: 'question_ids is required' });
+      }
+      const ids = questionIds.filter(Boolean);
+      const existing = await Question.find({ _id: { $in: ids } })
+        .select('_id test_id')
+        .lean();
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Questions not found' });
+      }
+      await Question.updateMany(
+        { _id: { $in: ids } },
+        { $set: { is_active: false } }
+      );
+
+      const testIds = [...new Set(
+        existing
+          .map((question) => (question.test_id ? String(question.test_id) : ''))
+          .filter(Boolean)
+      )];
+      for (const testId of testIds) {
+        await updateTestQuestionCount(testId);
+      }
+
+      return res.json({ deactivated: existing.length });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to deactivate questions' });
+    }
+  }
+
+  async function bulkActivateQuestions(req, res) {
+    try {
+      const { question_ids: questionIds } = req.body || {};
+      if (!Array.isArray(questionIds) || questionIds.length === 0) {
+        return res.status(400).json({ error: 'question_ids is required' });
+      }
+      const ids = questionIds.filter(Boolean);
+      const existing = await Question.find({ _id: { $in: ids } })
+        .select('_id test_id')
+        .lean();
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Questions not found' });
+      }
+
+      await Question.updateMany(
+        { _id: { $in: ids } },
+        { $set: { is_active: true } }
+      );
+
+      const testIds = [...new Set(
+        existing
+          .map((question) => (question.test_id ? String(question.test_id) : ''))
+          .filter(Boolean)
+      )];
+      for (const testId of testIds) {
+        await updateTestQuestionCount(testId);
+      }
+
+      return res.json({ activated: existing.length });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to activate questions' });
     }
   }
 
@@ -1026,6 +1104,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     deleteQuestionBank,
     updateQuestion,
     deleteQuestion,
+    bulkDeleteQuestions,
+    bulkActivateQuestions,
     listAttempts,
     getTestStats,
     createAttempt,
