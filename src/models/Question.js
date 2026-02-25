@@ -15,6 +15,7 @@ const questionSchema = new mongoose.Schema(
     subject: { type: String },
     question_text: { type: String, required: true },
     question_type: { type: String, default: 'single_choice' },
+    subtopic: { type: String, default: '' },
     options: { type: [optionSchema], default: [] },
     correct_answers: { type: [String], default: [] },
     explanation: { type: String },
