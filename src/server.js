@@ -881,7 +881,12 @@ app.use(
   })
 );
 
-app.post('/uploads/questions', authMiddleware, requireStaff, upload.single('file'), (req, res) => {
+app.post('/uploads/questions', authMiddleware, (req, res, next) => {
+  if (hasPermission && hasPermission(req.user, 'manage_questions')) {
+    return next();
+  }
+  return requireStaff(req, res, next);
+}, upload.single('file'), (req, res) => {
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
