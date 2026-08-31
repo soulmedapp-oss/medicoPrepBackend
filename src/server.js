@@ -853,6 +853,7 @@ app.use(
   createSubjectsRoutes({
     authMiddleware,
     requireStaff,
+    requireAdmin,
     hasPermission,
   })
 );

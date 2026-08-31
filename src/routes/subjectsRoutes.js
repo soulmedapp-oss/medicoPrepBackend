@@ -1,7 +1,7 @@
 const express = require('express');
 const { createSubjectsController } = require('../controllers/subjectsController');
 
-function createSubjectsRoutes({ authMiddleware, requireStaff, hasPermission }) {
+function createSubjectsRoutes({ authMiddleware, requireStaff, requireAdmin, hasPermission }) {
   const router = express.Router();
   const controller = createSubjectsController();
   const requirePermissionOrStaff = (permission) => (req, res, next) => {
@@ -24,6 +24,8 @@ function createSubjectsRoutes({ authMiddleware, requireStaff, hasPermission }) {
     requirePermissionOrStaff('manage_questions'),
     controller.updateSubtopic
   );
+  // Assign the teachers allowed to run AI ingestion/generation for a subject.
+  router.put('/subjects/:id/owners', authMiddleware, requireAdmin, controller.setSubjectOwners);
 
   return router;
 }
