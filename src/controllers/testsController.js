@@ -29,7 +29,7 @@ function loadBulkRecords(file) {
     } catch (err) {
       throw new Error('Excel uploads require the "xlsx" package. Please upload CSV instead.');
     }
-    const workbook = xlsx.readFile(file.path, { cellDates: false });
+    const workbook = xlsx.read(file.buffer, { type: 'buffer', cellDates: false });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) return [];
     const sheet = workbook.Sheets[sheetName];
@@ -40,7 +40,7 @@ function loadBulkRecords(file) {
     });
   }
 
-  const content = fs.readFileSync(file.path, 'utf8');
+  const content = file.buffer.toString('utf8');
   return parse(content, {
     columns: true,
     skip_empty_lines: true,

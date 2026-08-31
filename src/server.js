@@ -53,6 +53,8 @@ const Role = require('./models/Role');
 const { enqueueTutorSession } = require('./services/tutorService');
 
 const runningOnVercel = Boolean(process.env.VERCEL);
+const runningOnLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+const runningServerless = runningOnVercel || runningOnLambda;
 const app = express();
 let server;
 
@@ -240,14 +242,40 @@ function resolveUploadsDir() {
 const uploadsDir = resolveUploadsDir();
 app.use('/uploads', express.static(uploadsDir));
 
-const uploadStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const unique = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    cb(null, `${unique}_${safeName}`);
-  },
-});
+// Serverless (Lambda) has no persistent/shared filesystem, so uploads are held
+// in memory and pushed to S3. Local dev with no S3 bucket configured still
+// writes to the local uploads dir.
+const uploadStorage = multer.memoryStorage();
+
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
+const uploadsS3Region =
+  process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
+const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : null;
+
+function makeUploadKey(originalname) {
+  const safeName = String(originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const unique = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  return `${unique}_${safeName}`;
+}
+
+// Persists an in-memory multer file and returns its public path ("/uploads/<key>").
+async function storeUpload(file) {
+  const key = makeUploadKey(file.originalname);
+  if (s3Client) {
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: uploadsBucket,
+        Key: `uploads/${key}`,
+        Body: file.buffer,
+        ContentType: file.mimetype || 'application/octet-stream',
+      })
+    );
+  } else {
+    fs.writeFileSync(path.join(uploadsDir, key), file.buffer);
+  }
+  return `/uploads/${key}`;
+}
 
 const upload = multer({
   storage: uploadStorage,
@@ -881,56 +909,48 @@ app.use(
   })
 );
 
+async function handleUpload(res, file) {
+  if (!file) {
+    return res.status(400).json({ error: 'File is required' });
+  }
+  try {
+    const url = await storeUpload(file);
+    return res.json({ url });
+  } catch (err) {
+    console.error('Upload failed:', err);
+    return res.status(500).json({ error: 'Upload failed' });
+  }
+}
+
 app.post('/uploads/questions', authMiddleware, (req, res, next) => {
   if (hasPermission && hasPermission(req.user, 'manage_questions')) {
     return next();
   }
   return requireStaff(req, res, next);
-}, upload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+}, upload.single('file'), (req, res) => handleUpload(res, req.file));
 
-app.post('/uploads/classes', authMiddleware, requireStaff, upload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+app.post('/uploads/classes', authMiddleware, requireStaff, upload.single('file'), (req, res) =>
+  handleUpload(res, req.file)
+);
 
-app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file)
+);
 
-app.post('/uploads/videos', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+app.post('/uploads/videos', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file)
+);
 
-app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.single('file'), (req, res) => {
+app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
-  const url = `/uploads/${file.filename}`;
   let text = '';
+  let url;
   try {
-    const raw = fs.readFileSync(file.path, 'utf8');
+    url = await storeUpload(file);
+    const raw = file.buffer.toString('utf8');
     text = raw
       .replace(/\uFEFF/g, '')
       .replace(/^\d+\s*$/gm, '')
@@ -948,23 +968,13 @@ app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.
   return res.json({ url, text });
 });
 
-app.post('/uploads/doubts', authMiddleware, upload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+app.post('/uploads/doubts', authMiddleware, upload.single('file'), (req, res) =>
+  handleUpload(res, req.file)
+);
 
-app.post('/uploads/profile', authMiddleware, upload.single('file'), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: 'File is required' });
-  }
-  const url = `/uploads/${file.filename}`;
-  return res.json({ url });
-});
+app.post('/uploads/profile', authMiddleware, upload.single('file'), (req, res) =>
+  handleUpload(res, req.file)
+);
 
 const port = Number(PORT) || 4000;
 
@@ -995,9 +1005,23 @@ async function ensureDbConnected() {
 }
 
 module.exports = async (req, res) => {
-  if (runningOnVercel) {
-    await ensureDbConnected();
+  if (runningServerless) {
+    try {
+      await ensureDbConnected();
+    } catch (err) {
+      console.error('DB connection failed:', err);
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Service unavailable' }));
+      return undefined;
+    }
   }
   return app(req, res);
 };
+
+// For the Lambda entrypoint (lambda.js): the raw Express app plus the DB
+// connector, so the handler can await the connection BEFORE the request is
+// streamed into Express (awaiting inside the request listener drops the body).
+module.exports.rawApp = app;
+module.exports.ensureDbConnected = ensureDbConnected;
 
