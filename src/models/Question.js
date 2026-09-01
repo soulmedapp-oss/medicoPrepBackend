@@ -20,6 +20,7 @@ const questionSchema = new mongoose.Schema(
     correct_answers: { type: [String], default: [] },
     explanation: { type: String },
     explanation_image_url: { type: String },
+    question_image_url: { type: String, default: '' }, // figure shown with the stem (AI Path A / manual)
     difficulty: { type: String, default: 'medium' },
     marks: { type: Number, default: 1 },
     negative_marks: { type: Number, default: 0 },
