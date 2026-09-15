@@ -1,4 +1,5 @@
 const Subject = require('../models/Subject');
+const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 
 function slugify(value) {
@@ -150,12 +151,39 @@ function createSubjectsController() {
     }
   }
 
+  async function setSubjectOwners(req, res) {
+    try {
+      const { owner_ids: ownerIds } = req.body || {};
+      if (!Array.isArray(ownerIds)) {
+        return res.status(400).json({ error: 'owner_ids must be an array of user ids' });
+      }
+      const subject = await Subject.findById(req.params.id);
+      if (!subject) {
+        return res.status(404).json({ error: 'Subject not found' });
+      }
+      const unique = [...new Set(ownerIds.filter(Boolean).map(String))];
+      if (unique.length > 0) {
+        const found = await User.find({ _id: { $in: unique } }).select('_id').lean();
+        if (found.length !== unique.length) {
+          return res.status(400).json({ error: 'One or more owner_ids are not valid users' });
+        }
+      }
+      subject.owner_ids = unique;
+      await subject.save();
+      return res.json({ subject: subject.toObject() });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to update subject owners' });
+    }
+  }
+
   return {
     listSubjects,
     createSubject,
     updateSubject,
     createSubtopic,
     updateSubtopic,
+    setSubjectOwners,
   };
 }
 

@@ -17,6 +17,14 @@ const subjectSchema = new mongoose.Schema(
     is_active: { type: Boolean, default: true },
     sort_order: { type: Number, default: 0 },
     subtopics: { type: [subtopicSchema], default: [] },
+    // Teachers allowed to run AI ingestion / question generation for this
+    // subject (admins are always allowed). Managed via PUT /subjects/:id/owners.
+    owner_ids: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'User',
+      default: [],
+      index: true,
+    },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

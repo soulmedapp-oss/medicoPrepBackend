@@ -14,6 +14,7 @@ function normalizeRoles(input) {
 function derivePrimaryRole(roles, fallback = 'student') {
   if (roles.includes('admin')) return 'admin';
   if (roles.includes('teacher')) return 'teacher';
+  if (roles.includes('content_writer')) return 'content_writer';
   if (roles.includes('student')) return 'student';
   return fallback;
 }

@@ -18,6 +18,26 @@ const PLAN_RANKS = {
   ultimate: 5,
 };
 
+// Scheduled publishing (decision 10.9). A test is live for students only when it
+// is published, active, past its publish_at, and inside [available_from, available_until].
+function studentScheduleClause(now = new Date()) {
+  return {
+    $and: [
+      { $or: [{ publish_at: null }, { publish_at: { $lte: now } }] },
+      { $or: [{ available_from: null }, { available_from: { $lte: now } }] },
+      { $or: [{ available_until: null }, { available_until: { $gte: now } }] },
+    ],
+  };
+}
+
+function isTestLiveForStudent(test, now = new Date()) {
+  if (!test || test.is_published !== true || test.is_active === false) return false;
+  if (test.publish_at && new Date(test.publish_at) > now) return false;
+  if (test.available_from && new Date(test.available_from) > now) return false;
+  if (test.available_until && new Date(test.available_until) < now) return false;
+  return true;
+}
+
 function loadBulkRecords(file) {
   const ext = path.extname(file.originalname || '').toLowerCase();
   if (ext === '.xlsx' || ext === '.xls') {
@@ -29,7 +49,7 @@ function loadBulkRecords(file) {
     } catch (err) {
       throw new Error('Excel uploads require the "xlsx" package. Please upload CSV instead.');
     }
-    const workbook = xlsx.readFile(file.path, { cellDates: false });
+    const workbook = xlsx.read(file.buffer, { type: 'buffer', cellDates: false });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) return [];
     const sheet = workbook.Sheets[sheetName];
@@ -40,7 +60,7 @@ function loadBulkRecords(file) {
     });
   }
 
-  const content = fs.readFileSync(file.path, 'utf8');
+  const content = file.buffer.toString('utf8');
   return parse(content, {
     columns: true,
     skip_empty_lines: true,
@@ -104,7 +124,9 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
-      const filter = all === 'true' ? {} : { is_published: true, is_active: { $ne: false } };
+      const filter = all === 'true'
+        ? {}
+        : { is_published: true, is_active: { $ne: false }, ...studentScheduleClause() };
       const tests = await Test.find(filter).sort({ created_date: -1 }).lean();
       return res.json({ tests });
     } catch (err) {
@@ -126,11 +148,16 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           return res.status(404).json({ error: 'Test not found' });
         }
       }
-      if (!test.is_published) {
+      if (!test.is_published || !isTestLiveForStudent(test)) {
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
-          return res.status(403).json({ error: 'Staff access required' });
+        const isStaff = Boolean(
+          canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
+        );
+        if (!isStaff) {
+          return res.status(test.is_published ? 404 : 403).json({
+            error: test.is_published ? 'Test not available' : 'Staff access required',
+          });
         }
       }
       return res.json({ test });
@@ -322,10 +349,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         question_text: data.question_text,
         question_type: data.question_type || 'single_choice',
         subtopic: data.subtopic || '',
+        topic: data.topic || '', exam: data.exam || '', exam_year: data.exam_year || null, source_type: data.source_type || 'question_bank',
         options: data.options || [],
         correct_answers: data.correct_answers || [],
         explanation: data.explanation || '',
         explanation_image_url: data.explanation_image_url || '',
+        question_image_url: data.question_image_url || '',
         difficulty: data.difficulty || 'medium',
         marks: data.marks ?? 1,
         negative_marks: data.negative_marks ?? 0,
@@ -506,10 +535,21 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const filter = { test_id: null };
       if (subject) filter.subject = subject;
       if (difficulty) filter.difficulty = difficulty;
-      if (search) {
-        filter.question_text = new RegExp(String(search), 'i');
+      for (const key of ['source_type', 'exam', 'topic', 'subtopic', 'question_code']) {
+        if (req.query[key]) filter[key] = String(req.query[key]);
       }
-      const max = Number(limit) || 200;
+      if (req.query.exam_year) {
+        const year = Number(req.query.exam_year);
+        if (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear()) {
+          return res.status(400).json({ error: 'Invalid exam year' });
+        }
+        filter.exam_year = year;
+      }
+      if (search) {
+        const text = String(search).slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$or = ['question_text', 'question_code', 'exam', 'topic', 'subtopic'].map(key => ({ [key]: new RegExp(text, 'i') }));
+      }
+      const max = Math.min(1000, Math.max(1, Number(limit) || 200));
       const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ questions });
     } catch (err) {
@@ -556,10 +596,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         question_text: data.question_text,
         question_type: data.question_type || 'single_choice',
         subtopic: data.subtopic || '',
+        topic: data.topic || '', exam: data.exam || '', exam_year: data.exam_year || null, source_type: data.source_type || 'question_bank',
         options: data.options || [],
         correct_answers: data.correct_answers || [],
         explanation: data.explanation || '',
         explanation_image_url: data.explanation_image_url || '',
+        question_image_url: data.question_image_url || '',
         difficulty: data.difficulty || 'medium',
         marks: data.marks ?? 1,
         negative_marks: data.negative_marks ?? 0,
@@ -1009,6 +1051,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const user = await User.findById(req.userId).lean();
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
+      }
+
+      const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
+      const isStaff = Boolean(
+        canManageTests || user.role === 'admin' || user.role === 'teacher' || user.is_teacher
+      );
+      if (!isStaff && !isTestLiveForStudent(test)) {
+        return res.status(403).json({ error: 'This test is not currently available' });
       }
 
       const data = req.body || {};

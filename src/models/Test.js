@@ -13,6 +13,13 @@ const testSchema = new mongoose.Schema(
     required_plan: { type: String, default: 'free' },
     is_published: { type: Boolean, default: false },
     is_active: { type: Boolean, default: true },
+    // Scheduled publishing (decision 10.9). All optional; null = no constraint.
+    //   publish_at      — before this instant students treat the test as unpublished
+    //   available_from  — window opens
+    //   available_until — window closes
+    publish_at: { type: Date, default: null },
+    available_from: { type: Date, default: null },
+    available_until: { type: Date, default: null },
     question_count: { type: Number, default: 0 },
     attempt_count: { type: Number, default: 0 },
     created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
