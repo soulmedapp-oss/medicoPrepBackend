@@ -349,6 +349,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         question_text: data.question_text,
         question_type: data.question_type || 'single_choice',
         subtopic: data.subtopic || '',
+        topic: data.topic || '', exam: data.exam || '', exam_year: data.exam_year || null, source_type: data.source_type || 'question_bank',
         options: data.options || [],
         correct_answers: data.correct_answers || [],
         explanation: data.explanation || '',
@@ -534,10 +535,21 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const filter = { test_id: null };
       if (subject) filter.subject = subject;
       if (difficulty) filter.difficulty = difficulty;
-      if (search) {
-        filter.question_text = new RegExp(String(search), 'i');
+      for (const key of ['source_type', 'exam', 'topic', 'subtopic', 'question_code']) {
+        if (req.query[key]) filter[key] = String(req.query[key]);
       }
-      const max = Number(limit) || 200;
+      if (req.query.exam_year) {
+        const year = Number(req.query.exam_year);
+        if (!Number.isInteger(year) || year < 1950 || year > new Date().getFullYear()) {
+          return res.status(400).json({ error: 'Invalid exam year' });
+        }
+        filter.exam_year = year;
+      }
+      if (search) {
+        const text = String(search).slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$or = ['question_text', 'question_code', 'exam', 'topic', 'subtopic'].map(key => ({ [key]: new RegExp(text, 'i') }));
+      }
+      const max = Math.min(1000, Math.max(1, Number(limit) || 200));
       const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ questions });
     } catch (err) {
@@ -584,6 +596,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         question_text: data.question_text,
         question_type: data.question_type || 'single_choice',
         subtopic: data.subtopic || '',
+        topic: data.topic || '', exam: data.exam || '', exam_year: data.exam_year || null, source_type: data.source_type || 'question_bank',
         options: data.options || [],
         correct_answers: data.correct_answers || [],
         explanation: data.explanation || '',

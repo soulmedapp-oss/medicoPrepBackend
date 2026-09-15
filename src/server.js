@@ -983,7 +983,7 @@ async function startLocalServer() {
   server = http.createServer(app);
   initRealtime(server);
   await connectDb();
-  server.listen(port, () => {
+  server.listen(port, process.env.HOST || undefined, () => {
     // eslint-disable-next-line no-console
     console.log(`Server listening on http://localhost:${port}`);
   });
