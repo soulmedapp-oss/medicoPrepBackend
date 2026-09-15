@@ -754,6 +754,14 @@ async function ensureDefaultRoles() {
       is_active: true,
     },
     {
+      name: 'content_writer',
+      description: 'Creates and reviews question banks for teacher approval',
+      permissions: [
+        'manage_questions',
+      ],
+      is_active: true,
+    },
+    {
       name: 'admin',
       description: 'Default admin role',
       permissions: [],
