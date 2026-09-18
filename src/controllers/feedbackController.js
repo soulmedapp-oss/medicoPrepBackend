@@ -1,6 +1,6 @@
 const Feedback = require('../models/Feedback');
 const User = require('../models/User');
-const { hasPermission } = require('../middlewares/auth');
+const { isStaffUser } = require('../middlewares/auth');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 
 function createFeedbackController({ createNotification, sendSupportEmail, broadcastFeedback }) {
@@ -13,11 +13,8 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       if (all === 'true') {
         const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!isStaffUser(user)) {
           return res.status(403).json({ error: 'Staff access required' });
-        }
-        if (user.role === 'admin' && !hasPermission(user, 'manage_feedback')) {
-          return res.status(403).json({ error: 'Feedback access required' });
         }
       } else {
         filter.student_id = req.userId;
@@ -182,13 +179,10 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
       }
 
       const user = await User.findById(req.userId).lean();
-      const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
+      const isStaff = isStaffUser(user);
       const isOwner = String(feedback.student_id) === String(req.userId);
       if (!isStaff && !isOwner) {
         return res.status(403).json({ error: 'Not authorized' });
-      }
-      if (user?.role === 'admin' && isStaff && !hasPermission(user, 'manage_feedback')) {
-        return res.status(403).json({ error: 'Feedback access required' });
       }
 
       const updates = req.body || {};

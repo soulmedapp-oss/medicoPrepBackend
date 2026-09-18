@@ -14,6 +14,7 @@ function normalizeRoles(input) {
 function derivePrimaryRole(roles, fallback = 'student') {
   if (roles.includes('admin')) return 'admin';
   if (roles.includes('teacher')) return 'teacher';
+  if (roles.includes('content_manager')) return 'content_manager';
   if (roles.includes('content_writer')) return 'content_writer';
   if (roles.includes('student')) return 'student';
   return fallback;
@@ -74,7 +75,8 @@ function createUsersController() {
         email: data.email,
         full_name: data.full_name,
         role: primaryRole,
-        roles: normalizedRoles,
+        // A user has exactly one role, even if multiple were submitted.
+        roles: [primaryRole],
         permissions: data.permissions || [],
         admin_status: data.admin_status || 'active',
         subscription_plan: data.subscription_plan || 'free',
@@ -139,8 +141,10 @@ function createUsersController() {
 
       if (Object.prototype.hasOwnProperty.call(payload, 'roles')) {
         const normalizedRoles = normalizeRoles(payload.roles);
-        payload.roles = normalizedRoles;
-        payload.role = derivePrimaryRole(normalizedRoles, payload.role || 'student');
+        const primaryRole = derivePrimaryRole(normalizedRoles, payload.role || 'student');
+        // A user has exactly one role, even if multiple were submitted.
+        payload.roles = [primaryRole];
+        payload.role = primaryRole;
       }
 
       if (updates.password) {

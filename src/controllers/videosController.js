@@ -1,5 +1,6 @@
 const Video = require('../models/Video');
 const User = require('../models/User');
+const { isStaffUser } = require('../middlewares/auth');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
@@ -18,7 +19,7 @@ function createVideosController() {
     if (!video) return { error: 'Video not found' };
     const user = await User.findById(userId).lean();
     if (!user) return { error: 'User not found' };
-    const isStaff = user.role === 'admin' || user.role === 'teacher' || user.is_teacher;
+    const isStaff = isStaffUser(user);
     if (!isStaff) {
       if (!video.is_published || video.is_active === false) {
         return { error: 'Video not found' };
@@ -38,7 +39,7 @@ function createVideosController() {
 
       if (all === 'true') {
         const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!isStaffUser(user)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {

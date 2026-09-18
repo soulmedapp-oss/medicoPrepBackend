@@ -1,5 +1,6 @@
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { isStaffUser } = require('../middlewares/auth');
 const { isValidTextLength } = require('../utils/validation');
 
 function createNotificationsController({ createNotification }) {
@@ -11,7 +12,7 @@ function createNotificationsController({ createNotification }) {
         return res.status(404).json({ error: 'User not found' });
       }
 
-      const isStaff = user.role === 'admin' || user.role === 'teacher' || user.is_teacher;
+      const isStaff = isStaffUser(user);
       const audiences = isStaff
         ? [user.email, 'all', 'teachers']
         : [user.email, 'all', 'students'];

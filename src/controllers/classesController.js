@@ -1,6 +1,7 @@
 const LiveClass = require('../models/LiveClass');
 const LiveClassNote = require('../models/LiveClassNote');
 const User = require('../models/User');
+const { isStaffUser } = require('../middlewares/auth');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { getZoomAccessToken, pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
@@ -47,7 +48,7 @@ function createClassesController({ createNotification }) {
       let userPlan = 'free';
       if (all === 'true') {
         const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!isStaffUser(user)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
@@ -352,7 +353,7 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
+      const isStaff = isStaffUser(req.user);
       if (!isStaff) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
@@ -432,7 +433,7 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
+      const isStaff = isStaffUser(req.user);
       if (!isStaff) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
@@ -467,7 +468,7 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
+      const isStaff = isStaffUser(req.user);
       if (!isStaff) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
