@@ -5,6 +5,20 @@ const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 
 const { JWT_SECRET } = process.env;
 
+// Roles that count as "staff" for class/video/doubt/feedback management gates.
+// content_manager is intentionally excluded: it only gets manage_tests/manage_questions
+// permission, checked separately via hasPermission() on the tests/questions routes.
+const STAFF_ROLES = ['admin', 'teacher'];
+
+function isStaffUser(user) {
+  if (!user) return false;
+  if (user.is_teacher) return true;
+  const roleNames = Array.isArray(user.roles) && user.roles.length > 0
+    ? user.roles
+    : (user.role ? [user.role] : []);
+  return roleNames.some((role) => STAFF_ROLES.includes(String(role || '').toLowerCase()));
+}
+
 async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -59,7 +73,7 @@ async function requireAdmin(req, res, next) {
 async function requireStaff(req, res, next) {
   try {
     const user = req.user || await User.findById(req.userId).lean();
-    if (!user || user.is_active === false || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+    if (!user || user.is_active === false || !isStaffUser(user)) {
       return res.status(403).json({ error: 'Staff access required' });
     }
     req.user = user;
@@ -71,12 +85,7 @@ async function requireStaff(req, res, next) {
 
 function hasPermission(user, permission) {
   if (!user) return false;
-  if (user.role === 'admin') {
-    if (!Array.isArray(user.permissions) || user.permissions.length === 0) return true;
-    if (user.permissions.includes(permission)) return true;
-    if (permission === 'manage_feedback') return true;
-    return false;
-  }
+  if (user.role === 'admin') return true;
   if (Array.isArray(user.permissions) && user.permissions.includes(permission)) return true;
   if (Array.isArray(user.effective_permissions) && user.effective_permissions.includes(permission)) return true;
   return false;
@@ -87,4 +96,6 @@ module.exports = {
   requireAdmin,
   requireStaff,
   hasPermission,
+  isStaffUser,
+  STAFF_ROLES,
 };

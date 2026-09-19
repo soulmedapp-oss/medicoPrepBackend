@@ -58,10 +58,6 @@ const runningServerless = runningOnVercel || runningOnLambda;
 const app = express();
 let server;
 
-const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
-if (corsEnabled) {
-  app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
-}
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'soulmedapp@gmail.com';
 let supportTransport;
 const plansCacheTtlMs = Math.max(0, Number(process.env.PLANS_CACHE_TTL_MS || 60000));

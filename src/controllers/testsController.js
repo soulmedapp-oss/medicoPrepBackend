@@ -7,7 +7,7 @@ const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
-const { hasPermission } = require('../middlewares/auth');
+const { hasPermission, isStaffUser } = require('../middlewares/auth');
 
 const PLAN_RANKS = {
   free: 0,
@@ -120,7 +120,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (all === 'true') {
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!user || (!canManageTests && !isStaffUser(user))) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
@@ -144,7 +144,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (test.is_active === false) {
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!user || (!canManageTests && !isStaffUser(user))) {
           return res.status(404).json({ error: 'Test not found' });
         }
       }
@@ -152,7 +152,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
         const isStaff = Boolean(
-          canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
+          canManageTests || isStaffUser(user)
         );
         if (!isStaff) {
           return res.status(test.is_published ? 404 : 403).json({
@@ -301,13 +301,13 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (test.is_active === false) {
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!user || (!canManageTests && !isStaffUser(user))) {
           return res.status(404).json({ error: 'Test not found' });
         }
       }
 
       const user = req.user || await User.findById(req.userId).lean();
-      const isStaff = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions') || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
+      const isStaff = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions') || isStaffUser(user);
       const filter = { test_id: req.params.id };
 
       if (!isStaff) {
@@ -915,7 +915,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (all === 'true') {
         const user = req.user || await User.findById(req.userId).lean();
         const canManageTests = hasPermission(user, 'manage_tests');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!user || (!canManageTests && !isStaffUser(user))) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
@@ -962,7 +962,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const user = req.user || await User.findById(req.userId).lean();
       const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
       const isStaff = Boolean(
-        canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
+        canManageTests || isStaffUser(user)
       );
 
       if (test.is_active === false && !isStaff) {
@@ -1055,7 +1055,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
       const isStaff = Boolean(
-        canManageTests || user.role === 'admin' || user.role === 'teacher' || user.is_teacher
+        canManageTests || isStaffUser(user)
       );
       if (!isStaff && !isTestLiveForStudent(test)) {
         return res.status(403).json({ error: 'This test is not currently available' });

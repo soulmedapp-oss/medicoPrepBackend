@@ -1,5 +1,6 @@
 const Doubt = require('../models/Doubt');
 const User = require('../models/User');
+const { isStaffUser } = require('../middlewares/auth');
 const { isValidEmail, isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 
@@ -14,7 +15,7 @@ function createDoubtsController({ createNotification }) {
 
       if (all === 'true') {
         const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!isStaffUser(user)) {
           return res.status(403).json({ error: 'Staff access required' });
         }
         if (studentEmail) {
@@ -126,7 +127,7 @@ function createDoubtsController({ createNotification }) {
       }
 
       const user = await User.findById(req.userId).lean();
-      const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
+      const isStaff = isStaffUser(user);
       const isOwner = String(doubt.student_id) === String(req.userId);
       if (!isStaff && !isOwner) {
         return res.status(403).json({ error: 'Not authorized' });
