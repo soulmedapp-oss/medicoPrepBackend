@@ -1,0 +1,28 @@
+const express = require('express');
+const { createPlaylistsController } = require('../controllers/playlistsController');
+const { validateObjectIdParams } = require('../middlewares/validateObjectId');
+const { authorize } = require('../rbac/authorize');
+
+function createPlaylistsRoutes({ authMiddleware }) {
+  const router = express.Router();
+  validateObjectIdParams(router, ['id']);
+  const controller = createPlaylistsController();
+
+  // Student routes first: /playlists/browse must be matched before
+  // /playlists/:id, or the :id param validator would 400 it as an invalid
+  // ObjectId.
+  router.get('/playlists/browse', authMiddleware, authorize('CanAccessVideos'), controller.browsePlaylists);
+  router.get('/playlists/:id', authMiddleware, authorize('CanAccessVideos'), controller.getPlaylist);
+
+  // Admin (staff) routes.
+  router.get('/playlists', authMiddleware, authorize.any('CanViewVideos', 'CanAddVideos'), controller.listPlaylists);
+  router.post('/playlists', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.createPlaylist);
+  router.patch('/playlists/:id', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.updatePlaylist);
+  router.delete('/playlists/:id', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.deletePlaylist);
+  router.post('/playlists/:id/items', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.addPlaylistItems);
+  router.patch('/playlists/:id/items', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.replacePlaylistItems);
+
+  return router;
+}
+
+module.exports = createPlaylistsRoutes;

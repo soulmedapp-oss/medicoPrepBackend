@@ -27,6 +27,7 @@ const createNotificationsRoutes = require('./routes/notificationsRoutes');
 const createTeacherRequestsRoutes = require('./routes/teacherRequestsRoutes');
 const createUsersRoutes = require('./routes/usersRoutes');
 const createVideosRoutes = require('./routes/videosRoutes');
+const createPlaylistsRoutes = require('./routes/playlistsRoutes');
 const createVideoProgressRoutes = require('./routes/videoProgressRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
 const createSubjectsRoutes = require('./routes/subjectsRoutes');
@@ -875,6 +876,11 @@ app.use(
 );
 app.use(
   createVideosRoutes({
+    authMiddleware,
+  })
+);
+app.use(
+  createPlaylistsRoutes({
     authMiddleware,
   })
 );
