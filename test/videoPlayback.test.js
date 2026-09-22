@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { playbackResponse } = require('../src/controllers/videosController');
+const { playbackResponse, resolvePlaybackAccess } = require('../src/controllers/videosController');
 
 test('a youtube video returns its stored url and no token', () => {
   const result = playbackResponse({ provider: 'youtube', video_url: 'https://y/1' });
@@ -69,5 +69,73 @@ test('a bunny video with no bunny_video_id yet returns 409 and does not throw, e
     assert.equal(result.status, 409);
     assert.equal(result.body.token, undefined);
     assert.match(result.body.error, /still being processed/i);
+  });
+});
+
+// Task 5 — resolvePlaybackAccess is the pure decision loadVideoForPlayback
+// hands to getPlayback; these pin the entitlement gate without a database.
+
+// Review Focus #1: a lecture in no playlist is a clean refusal, never a
+// thrown error and never anything resembling a token.
+test('a lecture in no playlist is refused cleanly, not thrown, and carries no token', () => {
+  assert.doesNotThrow(() => {
+    const result = resolvePlaybackAccess({
+      lecture: { _id: 'L1', is_active: true },
+      playlists: [],
+      planName: 'free',
+      isStaff: false,
+    });
+    assert.equal(result.allowed, false);
+    assert.equal(result.status, 403);
+    assert.equal(result.error, 'Upgrade required');
+    assert.equal(result.token, undefined);
+  });
+});
+
+test('a lecture in a published, entitled playlist is allowed', () => {
+  const lecture = { _id: 'L1', is_active: true };
+  const playlists = [
+    { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
+  ];
+  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  assert.equal(result.allowed, true);
+  assert.equal(result.error, undefined);
+});
+
+test('a lecture only in a playlist for another plan is refused with the same shape as an unentitled video', () => {
+  const lecture = { _id: 'L1', is_active: true };
+  const playlists = [
+    { is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'], items: [{ lecture_id: 'L1' }] },
+  ];
+  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
+});
+
+// Staff bypass stays exactly as today: CanViewVideos may preview any active
+// lecture regardless of playlist membership.
+test('staff may play an active lecture that is in no playlist at all', () => {
+  const result = resolvePlaybackAccess({
+    lecture: { _id: 'L1', is_active: true },
+    playlists: [],
+    planName: 'free',
+    isStaff: true,
+  });
+  assert.equal(result.allowed, true);
+});
+
+test('an inactive lecture is never playable, even for staff', () => {
+  const result = resolvePlaybackAccess({
+    lecture: { _id: 'L1', is_active: false },
+    playlists: [],
+    planName: 'free',
+    isStaff: true,
+  });
+  assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
+});
+
+test('a missing lecture returns "Video not found" rather than throwing', () => {
+  assert.doesNotThrow(() => {
+    const result = resolvePlaybackAccess({ lecture: null, playlists: [], planName: 'free', isStaff: false });
+    assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
   });
 });

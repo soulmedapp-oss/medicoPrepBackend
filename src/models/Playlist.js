@@ -1,8 +1,14 @@
 const mongoose = require('mongoose');
 
 const playlistItemSchema = new mongoose.Schema(
-  { lecture_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Video', required: true },
-    order: { type: Number, default: 0 } },
+  {
+    // Refs 'Video' deliberately, NOT 'Lecture': no 'Lecture' model is ever
+    // registered and Video is never renamed to it. The spec's pseudocode
+    // writes ref: 'Lecture' — "fixing" this to match it would silently null
+    // out every populate('items.lecture_id') instead of erroring.
+    lecture_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Video', required: true },
+    order: { type: Number, default: 0 },
+  },
   { _id: true }
 );
 

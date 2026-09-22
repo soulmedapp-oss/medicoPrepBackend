@@ -1,5 +1,7 @@
 const Video = require('../models/Video');
 const User = require('../models/User');
+const Playlist = require('../models/Playlist');
+const { isLecturePlayable } = require('../utils/playlistAccess');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
@@ -169,6 +171,33 @@ function playbackResponse(video) {
   };
 }
 
+// Task 5 — pure: the playback entitlement decision, extracted so it is
+// testable without a database and so the handler below can call the exact
+// function pinned by tests (Review Focus #1). Mirrors loadVideoForUser's
+// output shape ({ error } or { error, status: 403 }) so getPlayback's
+// existing "no video -> res.status(status || 404)" handling needs no change.
+//
+// Staff (CanViewVideos) bypass is unchanged from today: they may preview any
+// active lecture regardless of playlists. Everyone else needs the lecture to
+// be active AND playable through at least one published, active playlist
+// they're entitled to (isLecturePlayable) — replacing canAccessVideo /
+// is_published for this path only. A lecture in no playlist therefore falls
+// through to the same clean "Upgrade required" 403 an unentitled lecture
+// gets today — never a thrown error, never a token.
+function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
+  if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
+  if (lecture.is_active === false) {
+    return { allowed: false, status: 404, error: 'Video not found' };
+  }
+  if (isStaff) {
+    return { allowed: true };
+  }
+  if (!isLecturePlayable(lecture, playlists, planName)) {
+    return { allowed: false, status: 403, error: 'Upgrade required' };
+  }
+  return { allowed: true };
+}
+
 function createVideosController() {
   async function loadVideoForUser(user, videoId) {
     const video = await Video.findById(videoId).lean();
@@ -181,6 +210,32 @@ function createVideosController() {
       if (!canAccessVideo(video, planName)) {
         return { error: 'Upgrade required', status: 403 };
       }
+    }
+    return { video };
+  }
+
+  // Task 5: GET /videos/:id/playback's gate, separate from loadVideoForUser
+  // above (which still backs ai-summary/ai-chat, unchanged). Candidate
+  // playlists are loaded with exactly one query — never one query per
+  // playlist — and only for non-staff callers, since the staff bypass never
+  // needs them. canAccessVideo/is_published stay unused here but otherwise
+  // untouched, so this path is revertible until Task 8 retires them.
+  async function loadVideoForPlayback(user, videoId) {
+    const video = await Video.findById(videoId).lean();
+    if (!video) return { error: 'Video not found' };
+    const isStaff = can(user, 'CanViewVideos');
+    let playlists = [];
+    if (!isStaff) {
+      playlists = await Playlist.find({
+        'items.lecture_id': video._id,
+        is_published: true,
+        is_active: { $ne: false },
+      }).lean();
+    }
+    const planName = user?.subscription_plan || 'free';
+    const decision = resolvePlaybackAccess({ lecture: video, playlists, planName, isStaff });
+    if (!decision.allowed) {
+      return { error: decision.error, status: decision.status };
     }
     return { video };
   }
@@ -659,7 +714,7 @@ function createVideosController() {
 
   async function getPlayback(req, res) {
     try {
-      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
+      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) return res.status(status || 404).json({ error });
       const result = playbackResponse(video);
       return res.status(result.status).json(result.body);
@@ -687,6 +742,7 @@ module.exports = {
   attachActorNames,
   decideUploadClaim,
   playbackResponse,
+  resolvePlaybackAccess,
   resolveVideoCreateProvider,
   shouldReopenFailedUpload,
 };
