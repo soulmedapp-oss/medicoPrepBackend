@@ -88,8 +88,20 @@ function playbackResponse(video) {
       body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
     };
   }
-  const { hls_url: hlsUrl, token, expires_at: expiresAt } = getProvider('bunny').getPlaybackToken(video);
-  return { status: 200, body: { provider: 'bunny', hls_url: hlsUrl, token, expires_at: expiresAt } };
+  const {
+    hls_url: hlsUrl,
+    token,
+    token_path: tokenPath,
+    expires_at: expiresAt,
+  } = getProvider('bunny').getPlaybackToken(video);
+  // token_path must reach the client: Bunny's CDN token is a directory
+  // token whose signed message covers token_path, and the player must send
+  // it back as a query parameter on every request or playback 403s — see
+  // Fix round 1 in task-9-report.md for the live-CDN verification.
+  return {
+    status: 200,
+    body: { provider: 'bunny', hls_url: hlsUrl, token, token_path: tokenPath, expires_at: expiresAt },
+  };
 }
 
 function createVideosController() {

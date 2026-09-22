@@ -27,7 +27,7 @@ test('a failed bunny video returns 409', () => {
   assert.equal(result.status, 409);
 });
 
-test('a ready bunny video returns a token and expiry', () => {
+test('a ready bunny video returns a token, token_path and expiry', () => {
   const result = playbackResponse({
     provider: 'bunny', bunny_video_id: 'g', processing_status: 'ready', duration_seconds: 60,
   });
@@ -37,7 +37,18 @@ test('a ready bunny video returns a token and expiry', () => {
   // returns an "HS256-<base64url>" directory token (see
   // test/bunnyProvider.test.js), which this matches instead.
   assert.match(result.body.token, /^HS256-[A-Za-z0-9_-]+$/);
+  // Fix round 1: Bunny's CDN token is a directory token — the signed
+  // message covers token_path, and the player must send it back as a query
+  // parameter on every request or playback 403s (live-CDN verified). A
+  // response missing token_path breaks playback entirely, so pin both the
+  // value and the full key set of the 200 body, so a future refactor that
+  // drops a field fails a test instead of failing silently in a player.
+  assert.match(result.body.token_path, /\/g\//);
   assert.ok(result.body.expires_at > Math.floor(Date.now() / 1000));
+  assert.deepEqual(
+    Object.keys(result.body).sort(),
+    ['expires_at', 'hls_url', 'provider', 'token', 'token_path']
+  );
 });
 
 // Amendment: a freshly created bunny row takes the schema default
