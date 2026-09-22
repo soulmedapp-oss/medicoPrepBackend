@@ -2,7 +2,7 @@ const Playlist = require('../models/Playlist');
 const Video = require('../models/Video');
 const { isValidTextLength } = require('../utils/validation');
 const { isValidObjectId } = require('../utils/security');
-const { canAccessPlaylist, visibleItems } = require('../utils/playlistAccess');
+const { canAccessPlaylist, visibleItems, countVisibleItems } = require('../utils/playlistAccess');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 
@@ -357,7 +357,28 @@ function createPlaylistsController() {
       const playlists = await Playlist.find(filter).sort({ created_date: -1 }).lean();
       const planName = req.user?.subscription_plan || 'free';
       const visible = playlists.filter((playlist) => canAccessPlaylist(playlist, planName));
-      return res.json({ playlists: visible });
+
+      // lecture_count mirrors what the detail view (visibleItems) would
+      // render: only items whose lecture exists and is not deactivated.
+      // One query across every visible playlist's items, not one per card.
+      const lectureIds = visible.flatMap((playlist) =>
+        (playlist.items || []).map((item) => item.lecture_id)
+      );
+      const activeLectureIds = lectureIds.length
+        ? new Set(
+            (
+              await Video.find({ _id: { $in: lectureIds }, is_active: { $ne: false } })
+                .select('_id')
+                .lean()
+            ).map((lecture) => String(lecture._id))
+          )
+        : new Set();
+      const withCounts = visible.map((playlist) => ({
+        ...playlist,
+        lecture_count: countVisibleItems(playlist, activeLectureIds),
+      }));
+
+      return res.json({ playlists: withCounts });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load playlists' });
