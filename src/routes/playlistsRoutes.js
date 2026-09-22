@@ -13,6 +13,10 @@ function createPlaylistsRoutes({ authMiddleware }) {
   // ObjectId.
   router.get('/playlists/browse', authMiddleware, authorize('CanAccessVideos'), controller.browsePlaylists);
   router.get('/playlists/:id', authMiddleware, authorize('CanAccessVideos'), controller.getPlaylist);
+  // "Also in": lives on this router (validateObjectIdParams(['id']) already
+  // covers its :id) even though the path is /lectures rather than
+  // /playlists — it answers a lecture-scoped question about playlists.
+  router.get('/lectures/:id/playlists', authMiddleware, authorize('CanAccessVideos'), controller.getLecturePlaylists);
 
   // Admin (staff) routes.
   router.get('/playlists', authMiddleware, authorize.any('CanViewVideos', 'CanAddVideos'), controller.listPlaylists);

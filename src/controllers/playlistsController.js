@@ -112,6 +112,21 @@ function browseFilter(subjectId) {
   return filter;
 }
 
+// Task 6 — pure: projects playlists already known to contain a lecture (via
+// the one query in getLecturePlaylists below) down to the ones this student
+// may actually open, as {_id, name} only. Review Focus #3: "Also in" must
+// never leak a playlist the student cannot access — an unpublished,
+// inactive, or unentitled playlist is dropped here even though it contains
+// the lecture, exactly like getPlaylist's own entitlement check.
+function playlistsForLecture(playlists, planName) {
+  return (playlists || [])
+    .filter(
+      (playlist) =>
+        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, planName)
+    )
+    .map((playlist) => ({ _id: playlist._id, name: playlist.name }));
+}
+
 function createPlaylistsController() {
   async function listPlaylists(req, res) {
     try {
@@ -313,6 +328,30 @@ function createPlaylistsController() {
     }
   }
 
+  // "Also in": GET /lectures/:id/playlists. Resolved lazily — only when a
+  // lecture view opens client-side — and entirely separate from getPlaylist
+  // above, so it never adds a query to the main playlist read. The Mongo
+  // filter narrows to playlists containing this lecture that are published
+  // and active (mirroring Task 5's playback query); playlistsForLecture then
+  // applies entitlement and projects to {_id, name} only — nothing else
+  // about the playlist is exposed.
+  async function getLecturePlaylists(req, res) {
+    try {
+      const playlists = await Playlist.find({
+        'items.lecture_id': req.params.id,
+        is_published: true,
+        is_active: { $ne: false },
+      })
+        .select('_id name allowed_plans is_free')
+        .lean();
+      const planName = req.user?.subscription_plan || 'free';
+      return res.json({ playlists: playlistsForLecture(playlists, planName) });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to load playlists' });
+    }
+  }
+
   return {
     listPlaylists,
     createPlaylist,
@@ -322,6 +361,7 @@ function createPlaylistsController() {
     replacePlaylistItems,
     browsePlaylists,
     getPlaylist,
+    getLecturePlaylists,
   };
 }
 
@@ -330,4 +370,5 @@ module.exports = {
   buildPlaylistPayload,
   normaliseItems,
   browseFilter,
+  playlistsForLecture,
 };

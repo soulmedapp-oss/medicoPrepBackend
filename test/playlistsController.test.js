@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPlaylistPayload, normaliseItems, browseFilter } = require('../src/controllers/playlistsController');
+const { buildPlaylistPayload, normaliseItems, browseFilter, playlistsForLecture } = require('../src/controllers/playlistsController');
 
 test('payload keeps only the fields a client may set', () => {
   const out = buildPlaylistPayload({ name: 'X', description: 'd', subject_ids: ['s1'], allowed_plans: ['gold'], is_free: true, is_published: true, created_by: 'HACK', items: [] });
@@ -44,4 +44,37 @@ test('a subject filter narrows by subject_ids', () => {
 
 test('no subject filter leaves subject_ids unconstrained', () => {
   assert.ok(!('subject_ids' in browseFilter(null)));
+});
+
+// Task 6 — "Also in". Review Focus #3: a playlist the student cannot access
+// must not appear, even though it contains the lecture. Mixed set: one free
+// (accessible), one paid the student lacks (inaccessible), one unpublished
+// (inaccessible regardless of plan).
+test('playlistsForLecture keeps only the free, published, entitled playlist from a mixed set', () => {
+  const playlists = [
+    { _id: 'free-pl', name: 'Free playlist', is_published: true, is_active: true, is_free: true, allowed_plans: [] },
+    { _id: 'gold-pl', name: 'Gold playlist', is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'] },
+    { _id: 'draft-pl', name: 'Draft playlist', is_published: false, is_active: true, is_free: true, allowed_plans: [] },
+  ];
+  const out = playlistsForLecture(playlists, 'free');
+  assert.deepEqual(out, [{ _id: 'free-pl', name: 'Free playlist' }]);
+});
+
+test('playlistsForLecture drops an inactive playlist even if published and free', () => {
+  const playlists = [
+    { _id: 'inactive-pl', name: 'Retired', is_published: true, is_active: false, is_free: true, allowed_plans: [] },
+  ];
+  assert.deepEqual(playlistsForLecture(playlists, 'free'), []);
+});
+
+test('playlistsForLecture projects only _id and name, nothing else', () => {
+  const playlists = [
+    { _id: 'p1', name: 'P1', is_published: true, is_active: true, is_free: true, allowed_plans: [], description: 'secret', items: [{ lecture_id: 'x' }] },
+  ];
+  assert.deepEqual(Object.keys(playlistsForLecture(playlists, 'free')[0]).sort(), ['_id', 'name']);
+});
+
+test('playlistsForLecture handles an empty or missing list without throwing', () => {
+  assert.deepEqual(playlistsForLecture([], 'free'), []);
+  assert.deepEqual(playlistsForLecture(undefined, 'free'), []);
 });
