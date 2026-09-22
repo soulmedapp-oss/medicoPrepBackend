@@ -1288,3 +1288,5 @@ git commit -m "feat(video): play Bunny lectures via tokenized HLS"
 ## Deferred
 
 **Phase 2 (transcription)** gets its own plan once Phase 1 is live: enabling Bunny Transcribe AI for a ~20-lecture pilot, storing the VTT into `transcript_text`, wiring timestamped cues into `buildVideoContext`, and deciding Bunny ($0.10/min) versus self-hosted Whisper (~$0.006/min) for the bulk library. Spec §10.
+
+**Timeout budget once transcripts land.** Today's per-request input to the video chat/summary prompts is ~200 chars (title/subject/teacher/description only — no `transcript_text`). Once Phase 2 populates transcripts, that jumps to ~88k chars (~22k tokens) per request. `OPENAI_TIMEOUT_MS = 25000` (`src/services/tutorService.js`) is sized for the current small payload; against API Gateway's 29-second ceiling, a 22k-token prompt leaves little headroom for a slow completion. Phase 2's plan needs to settle a timeout/streaming decision (raise the timeout within Gateway's limit, move to streaming responses, or front it with an async job like the existing tutor-session queue) before transcripts are wired in.

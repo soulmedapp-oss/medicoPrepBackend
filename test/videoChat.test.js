@@ -2,10 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   VIDEO_CHAT_SYSTEM_PROMPT,
+  VIDEO_CHAT_REMINDER_PROMPT,
   buildChatHistory,
   buildVideoChatMessages,
 } = require('../src/services/tutorService');
 const { MAX_CHAT_CONTEXT_CHARS } = require('../src/utils/security');
+
+const VIDEO_FIXTURE = { title: 'Cardiology 101', subject: 'Cardiology', teacher_name: 'Dr. X' };
 
 test('video chat system prompt confines answers to the lecture context', () => {
   assert.equal(typeof VIDEO_CHAT_SYSTEM_PROMPT, 'string');
@@ -35,14 +38,33 @@ test('chat history drops malformed and empty entries', () => {
   assert.deepEqual(built, [{ role: 'user', content: 'kept' }]);
 });
 
-test('chat history is capped so a long conversation cannot exceed the context budget', () => {
-  const long = 'x'.repeat(MAX_CHAT_CONTEXT_CHARS);
+test('chat history is capped so a long conversation cannot exceed the context budget, keeping the newest entry', () => {
+  const older = 'a'.repeat(MAX_CHAT_CONTEXT_CHARS);
+  const newest = 'b'.repeat(MAX_CHAT_CONTEXT_CHARS);
   const built = buildChatHistory([
-    { role: 'user', text: long },
-    { role: 'assistant', text: long },
+    { role: 'user', text: older },
+    { role: 'assistant', text: newest },
   ]);
-  const total = built.reduce((sum, m) => sum + m.content.length, 0);
-  assert.ok(total <= MAX_CHAT_CONTEXT_CHARS, `history was ${total} chars`);
+  assert.equal(built.length, 1);
+  assert.equal(built[0].role, 'assistant');
+  assert.equal(built[0].content, newest);
+});
+
+test('chat history budget trim drops the rest of the older suffix once one entry overflows', () => {
+  // After keeping the newest two entries, only a little budget remains — too
+  // little for the mid entry, but enough for the small oldest one. The loop
+  // must `break` on the mid entry (dropping it and everything older) rather
+  // than `continue` past it, which would splice the oldest entry back in and
+  // leave a hole in the middle of the kept conversation.
+  const oldest = { role: 'user', text: 'oldest'.padEnd(50, '.') };
+  const mid = { role: 'user', text: 'mid'.padEnd(MAX_CHAT_CONTEXT_CHARS - 100, '.') };
+  const second = { role: 'user', text: 'second'.padEnd(100, '.') };
+  const newest = { role: 'assistant', text: 'newest'.padEnd(100, '.') };
+  const built = buildChatHistory([oldest, mid, second, newest]);
+  assert.deepEqual(built, [
+    { role: 'user', content: second.text },
+    { role: 'assistant', content: newest.text },
+  ]);
 });
 
 test('chat history tolerates a missing or non-array argument', () => {
@@ -51,30 +73,34 @@ test('chat history tolerates a missing or non-array argument', () => {
 });
 
 test('buildVideoChatMessages starts with the exact system prompt constant', () => {
-  const video = { title: 'Cardiology 101', subject: 'Cardiology', teacher_name: 'Dr. X' };
-  const messages = buildVideoChatMessages(video, 'What is this about?', []);
+  const messages = buildVideoChatMessages('What is this about?', VIDEO_FIXTURE, []);
   assert.equal(messages[0].role, 'system');
   assert.equal(messages[0].content, VIDEO_CHAT_SYSTEM_PROMPT);
 });
 
-test('buildVideoChatMessages orders video context before history, question last', () => {
-  const video = { title: 'Cardiology 101', subject: 'Cardiology', teacher_name: 'Dr. X' };
+test('buildVideoChatMessages orders: system prompt, lecture context, history, reminder, question', () => {
   const history = [
     { role: 'user', text: 'first question' },
     { role: 'assistant', text: 'first answer' },
   ];
-  const messages = buildVideoChatMessages(video, 'follow up question', history);
+  const messages = buildVideoChatMessages('follow up question', VIDEO_FIXTURE, history);
+
+  assert.equal(messages.length, 6);
 
   assert.equal(messages[0].role, 'system');
+  assert.equal(messages[0].content, VIDEO_CHAT_SYSTEM_PROMPT);
+
   assert.ok(messages[1].content.includes('Cardiology 101'), 'video context must appear before history');
 
-  const last = messages[messages.length - 1];
-  assert.equal(last.role, 'user');
-  assert.ok(last.content.includes('follow up question'), 'the new question must be the final message');
-
-  const historySlice = messages.slice(2, messages.length - 1);
-  assert.deepEqual(historySlice, [
+  assert.deepEqual(messages.slice(2, 4), [
     { role: 'user', content: 'first question' },
     { role: 'assistant', content: 'first answer' },
   ]);
+
+  assert.equal(messages[4].role, 'system');
+  assert.equal(messages[4].content, VIDEO_CHAT_REMINDER_PROMPT);
+
+  const last = messages[5];
+  assert.equal(last.role, 'user');
+  assert.ok(last.content.includes('follow up question'), 'the new question must be the final message');
 });
