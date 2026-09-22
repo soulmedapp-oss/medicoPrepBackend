@@ -60,7 +60,7 @@ const Role = require('./models/Role');
 const Video = require('./models/Video');
 const { enqueueTutorSession } = require('./services/tutorService');
 const { verifyBunnySignature } = require('./utils/bunnyWebhook');
-const { nextProcessingStatus } = require('./utils/bunnyStatus');
+const { applyBunnyStatusTransition } = require('./services/video/statusTransition');
 const { getStatus } = require('./services/video/bunnyProvider');
 
 const runningOnVercel = Boolean(process.env.VERCEL);
@@ -948,26 +948,23 @@ app.post('/webhooks/bunny/video-status', publicRoute, async (req, res) => {
     return res.status(401).json({ error: 'Invalid signature' });
   }
   const { VideoGuid: guid, Status: status } = req.body || {};
+  if (!guid || typeof guid !== 'string') {
+    // Mongoose strips `undefined` filter values, so `findOne({ bunny_video_id:
+    // undefined })` below would silently become `findOne({})` and apply the
+    // transition to whatever document sorts first — an unrelated row. 200 (not
+    // 400) so Bunny doesn't retry a callback we will never be able to use.
+    return res.status(200).json({ ok: true });
+  }
   const video = await Video.findOne({ bunny_video_id: guid });
   // 200 on an unknown guid so Bunny stops retrying a webhook we cannot use.
   if (!video) return res.status(200).json({ ok: true });
 
-  const next = nextProcessingStatus(video.processing_status, status);
-  let dirty = false;
-  if (next) {
-    video.processing_status = next;
-    dirty = true;
-  }
-  if (Number(status) === 9) {
-    video.transcript_status = 'ready';
-    dirty = true;
-  }
-  // Persist the status transition on its own first. Bunny already told us
-  // encoding finished, so that fact must not be lost - a duration lookup
-  // failure below must never leave a ready video stuck pre-ready forever.
-  if (dirty) {
-    await video.save();
-  }
+  // Persist the status transition (and any transcript_status bookkeeping) on
+  // its own first, via the same logic the admin refresh-status endpoint uses.
+  // Bunny already told us encoding finished, so that fact must not be lost -
+  // a duration lookup failure below must never leave a ready video stuck
+  // pre-ready forever.
+  const next = await applyBunnyStatusTransition(video, status);
   if (next === 'ready') {
     // Best-effort metadata only: getStatus can throw (bad key, network error,
     // video deleted upstream, its own timeout). The ready transition above is

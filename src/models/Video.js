@@ -43,5 +43,9 @@ const videoSchema = new mongoose.Schema(
 );
 
 videoSchema.index({ provider: 1, processing_status: 1 });
+// Every Bunny webhook (and the admin refresh-status endpoint) looks a video
+// up by bunny_video_id alone; the compound index above doesn't serve that
+// query, so without this every webhook was a collection scan.
+videoSchema.index({ bunny_video_id: 1 });
 
 module.exports = mongoose.model('Video', videoSchema);

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { decideUploadClaim } = require('../src/controllers/videosController');
+const { decideUploadClaim, shouldReopenFailedUpload } = require('../src/controllers/videosController');
 
 // decideUploadClaim is a pure mirror of the Mongo filter createUploadUrl uses
 // to atomically claim the "no Bunny video yet" slot. It doesn't touch a
@@ -38,10 +38,12 @@ test('decideUploadClaim: waits when another claim is live (uploading, not yet st
   );
 });
 
-test('decideUploadClaim: pins the exact staleness boundary — 1ms short of stale still waits, exactly at staleMs is stale', () => {
-  // The guard is `now - updatedAtMs >= staleMs`, so staleMs itself already
-  // counts as stale (claimable) and only staleMs-1 is still a live claim.
-  // This pins that exact edge rather than just ">= roughly stale".
+test('decideUploadClaim: pins the exact staleness boundary — 1ms short of stale still waits, and exactly staleMs also still waits', () => {
+  // The guard is `now - updatedAtMs > staleMs` (strictly greater), matching
+  // the Mongo filter `updated_date: { $lt: cutoff }` (cutoff = now - staleMs)
+  // exactly: a row only becomes stale once its age is strictly greater than
+  // staleMs, so staleMs itself is still a live claim and only staleMs+1 is
+  // claimable. This pins that exact edge rather than just "roughly stale".
   const oneMsBeforeStale = NOW - (STALE_MS - 1);
   assert.equal(
     decideUploadClaim({ bunnyVideoId: '', processingStatus: 'uploading', updatedAt: oneMsBeforeStale, now: NOW, staleMs: STALE_MS }),
@@ -51,6 +53,12 @@ test('decideUploadClaim: pins the exact staleness boundary — 1ms short of stal
   const exactlyStale = NOW - STALE_MS;
   assert.equal(
     decideUploadClaim({ bunnyVideoId: '', processingStatus: 'uploading', updatedAt: exactlyStale, now: NOW, staleMs: STALE_MS }),
+    'wait'
+  );
+
+  const oneMsPastStale = NOW - STALE_MS - 1;
+  assert.equal(
+    decideUploadClaim({ bunnyVideoId: '', processingStatus: 'uploading', updatedAt: oneMsPastStale, now: NOW, staleMs: STALE_MS }),
     'claim'
   );
 });
@@ -80,4 +88,34 @@ test('decideUploadClaim: accepts a Date instance for updatedAt, not just a times
     decideUploadClaim({ bunnyVideoId: '', processingStatus: 'uploading', updatedAt: justClaimed, now: NOW, staleMs: STALE_MS }),
     'wait'
   );
+});
+
+// I1: `failed` is otherwise an absorbing state — nextProcessingStatus returns
+// null for every webhook code once processing_status is 'failed', which is
+// correct for stray webhooks but would leave a deliberate re-upload stuck
+// forever. shouldReopenFailedUpload is the pure decision behind the one
+// legitimate exception, applied at the createUploadUrl call site rather than
+// by weakening nextProcessingStatus's terminal guard.
+test('shouldReopenFailedUpload: reopens only the reuse case (a bunny_video_id already exists) whose last status was failed', () => {
+  assert.equal(
+    shouldReopenFailedUpload({ bunnyVideoId: 'GUID', processingStatus: 'failed' }),
+    true
+  );
+});
+
+test('shouldReopenFailedUpload: does not reopen a fresh claim (no bunny_video_id yet)', () => {
+  assert.equal(
+    shouldReopenFailedUpload({ bunnyVideoId: '', processingStatus: 'failed' }),
+    false
+  );
+});
+
+test('shouldReopenFailedUpload: does not touch a row that is not failed', () => {
+  for (const processingStatus of ['uploading', 'processing', 'ready']) {
+    assert.equal(
+      shouldReopenFailedUpload({ bunnyVideoId: 'GUID', processingStatus }),
+      false,
+      `unexpected reopen for processingStatus=${processingStatus}`
+    );
+  }
 });

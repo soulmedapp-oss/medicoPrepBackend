@@ -34,6 +34,8 @@ test('videos routes', () => {
   expectRule(routes, 'GET', '/videos/:id/ai-summary', 'permission', ['CanAccessVideos', 'CanViewVideos']);
   expectRule(routes, 'POST', '/videos/:id/ai-chat', 'permission', ['CanAccessVideos', 'CanViewVideos']);
   expectRule(routes, 'POST', '/videos', 'permission', ['CanAddVideos']);
+  expectRule(routes, 'POST', '/videos/:id/upload-url', 'permission', ['CanAddVideos', 'CanEditVideos']);
+  expectRule(routes, 'POST', '/videos/:id/refresh-status', 'permission', ['CanAddVideos', 'CanEditVideos']);
   expectRule(routes, 'PATCH', '/videos/:id', 'permission', ['CanEditVideos', 'CanDeactivateVideos']);
   expectRule(routes, 'DELETE', '/videos/:id', 'permission', ['CanDeactivateVideos']);
 });

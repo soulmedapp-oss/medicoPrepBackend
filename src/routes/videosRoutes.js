@@ -24,6 +24,12 @@ function createVideosRoutes({ authMiddleware }) {
     authorize.any('CanAddVideos', 'CanEditVideos'),
     controller.createUploadUrl
   );
+  router.post(
+    '/videos/:id/refresh-status',
+    authMiddleware,
+    authorize.any('CanAddVideos', 'CanEditVideos'),
+    controller.refreshVideoStatus
+  );
   router.patch('/videos/:id', authMiddleware, authorize.any('CanEditVideos', 'CanDeactivateVideos'), controller.updateVideo);
   router.delete('/videos/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deleteVideo);
   router.get('/videos/:id/ai-summary', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getVideoSummary);

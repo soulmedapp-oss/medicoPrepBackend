@@ -1,6 +1,7 @@
 const Video = require('../models/Video');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
+const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
@@ -53,6 +54,28 @@ function canAccessVideo(video, planName) {
 // that an admin whose attempt crashed mid-claim isn't locked out for long.
 const STALE_CLAIM_MS = 5 * 60 * 1000;
 
+// Pure: decides a new video row's provider from the untrusted request body,
+// and whether video_url is required for it. The raw value is never trusted
+// straight into the enum — anything other than the literal string 'bunny'
+// becomes 'youtube' (the schema's own default), so a typo'd or missing
+// provider can't slip past validation into an unexpected state. A bunny row
+// has no video_url at all (the asset lives on Bunny, addressed by
+// bunny_video_id once uploaded), so video_url is only required for youtube.
+function resolveVideoCreateProvider(data) {
+  const provider = data && data.provider === 'bunny' ? 'bunny' : 'youtube';
+  return { provider, videoUrlRequired: provider !== 'bunny' };
+}
+
+// Pure: should createUploadUrl's reuse branch (there is already a
+// bunny_video_id to hand tus credentials for) reopen a failed row's state
+// machine before returning those credentials? Only when the row's last
+// known status is exactly 'failed' — the one deliberate-retry exception to
+// nextProcessingStatus's terminal guard, which stays untouched (and correct
+// for webhooks) precisely because this check lives at the call site instead.
+function shouldReopenFailedUpload({ bunnyVideoId, processingStatus }) {
+  return Boolean(bunnyVideoId) && processingStatus === 'failed';
+}
+
 // Pure mirror of the Mongo filter used in createUploadUrl's atomic claim
 // below: given a video row's claim-relevant fields, does the filter match
 // (this caller may proceed to create a Bunny video), or not (either another
@@ -65,7 +88,10 @@ const STALE_CLAIM_MS = 5 * 60 * 1000;
 function decideUploadClaim({ bunnyVideoId, processingStatus, updatedAt, now = Date.now(), staleMs = STALE_CLAIM_MS }) {
   if (bunnyVideoId) return 'reuse';
   const updatedAtMs = updatedAt instanceof Date ? updatedAt.getTime() : new Date(updatedAt).getTime();
-  const isStale = !Number.isFinite(updatedAtMs) || now - updatedAtMs >= staleMs;
+  // Strictly greater than, to agree exactly with the Mongo filter below:
+  // `updated_date: { $lt: cutoff }` (cutoff = now - staleMs) only matches
+  // once the row's age is strictly greater than staleMs, not at the boundary.
+  const isStale = !Number.isFinite(updatedAtMs) || now - updatedAtMs > staleMs;
   if (processingStatus !== 'uploading' || isStale) return 'claim';
   return 'wait';
 }
@@ -82,7 +108,23 @@ function playbackResponse(video) {
   if (video.provider !== 'bunny') {
     return { status: 200, body: { provider: 'youtube', video_url: video.video_url } };
   }
-  if (!video.bunny_video_id || video.processing_status !== 'ready') {
+  if (!video.bunny_video_id) {
+    // With no webhook reconciliation in place, this console.warn is the only
+    // server-side signal that distinguishes "nothing has been uploaded yet /
+    // the upload never made it" from the ready-but-not-yet-encoded case below
+    // — both return the identical client-facing 409 so we never leak upload
+    // state to the browser.
+    console.warn('playbackResponse: bunny video has no bunny_video_id yet', { video_id: String(video._id) });
+    return {
+      status: 409,
+      body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
+    };
+  }
+  if (video.processing_status !== 'ready') {
+    console.warn('playbackResponse: bunny video not ready', {
+      video_id: String(video._id),
+      processing_status: video.processing_status,
+    });
     return {
       status: 409,
       body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
@@ -179,7 +221,8 @@ function createVideosController() {
       if (data.order !== undefined && Number.isNaN(Number(data.order))) {
         return res.status(400).json({ error: 'order must be a number' });
       }
-      if (!data.video_url || !isValidTextLength(String(data.video_url), 5, 500)) {
+      const { provider, videoUrlRequired } = resolveVideoCreateProvider(data);
+      if (videoUrlRequired && (!data.video_url || !isValidTextLength(String(data.video_url), 5, 500))) {
         return res.status(400).json({ error: 'video_url is required' });
       }
       if (data.thumbnail_url && !isValidTextLength(String(data.thumbnail_url), 5, 500)) {
@@ -209,7 +252,8 @@ function createVideosController() {
         teacher_email: data.teacher_email || '',
         subtopic: data.subtopic || '',
         order: data.order !== undefined ? Number(data.order) : 0,
-        video_url: data.video_url,
+        video_url: data.video_url || '',
+        provider,
         thumbnail_url: data.thumbnail_url || '',
         card_thumbnail_url: data.card_thumbnail_url || '',
         transcript_url: data.transcript_url || '',
@@ -350,6 +394,17 @@ function createVideosController() {
       let videoId = video.bunny_video_id;
       let libraryId = video.bunny_library_id;
 
+      if (shouldReopenFailedUpload({ bunnyVideoId: videoId, processingStatus: video.processing_status })) {
+        // The admin explicitly picked a replacement file for a previously
+        // failed encode (the UI only offers this when the row isn't ready).
+        // That deliberate action is what makes reopening the state machine
+        // safe here — nextProcessingStatus's terminal guard stays untouched
+        // and still correctly ignores late/duplicate webhooks for every
+        // other caller.
+        video.processing_status = 'uploading';
+        await video.save();
+      }
+
       if (!videoId) {
         // Claim the "no Bunny video yet" slot atomically. A filter on
         // bunny_video_id alone would NOT be atomic in practice: the update
@@ -403,13 +458,21 @@ function createVideosController() {
           try {
             created = await bunnyProvider.createUpload({ title: claimed.title });
           } catch (createErr) {
-            // Nothing was created upstream yet, so there's nothing to
-            // orphan — unlike the save() failure below, where a real Bunny
-            // video already exists. Release the claim so an ordinary,
-            // recoverable failure (a Bunny 500, a timeout) doesn't lock the
-            // admin out for the rest of STALE_CLAIM_MS; that window exists
-            // to recover from a crashed process, not this case, where we're
-            // still running and can clean up after ourselves.
+            // Bunny may or may not have created the video upstream before
+            // this failed — a client-side AbortSignal.timeout or a non-2xx
+            // received after Bunny already created it both throw here with
+            // no video id to show for it, so we can't tell which happened.
+            // Log what we know so a possible orphan is findable by hand, then
+            // release the claim so an ordinary, recoverable failure (a Bunny
+            // 500, a timeout) doesn't lock the admin out for the rest of
+            // STALE_CLAIM_MS; that window exists to recover from a crashed
+            // process, not this case, where we're still running and can
+            // clean up after ourselves.
+            console.error('Bunny createUpload failed — video may or may not have been created upstream', {
+              video_id: String(claimed._id),
+              title: claimed.title,
+              error: createErr,
+            });
             try {
               await Video.updateOne(
                 { _id: claimed._id },
@@ -453,6 +516,51 @@ function createVideosController() {
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to start upload' });
+    }
+  }
+
+  // Recovery path for I2: if Bunny's webhook never verifies (wrong header,
+  // wrong key, misconfiguration), a lecture can otherwise stay
+  // uploading/processing forever — processing_status is settable by no other
+  // API. This asks Bunny directly and applies the same transition logic the
+  // webhook uses (applyBunnyStatusTransition), so the two can never disagree
+  // about what a given Bunny status code means.
+  async function refreshVideoStatus(req, res) {
+    try {
+      const video = await Video.findById(req.params.id);
+      if (!video) return res.status(404).json({ error: 'Video not found' });
+      if (video.provider !== 'bunny' || !video.bunny_video_id) {
+        return res.status(400).json({ error: 'Not a hosted lecture with an upload in progress' });
+      }
+
+      let bunnyStatus;
+      try {
+        bunnyStatus = await bunnyProvider.getStatus(video.bunny_video_id);
+      } catch (err) {
+        console.error('Bunny getStatus failed during refresh-status', {
+          video_id: String(video._id),
+          bunny_video_id: video.bunny_video_id,
+          error: err,
+        });
+        return res.status(502).json({ error: 'Unable to reach Bunny to refresh status' });
+      }
+
+      const next = await applyBunnyStatusTransition(video, bunnyStatus.status);
+      if (next === 'ready') {
+        // Already have duration_seconds from the same getStatus call above —
+        // unlike the webhook, no second Bunny call is needed here.
+        video.duration_seconds = bunnyStatus.duration_seconds;
+        await video.save();
+      }
+
+      return res.json({
+        processing_status: video.processing_status,
+        transcript_status: video.transcript_status,
+        duration_seconds: video.duration_seconds,
+      });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to refresh status' });
     }
   }
 
@@ -501,8 +609,15 @@ function createVideosController() {
     getVideoSummary,
     chatAboutVideo,
     createUploadUrl,
+    refreshVideoStatus,
     getPlayback,
   };
 }
 
-module.exports = { createVideosController, decideUploadClaim, playbackResponse };
+module.exports = {
+  createVideosController,
+  decideUploadClaim,
+  playbackResponse,
+  resolveVideoCreateProvider,
+  shouldReopenFailedUpload,
+};

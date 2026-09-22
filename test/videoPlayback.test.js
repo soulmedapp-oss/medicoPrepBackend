@@ -7,6 +7,11 @@ test('a youtube video returns its stored url and no token', () => {
   assert.equal(result.status, 200);
   assert.equal(result.body.video_url, 'https://y/1');
   assert.equal(result.body.token, undefined);
+  // C: the bunny 200 body's key set is already pinned below; the youtube one
+  // never was, so a field rename here would break Videos.jsx (it reads
+  // playback.video_url to know whether to render the iframe or the raw
+  // <video> element) without failing any test.
+  assert.deepEqual(Object.keys(result.body).sort(), ['provider', 'video_url']);
 });
 
 // Review Focus #2: a lecture published before encoding finished must not hand

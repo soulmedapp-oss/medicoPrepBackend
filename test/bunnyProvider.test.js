@@ -109,6 +109,14 @@ test('upload payload carries a signature but never the api key', () => {
   assert.equal(payload.library_id, '12');
   assert.ok(payload.expires > 1800000000, 'signature must have a future expiry');
   assert.match(payload.signature, /^[0-9a-f]{64}$/);
+  // C: lecturesClient.upload reads tus_endpoint. bunnyProvider.test.js
+  // previously pinned video_id/library_id/signature/expires but never
+  // tus_endpoint, so renaming that field would keep this whole suite green
+  // while silently breaking every upload. Pin the full key set.
+  assert.deepEqual(
+    Object.keys(payload).sort(),
+    ['expires', 'library_id', 'signature', 'tus_endpoint', 'video_id']
+  );
 });
 
 // This is the function the route actually calls, and the one the Task 5
