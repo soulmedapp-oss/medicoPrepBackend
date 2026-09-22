@@ -38,6 +38,14 @@ const videoSchema = new mongoose.Schema(
     allowed_plans: { type: [String], default: [] },
     is_free: { type: Boolean, default: false },
     created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Set together, only on a human-initiated updateVideo call — never from
+    // the Bunny webhook, refresh-status, or the upload claim/release paths,
+    // all of which mutate processing_status without a person behind them.
+    // Pairing them lets the UI show "last modified by <name>" against a
+    // timestamp that's actually that edit, not an unrelated system write
+    // that also happens to bump updated_date.
+    updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updated_by_at: { type: Date },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

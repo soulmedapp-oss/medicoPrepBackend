@@ -1,4 +1,5 @@
 const Video = require('../models/Video');
+const User = require('../models/User');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
@@ -37,6 +38,27 @@ function pickFields(source, fields) {
     }
   });
   return out;
+}
+
+// Pure: given the staff-path video page and a Map of userId string -> user
+// doc ({ _id, full_name }), returns new video objects carrying three flat
+// fields for the admin UI — created_by_name, updated_by_name and
+// updated_by_at (passed through as-is). Never mutates the input videos.
+// A missing/deleted user (absent from the map) yields null rather than
+// throwing, and only _id/full_name ever reach the output — no email, no
+// other user field.
+function attachActorNames(videos, userMap) {
+  const nameFor = (id) => {
+    if (!id) return null;
+    const user = userMap instanceof Map ? userMap.get(String(id)) : undefined;
+    return user && user.full_name ? user.full_name : null;
+  };
+  return videos.map((video) => ({
+    ...video,
+    created_by_name: nameFor(video.created_by),
+    updated_by_name: nameFor(video.updated_by),
+    updated_by_at: video.updated_by_at || null,
+  }));
 }
 
 function canAccessVideo(video, planName) {
@@ -188,7 +210,16 @@ function createVideosController() {
 
       const videos = await Video.find(filter).sort({ created_date: -1 }).lean();
       if (all === 'true') {
-        return res.json({ videos });
+        const userIds = new Set();
+        videos.forEach((video) => {
+          if (video.created_by) userIds.add(String(video.created_by));
+          if (video.updated_by) userIds.add(String(video.updated_by));
+        });
+        const users = userIds.size
+          ? await User.find({ _id: { $in: Array.from(userIds) } }).select('_id full_name').lean()
+          : [];
+        const userMap = new Map(users.map((user) => [String(user._id), user]));
+        return res.json({ videos: attachActorNames(videos, userMap) });
       }
 
       const planName = req.user?.subscription_plan || 'free';
@@ -331,6 +362,13 @@ function createVideosController() {
 
       const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditVideos', deactivate: 'CanDeactivateVideos' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
+
+      // updated_by/updated_by_at are written as a pair, only here — a human
+      // hit this endpoint. The Bunny webhook, refresh-status, and the upload
+      // claim/release paths all mutate processing_status without going
+      // through updateVideo, so they never touch these two fields.
+      updates.updated_by = req.userId;
+      updates.updated_by_at = new Date();
 
       const video = await Video.findByIdAndUpdate(
         req.params.id,
@@ -622,6 +660,7 @@ function createVideosController() {
 
 module.exports = {
   createVideosController,
+  attachActorNames,
   decideUploadClaim,
   playbackResponse,
   resolveVideoCreateProvider,
