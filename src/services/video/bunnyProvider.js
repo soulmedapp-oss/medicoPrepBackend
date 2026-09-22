@@ -89,12 +89,62 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
 // while leaving headroom past normal Bunny API latency.
 const BUNNY_FETCH_TIMEOUT_MS = 12000;
 
-async function createUpload({ title }) {
+// name -> collection guid. Module-level so repeat uploads for the same
+// subject (the common case — many lectures per subject) cost no extra Bunny
+// calls after the first. Only ever written after a successful lookup/create
+// below, never pre-seeded and never written on failure.
+const collectionGuidCache = new Map();
+
+// Finds or creates a Bunny Collection named exactly `name` in this library,
+// so the dashboard can group lectures by subject instead of showing a flat
+// list. This must never throw into the upload path: a lecture that uploads
+// without a collection is fine, a lecture that fails to upload because
+// collection bookkeeping broke is not — so every failure is caught, logged,
+// and turned into a null return instead.
+async function ensureCollection(name) {
+  if (collectionGuidCache.has(name)) return collectionGuidCache.get(name);
   const { libraryId, apiKey } = config();
+  try {
+    const listResponse = await fetch(`https://video.bunnycdn.com/library/${libraryId}/collections`, {
+      headers: { AccessKey: apiKey },
+      signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
+    });
+    if (!listResponse.ok) throw new Error(`Bunny list collections failed (${listResponse.status})`);
+    const listed = await listResponse.json();
+    const items = Array.isArray(listed) ? listed : listed.items || [];
+    const existing = items.find((item) => item && item.name === name);
+    if (existing) {
+      collectionGuidCache.set(name, existing.guid);
+      return existing.guid;
+    }
+
+    const createResponse = await fetch(`https://video.bunnycdn.com/library/${libraryId}/collections`, {
+      method: 'POST',
+      headers: { AccessKey: apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+      signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
+    });
+    if (!createResponse.ok) throw new Error(`Bunny create collection failed (${createResponse.status})`);
+    const created = await createResponse.json();
+    collectionGuidCache.set(name, created.guid);
+    return created.guid;
+  } catch (err) {
+    console.error('ensureCollection failed — uploading without a collection', { name, error: err });
+    return null;
+  }
+}
+
+async function createUpload({ title, subject }) {
+  const { libraryId, apiKey } = config();
+  const body = { title };
+  if (subject) {
+    const collectionId = await ensureCollection(subject);
+    if (collectionId) body.collectionId = collectionId;
+  }
   const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos`, {
     method: 'POST',
     headers: { AccessKey: apiKey, 'content-type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Bunny create video failed (${response.status})`);
@@ -128,5 +178,6 @@ module.exports = {
   buildUploadPayload,
   createUploadCredentials,
   createUpload,
+  ensureCollection,
   getStatus,
 };

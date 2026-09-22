@@ -494,7 +494,7 @@ function createVideosController() {
         } else {
           let created;
           try {
-            created = await bunnyProvider.createUpload({ title: claimed.title });
+            created = await bunnyProvider.createUpload({ title: claimed.title, subject: claimed.subject });
           } catch (createErr) {
             // Bunny may or may not have created the video upstream before
             // this failed — a client-side AbortSignal.timeout or a non-2xx

@@ -7,6 +7,7 @@ const {
   getPlaybackToken,
   createUploadCredentials,
   createUpload,
+  ensureCollection,
 } = require('../src/services/video/bunnyProvider');
 
 // Sets an env var for the duration of `fn` and restores the previous value
@@ -163,6 +164,176 @@ test('createUpload posts to the correct Bunny endpoint with an AccessKey header,
       assert.deepEqual(JSON.parse(captured.options.body), { title: 'Lecture 1' });
       assert.ok(captured.options.signal instanceof AbortSignal, 'a timeout signal must be attached');
       assert.deepEqual(result, { videoId: 'new-guid', libraryId: '99' });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// ensureCollection groups Bunny dashboard videos by subject. Each test below
+// uses a distinct collection name so the module-level cache (which is
+// intentionally never reset between tests — that's the point of the cache
+// test further down) can't leak a result from one test into another.
+
+test('ensureCollection: reuses an existing collection by exact name and never issues a POST', async () => {
+  const previousFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      json: async () => [
+        { guid: 'other-guid', name: 'Physiology' },
+        { guid: 'anatomy-guid', name: 'Anatomy-Reuse' },
+      ],
+    };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const guid = await ensureCollection('Anatomy-Reuse');
+      assert.equal(guid, 'anatomy-guid');
+      assert.equal(calls.length, 1, 'only the list call should have been made, no POST');
+      assert.equal(calls[0].url, 'https://video.bunnycdn.com/library/99/collections');
+      assert.equal(calls[0].options.headers.AccessKey, 'FAKE-KEY');
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('ensureCollection: creates a collection when no exact name match exists', async () => {
+  const previousFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (!options || options.method !== 'POST') {
+      return { ok: true, json: async () => [{ guid: 'other-guid', name: 'Physiology' }] };
+    }
+    return { ok: true, json: async () => ({ guid: 'new-collection-guid', name: 'Biochemistry-Create' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const guid = await ensureCollection('Biochemistry-Create');
+      assert.equal(guid, 'new-collection-guid');
+      assert.equal(calls.length, 2, 'a list call followed by a create call');
+      assert.equal(calls[1].url, 'https://video.bunnycdn.com/library/99/collections');
+      assert.equal(calls[1].options.method, 'POST');
+      assert.equal(calls[1].options.headers.AccessKey, 'FAKE-KEY');
+      assert.deepEqual(JSON.parse(calls[1].options.body), { name: 'Biochemistry-Create' });
+      assert.ok(calls[1].options.signal instanceof AbortSignal);
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// ensureCollection must never throw into the upload path: a lecture that
+// uploads without a collection is fine, a lecture that fails to upload
+// because collection bookkeeping broke is not.
+test('ensureCollection: a failing list returns null and does not throw', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const guid = await ensureCollection('Pathology-ListFails');
+      assert.equal(guid, null);
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('ensureCollection: a rejected fetch (network error) also returns null instead of throwing', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error('network down');
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      await assert.doesNotReject(ensureCollection('Pathology-NetworkFails'));
+      const guid = await ensureCollection('Pathology-NetworkFails');
+      assert.equal(guid, null);
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('ensureCollection: caches by name so a second call for the same subject makes no further Bunny calls', async () => {
+  const previousFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    callCount += 1;
+    return { ok: true, json: async () => [{ guid: 'cached-guid', name: 'Pharmacology-Cache' }] };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const first = await ensureCollection('Pharmacology-Cache');
+      const countAfterFirst = callCount;
+      const second = await ensureCollection('Pharmacology-Cache');
+      assert.equal(first, 'cached-guid');
+      assert.equal(second, 'cached-guid');
+      assert.equal(callCount, countAfterFirst, 'no additional fetch call for a cached name');
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('createUpload: omits collectionId entirely when no subject is given', async () => {
+  const previousFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, json: async () => ({ guid: 'new-guid' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      await createUpload({ title: 'No Subject Lecture' });
+      const body = JSON.parse(captured.options.body);
+      assert.deepEqual(body, { title: 'No Subject Lecture' });
+      assert.ok(!Object.prototype.hasOwnProperty.call(body, 'collectionId'));
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('createUpload: includes collectionId when a subject resolves to a collection', async () => {
+  const previousFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/collections')) {
+      return { ok: true, json: async () => [{ guid: 'subject-guid', name: 'Radiology-Upload' }] };
+    }
+    return { ok: true, json: async () => ({ guid: 'video-guid' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const result = await createUpload({ title: 'Radiology Lecture', subject: 'Radiology-Upload' });
+      const videoCall = calls.find((c) => c.url.endsWith('/videos'));
+      const body = JSON.parse(videoCall.options.body);
+      assert.deepEqual(body, { title: 'Radiology Lecture', collectionId: 'subject-guid' });
+      assert.deepEqual(result, { videoId: 'video-guid', libraryId: '99' });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('createUpload: omits collectionId when ensureCollection fails, without failing the upload', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (url.endsWith('/collections')) {
+      return { ok: false, status: 500, json: async () => ({}) };
+    }
+    return { ok: true, json: async () => ({ guid: 'video-guid-2' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const result = await createUpload({ title: 'Cardiology Lecture', subject: 'Cardiology-Fails' });
+      assert.equal(result.videoId, 'video-guid-2');
     });
   } finally {
     global.fetch = previousFetch;
