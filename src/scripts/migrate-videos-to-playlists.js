@@ -3,21 +3,38 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const Video = require('../models/Video');
 const Playlist = require('../models/Playlist');
+const PlaylistMigration = require('../models/PlaylistMigration');
 const { planPlaylistsFromVideos } = require('../utils/playlistMigration');
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 
-// Idempotency marker (Task 7 rule 7). A dedicated Playlist schema field
-// would be cleaner, but this task's constraints say touch no existing
-// model, so the marker lives in `description` instead — the field the
-// spec's own suggestion (§6) points at. A migrated playlist's description
-// is set to exactly this string and nothing else. Caveat worth carrying
-// forward: Task 10's admin UI lets a curator edit a playlist's description;
-// doing so on a migrated playlist would erase the marker and make a later
-// re-run treat that subject as unmigrated again, creating a duplicate. That
-// is a real but narrow risk — noted here rather than solved, since solving
-// it needs a schema change this task must not make.
-const MIGRATION_MARKER = 'migrated_from:videos';
+// Idempotency (Task 7 rule 7, fix round 1): a subject counts as migrated iff
+// a PlaylistMigration row exists for it — never anything read off Playlist
+// itself. An earlier version of this script used a marker string in
+// Playlist.description, but that marker could be erased by an ordinary
+// playlist edit, and (worse) was keyed on `subject_ids.length === 1`, which
+// broke the moment a curator legitimately broadened a migrated playlist to
+// span a second subject — the row would silently vanish from the migrated
+// set and the next run would insert a duplicate. See
+// src/models/PlaylistMigration.js for why the replacement is a separate,
+// unreachable-from-the-UI collection keyed on subject_id.
+//
+// --execute writes playlists per subject in a loop, not one insertMany, on
+// purpose: PlaylistMigration's unique index on subject_id is the actual
+// concurrency guard (a second, near-simultaneous --execute racing on the
+// same subject loses the unique-insert and its orphan Playlist is deleted
+// — see the catch block below), and a per-subject loop means a mid-run
+// failure has a precise, describable boundary: every subject up to the
+// failure has both its Playlist AND its PlaylistMigration row committed;
+// the subject that failed, and every one after it in this run, are
+// completely untouched. A re-run is safe and will only attempt the
+// untouched ones — nothing needs manual repair.
+//
+// This also means --execute is monotonic, matching
+// backfill-video-subject-ids.js's own convention: it writes every playlist
+// it CAN resolve even when some videos remain unmigrated, then exits
+// non-zero so the unmigrated rows are never silently missed. It does not
+// wait for every video to be resolvable before writing anything.
 
 const isDryRun = process.argv.includes('--dry-run');
 const isExecute = process.argv.includes('--execute');
@@ -29,6 +46,15 @@ function printUsage() {
   console.log('  --dry-run   Read-only. Prints the migration plan; writes nothing.');
   // eslint-disable-next-line no-console
   console.log('  --execute   Creates the planned playlists. Idempotent: safe to re-run.');
+  // eslint-disable-next-line no-console
+  console.log('              Writes every resolvable playlist even if some videos remain');
+  // eslint-disable-next-line no-console
+  console.log('              unmigrated, then exits non-zero so those rows are never missed.');
+}
+
+async function loadMigratedSubjectIds() {
+  const rows = await PlaylistMigration.find({}, 'subject_id').lean();
+  return new Set(rows.map((row) => String(row.subject_id)));
 }
 
 async function migrateVideosToPlaylists() {
@@ -60,20 +86,7 @@ async function migrateVideosToPlaylists() {
 
   const { playlists, unmigrated } = planPlaylistsFromVideos(videos);
 
-  // Re-check the idempotency marker even on a --dry-run so its report
-  // matches exactly what --execute would do, and re-check it again right
-  // before the insertMany below (not just here) so a double --execute in
-  // quick succession can't race past a stale in-memory list.
-  const alreadyMigrated = await Playlist.find(
-    { description: MIGRATION_MARKER },
-    'subject_ids'
-  ).lean();
-  const migratedSubjectIds = new Set(
-    alreadyMigrated
-      .filter((playlist) => Array.isArray(playlist.subject_ids) && playlist.subject_ids.length === 1)
-      .map((playlist) => String(playlist.subject_ids[0]))
-  );
-
+  const migratedSubjectIds = await loadMigratedSubjectIds();
   const toCreate = playlists.filter((playlist) => !migratedSubjectIds.has(String(playlist.subject_ids[0])));
   const skippedAsAlreadyMigrated = playlists.length - toCreate.length;
 
@@ -101,34 +114,37 @@ async function migrateVideosToPlaylists() {
     });
   }
 
-  if (isExecute && toCreate.length) {
-    // Re-check right before the write: a second, near-simultaneous
-    // --execute must not create a duplicate playlist for a subject the
-    // first run just migrated.
-    const stillMigrated = await Playlist.find(
-      { description: MIGRATION_MARKER },
-      'subject_ids'
-    ).lean();
-    const stillMigratedSubjectIds = new Set(
-      stillMigrated
-        .filter((playlist) => Array.isArray(playlist.subject_ids) && playlist.subject_ids.length === 1)
-        .map((playlist) => String(playlist.subject_ids[0]))
-    );
-    const safeToCreate = toCreate.filter(
-      (playlist) => !stillMigratedSubjectIds.has(String(playlist.subject_ids[0]))
-    );
-
-    if (safeToCreate.length) {
-      await Playlist.insertMany(
-        safeToCreate.map((playlist) => ({
-          ...playlist,
-          description: MIGRATION_MARKER,
-          created_by: null,
-        }))
-      );
+  if (isExecute) {
+    let createdCount = 0;
+    // Sequential per-subject writes, deliberately not Playlist.insertMany —
+    // see the top-of-file comment for why.
+    // eslint-disable-next-line no-restricted-syntax
+    for (const playlist of toCreate) {
+      const subjectId = playlist.subject_ids[0];
+      // eslint-disable-next-line no-await-in-loop
+      const created = await Playlist.create({ ...playlist, created_by: null });
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await PlaylistMigration.create({ subject_id: subjectId, playlist_id: created._id });
+        createdCount += 1;
+      } catch (err) {
+        if (err && err.code === 11000) {
+          // A concurrent run logged this subject_id first. The Playlist we
+          // just inserted is an orphan the migration log doesn't know
+          // about — remove it rather than leaving an unlogged duplicate.
+          // eslint-disable-next-line no-await-in-loop
+          await Playlist.deleteOne({ _id: created._id });
+          // eslint-disable-next-line no-console
+          console.log(
+            `  Skipped subject ${subjectId}: a concurrent run already migrated it (removed orphan playlist ${created._id}).`
+          );
+        } else {
+          throw err;
+        }
+      }
     }
     // eslint-disable-next-line no-console
-    console.log(`Created ${safeToCreate.length} playlist(s).`);
+    console.log(`Created ${createdCount} playlist(s).`);
   }
 
   await mongoose.disconnect();

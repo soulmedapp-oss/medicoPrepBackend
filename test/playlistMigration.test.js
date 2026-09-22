@@ -29,6 +29,38 @@ test('plans are UNIONED across member videos, never intersected', () => {
   assert.deepEqual(out.playlists[0].allowed_plans.sort(), ['gold', 'silver']);
 });
 
+// Fix round 1, Minor 5: allowed_plans: null must contribute nothing to the
+// union, never be read as "all plans".
+test('a member with allowed_plans: null contributes no plans to the union', () => {
+  const out = planPlaylistsFromVideos([
+    { _id: 'a', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: null, order: 0 },
+    { _id: 'b', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 1 },
+  ]);
+  assert.equal(out.playlists.length, 1);
+  assert.deepEqual(out.playlists[0].allowed_plans, ['gold']);
+});
+
+// Fix round 1, Minor 6: the same plan on two members must appear once.
+test('the union de-duplicates a plan shared by two members', () => {
+  const out = planPlaylistsFromVideos([
+    { _id: 'a', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 0 },
+    { _id: 'b', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 1 },
+  ]);
+  assert.deepEqual(out.playlists[0].allowed_plans, ['gold']);
+});
+
+// Fix round 1, Minor 7: grouping is by subject_id, never by the display
+// string — two distinct subjects that happen to share a name (a renamed
+// or duplicate Subject row) must never be merged into one playlist.
+test('two distinct subject_ids sharing one display string produce two playlists, never a merge', () => {
+  const out = planPlaylistsFromVideos([
+    { _id: 'a', subject_id: 's1', subject: 'ENT', is_published: true, order: 0 },
+    { _id: 'b', subject_id: 's2', subject: 'ENT', is_published: true, order: 0 },
+  ]);
+  assert.equal(out.playlists.length, 2);
+  assert.deepEqual(out.playlists.map((p) => p.subject_ids[0]).sort(), ['s1', 's2']);
+});
+
 test('any is_free member makes the whole playlist free', () => {
   const out = planPlaylistsFromVideos([
     { _id: 'a', subject_id: 's1', subject: 'ENT', is_published: true, is_free: false, order: 0 },
