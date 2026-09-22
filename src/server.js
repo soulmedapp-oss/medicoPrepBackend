@@ -204,7 +204,16 @@ app.get('/webhooks/razorpay', publicRoute, (req, res) => {
   res.json({ ok: true });
 });
 app.post('/webhooks/razorpay', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
-app.use(express.json({ limit: '1mb' }));
+app.use(
+  express.json({
+    limit: '1mb',
+    // Bunny webhook signatures are computed over the raw bytes; keep a copy
+    // before the body is parsed away.
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 const apiDocsEnabled =
   String(process.env.ENABLE_API_DOCS || '').toLowerCase() === 'true' || !isProduction;
 if (apiDocsEnabled) {
