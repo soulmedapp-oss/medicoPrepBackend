@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPlaylistPayload, normaliseItems } = require('../src/controllers/playlistsController');
+const { buildPlaylistPayload, normaliseItems, browseFilter } = require('../src/controllers/playlistsController');
 
 test('payload keeps only the fields a client may set', () => {
   const out = buildPlaylistPayload({ name: 'X', description: 'd', subject_ids: ['s1'], allowed_plans: ['gold'], is_free: true, is_published: true, created_by: 'HACK', items: [] });
@@ -27,4 +27,21 @@ test('duplicate lectures are collapsed, keeping the first position', () => {
 
 test('malformed items are dropped rather than stored', () => {
   assert.deepEqual(normaliseItems([{ lecture_id: '' }, null, 'x', { order: 3 }]), []);
+});
+
+// Task 4 — student browsing. Entitlement (is_free / allowed_plans) is
+// applied in code via canAccessPlaylist after the query, never folded into
+// this filter — see browseFilter's own comment for why.
+test('browse filter always constrains to published and active', () => {
+  const f = browseFilter(null);
+  assert.equal(f.is_published, true);
+  assert.deepEqual(f.is_active, { $ne: false });
+});
+
+test('a subject filter narrows by subject_ids', () => {
+  assert.deepEqual(browseFilter('s1').subject_ids, 's1');
+});
+
+test('no subject filter leaves subject_ids unconstrained', () => {
+  assert.ok(!('subject_ids' in browseFilter(null)));
 });
