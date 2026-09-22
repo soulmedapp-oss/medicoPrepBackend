@@ -27,6 +27,12 @@ function createVideosRoutes({ authMiddleware }) {
   router.patch('/videos/:id', authMiddleware, authorize.any('CanEditVideos', 'CanDeactivateVideos'), controller.updateVideo);
   router.delete('/videos/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deleteVideo);
   router.get('/videos/:id/ai-summary', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getVideoSummary);
+  router.get(
+    '/videos/:id/playback',
+    authMiddleware,
+    authorize.any('CanAccessVideos', 'CanViewVideos'),
+    controller.getPlayback
+  );
   router.post('/videos/:id/ai-chat', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), aiChatLimiter, controller.chatAboutVideo);
 
   return router;

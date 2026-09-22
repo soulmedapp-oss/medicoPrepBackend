@@ -1,5 +1,6 @@
 const Video = require('../models/Video');
 const bunnyProvider = require('../services/video/bunnyProvider');
+const { getProvider } = require('../services/video');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
@@ -67,6 +68,28 @@ function decideUploadClaim({ bunnyVideoId, processingStatus, updatedAt, now = Da
   const isStale = !Number.isFinite(updatedAtMs) || now - updatedAtMs >= staleMs;
   if (processingStatus !== 'uploading' || isStale) return 'claim';
   return 'wait';
+}
+
+// Pure: maps an already-authorised video to its playback response.
+//
+// The bunny_video_id check must run before the processing_status check: a
+// freshly created bunny row takes the schema default processing_status:
+// 'ready' while bunny_video_id is still '' (nothing has been uploaded yet).
+// That row would pass a processing_status-only check and reach
+// getPlaybackToken, which throws on an empty bunny_video_id — turning an
+// ordinary "not uploaded yet" state into a 500 instead of a clear 409.
+function playbackResponse(video) {
+  if (video.provider !== 'bunny') {
+    return { status: 200, body: { provider: 'youtube', video_url: video.video_url } };
+  }
+  if (!video.bunny_video_id || video.processing_status !== 'ready') {
+    return {
+      status: 409,
+      body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
+    };
+  }
+  const { hls_url: hlsUrl, token, expires_at: expiresAt } = getProvider('bunny').getPlaybackToken(video);
+  return { status: 200, body: { provider: 'bunny', hls_url: hlsUrl, token, expires_at: expiresAt } };
 }
 
 function createVideosController() {
@@ -446,6 +469,18 @@ function createVideosController() {
     }
   }
 
+  async function getPlayback(req, res) {
+    try {
+      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
+      if (!video) return res.status(status || 404).json({ error });
+      const result = playbackResponse(video);
+      return res.status(result.status).json(result.body);
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to start playback' });
+    }
+  }
+
   return {
     listVideos,
     createVideo,
@@ -454,7 +489,8 @@ function createVideosController() {
     getVideoSummary,
     chatAboutVideo,
     createUploadUrl,
+    getPlayback,
   };
 }
 
-module.exports = { createVideosController, decideUploadClaim };
+module.exports = { createVideosController, decideUploadClaim, playbackResponse };
