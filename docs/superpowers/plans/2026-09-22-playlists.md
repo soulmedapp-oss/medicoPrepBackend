@@ -389,9 +389,10 @@ Do not start until the migration has run against the real database and every pre
 **Files:** Modify `src/models/Video.js`, `src/controllers/videosController.js`
 
 - [ ] **Step 1:** Confirm the migration ran and reconciles — every video that was `is_published` appears in exactly one playlist.
-- [ ] **Step 2:** Remove `allowed_plans`, `is_free`, `is_published`, `order` from the schema and from `UPDATABLE_VIDEO_FIELDS`; delete `canAccessVideo` and its now-dead call sites.
-- [ ] **Step 3:** Run the full suite; update any test that asserted the old fields, naming each in the commit message.
-- [ ] **Step 4: Commit** — `git commit -m "feat(playlist): retire per-video entitlement in favour of playlists"`
+- [ ] **Step 2:** Re-point `GET /videos/:id/ai-summary` and `POST /videos/:id/ai-chat` at the playlist gate **before** touching the schema. Both currently go through `loadVideoForUser` → `canAccessVideo`, which reads `allowed_plans`. Once that field is gone, `canAccessVideo` degrades to "everyone" — and this step, done as a schema tidy, would silently ship "any student can use the AI tutor on any lecture". Switch both handlers to `loadVideoForPlayback` (Task 5's sibling, which uses `resolvePlaybackAccess`). Pin with a test that an entitled-by-no-playlist student is refused on `ai-chat`.
+- [ ] **Step 3:** Only then remove `allowed_plans`, `is_free`, `is_published`, `order` from the schema and from `UPDATABLE_VIDEO_FIELDS`; delete `canAccessVideo` and `loadVideoForUser`, which are now genuinely dead.
+- [ ] **Step 4:** Run the full suite; update any test that asserted the old fields, naming each in the commit message.
+- [ ] **Step 5: Commit** — `git commit -m "feat(playlist): retire per-video entitlement in favour of playlists"`
 
 ---
 
