@@ -110,7 +110,11 @@ async function getStatus(videoId) {
   });
   if (!response.ok) throw new Error(`Bunny get video failed (${response.status})`);
   const video = await response.json();
-  return { status: video.status, duration_seconds: video.length || 0 };
+  return {
+    status: video.status,
+    duration_seconds: video.length || 0,
+    encode_progress: video.encodeProgress,
+  };
 }
 
 // `config` stays module-private: it returns raw secrets (BUNNY_STREAM_API_KEY,

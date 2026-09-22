@@ -38,6 +38,27 @@ test('finished maps to ready and failed maps to failed', () => {
   assert.equal(nextProcessingStatus('processing', 5), 'failed');
 });
 
+// Verified live against real Bunny Stream: a video reporting status 4
+// ("Resolution finished") with encodeProgress 100% already has a resolving
+// HLS master playlist and is genuinely playable - it is not "still
+// encoding". Before this fix, 4 sat in IN_PROGRESS, so
+// nextProcessingStatus('processing', 4) returned null and the row was stuck
+// at `processing` forever: nothing (webhook or refresh-status) could ever
+// move it again, because the code that would normally advance it was itself
+// the code it was stuck on.
+test('resolution-finished (4) maps to ready, the same as finished (3)', () => {
+  assert.equal(nextProcessingStatus('processing', 4), 'ready');
+  assert.equal(nextProcessingStatus('uploading', 4), 'ready');
+});
+
+// Same terminal guard as code 3: a late/duplicate status-4 webhook must not
+// resurrect a failed encode, and must not re-fire (harmlessly) on an
+// already-ready row.
+test('resolution-finished (4) is blocked by the terminal guard like finished (3)', () => {
+  assert.equal(nextProcessingStatus('ready', 4), null);
+  assert.equal(nextProcessingStatus('failed', 4), null);
+});
+
 // Review Focus #1: Bunny may deliver an Encoding webhook after Finished.
 // Demoting a ready video would silently revoke student access.
 test('a late encoding webhook does not demote a ready video', () => {

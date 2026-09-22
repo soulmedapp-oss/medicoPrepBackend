@@ -546,6 +546,12 @@ function createVideosController() {
       }
 
       const next = await applyBunnyStatusTransition(video, bunnyStatus.status);
+      console.info('Bunny status refreshed', {
+        video_id: String(video._id),
+        bunny_status: bunnyStatus.status,
+        encode_progress: bunnyStatus.encode_progress,
+        transition: next || 'none',
+      });
       if (next === 'ready') {
         // Already have duration_seconds from the same getStatus call above —
         // unlike the webhook, no second Bunny call is needed here.
