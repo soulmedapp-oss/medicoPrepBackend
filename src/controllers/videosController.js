@@ -44,6 +44,31 @@ function canAccessVideo(video, planName) {
   return allowed.includes(planName);
 }
 
+// How long an upload claim (processing_status === 'uploading' with no
+// bunny_video_id yet) is honoured before it's treated as abandoned and made
+// reclaimable again. Must comfortably exceed how long a *live* claim can
+// legitimately take — bounded by bunnyProvider's BUNNY_FETCH_TIMEOUT_MS
+// (12s) for the createUpload call plus a save() — while staying short enough
+// that an admin whose attempt crashed mid-claim isn't locked out for long.
+const STALE_CLAIM_MS = 5 * 60 * 1000;
+
+// Pure mirror of the Mongo filter used in createUploadUrl's atomic claim
+// below: given a video row's claim-relevant fields, does the filter match
+// (this caller may proceed to create a Bunny video), or not (either another
+// caller already holds a live claim, or this row already has a real Bunny
+// video to reuse)? Exists so the staleness/status boundary logic is
+// unit-testable without a database. It does not itself provide the
+// atomicity guarantee — that comes from Mongo evaluating the equivalent
+// filter+update as a single operation in createUploadUrl — so the two must
+// be kept in lockstep by hand; this function reads, it never writes.
+function decideUploadClaim({ bunnyVideoId, processingStatus, updatedAt, now = Date.now(), staleMs = STALE_CLAIM_MS }) {
+  if (bunnyVideoId) return 'reuse';
+  const updatedAtMs = updatedAt instanceof Date ? updatedAt.getTime() : new Date(updatedAt).getTime();
+  const isStale = !Number.isFinite(updatedAtMs) || now - updatedAtMs >= staleMs;
+  if (processingStatus !== 'uploading' || isStale) return 'claim';
+  return 'wait';
+}
+
 function createVideosController() {
   async function loadVideoForUser(user, videoId) {
     const video = await Video.findById(videoId).lean();
@@ -291,24 +316,40 @@ function createVideosController() {
       let libraryId = video.bunny_library_id;
 
       if (!videoId) {
-        // Claim the "no Bunny video yet" slot atomically. Two near-simultaneous
-        // requests for the same video both reading bunny_video_id === '' via a
-        // plain findById would both call createUpload() and both save() — one
-        // write wins, orphaning the other Bunny video and handing the two
-        // callers mismatched credentials for what was one click. Only the
-        // request whose update actually matches (and flips bunny_video_id away
-        // from '') proceeds to call Bunny.
+        // Claim the "no Bunny video yet" slot atomically. A filter on
+        // bunny_video_id alone would NOT be atomic in practice: the update
+        // never touches bunny_video_id, so two near-simultaneous requests
+        // both match, both flip processing_status to 'uploading', and both
+        // proceed to createUpload() — the exact race this guard exists to
+        // close. Instead the filter tests processing_status (and, via
+        // updated_date, how long ago it was set) — the very field the update
+        // changes — so a second request's filter genuinely fails once the
+        // first has committed. A row stuck at 'uploading' with no
+        // bunny_video_id (the process crashed between claiming and saving)
+        // becomes reclaimable once updated_date is older than STALE_CLAIM_MS;
+        // see decideUploadClaim above for the equivalent pure decision logic.
+        // (updated_date is bumped by mongoose automatically on this query —
+        // the Video schema's timestamps option covers findOneAndUpdate.)
+        const staleCutoff = new Date(Date.now() - STALE_CLAIM_MS);
         const claimed = await Video.findOneAndUpdate(
-          { _id: video._id, provider: 'bunny', bunny_video_id: '' },
+          {
+            _id: video._id,
+            provider: 'bunny',
+            bunny_video_id: '',
+            $or: [
+              { processing_status: { $ne: 'uploading' } },
+              { updated_date: { $lt: staleCutoff } },
+            ],
+          },
           { $set: { processing_status: 'uploading' } },
           { new: true }
         );
 
         if (!claimed) {
-          // Lost the race: another request claimed the slot. Re-read so we
-          // return its videoId/libraryId instead of the stale empty one we
-          // started with; if it hasn't finished creating the Bunny video yet,
-          // ask the caller to retry rather than guessing.
+          // Someone else holds a live (non-stale) claim. Re-read: if they've
+          // already finished, reuse their bunny_video_id/library_id instead of
+          // creating a second Bunny video; otherwise ask this caller to retry
+          // rather than guessing or racing further.
           const current = await Video.findById(video._id);
           if (!current || !current.bunny_video_id) {
             return res.status(409).json({ error: 'Upload already starting, please retry' });
@@ -383,4 +424,4 @@ function createVideosController() {
   };
 }
 
-module.exports = { createVideosController };
+module.exports = { createVideosController, decideUploadClaim };
