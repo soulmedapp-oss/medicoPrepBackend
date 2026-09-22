@@ -9,7 +9,26 @@ const videoSchema = new mongoose.Schema(
     teacher_email: { type: String },
     subtopic: { type: String, default: '' },
     order: { type: Number, default: 0 },
-    video_url: { type: String, required: true },
+    video_url: {
+      type: String,
+      required: function required() {
+        return this.provider !== 'bunny';
+      },
+    },
+    provider: { type: String, enum: ['youtube', 'bunny'], default: 'youtube' },
+    bunny_video_id: { type: String, default: '' },
+    bunny_library_id: { type: String, default: '' },
+    processing_status: {
+      type: String,
+      enum: ['uploading', 'processing', 'ready', 'failed'],
+      default: 'ready',
+    },
+    duration_seconds: { type: Number, default: 0 },
+    transcript_status: {
+      type: String,
+      enum: ['none', 'pending', 'ready', 'failed'],
+      default: 'none',
+    },
     thumbnail_url: { type: String, default: '' },
     card_thumbnail_url: { type: String, default: '' },
     transcript_text: { type: String, default: '' },
@@ -22,5 +41,7 @@ const videoSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
+
+videoSchema.index({ provider: 1, processing_status: 1 });
 
 module.exports = mongoose.model('Video', videoSchema);
