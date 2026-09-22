@@ -187,6 +187,16 @@ async function requestVideoSummary(video) {
   return response.choices?.[0]?.message?.content?.trim() || '';
 }
 
+// The chat must answer from this lecture only. Without an explicit refusal
+// instruction the model answers uncovered questions from general knowledge,
+// which reads to a student as if the lecture taught it.
+const VIDEO_CHAT_SYSTEM_PROMPT = [
+  'You are a medical tutor helping a student understand one specific lecture.',
+  'Answer only from the lecture context provided in the user message.',
+  'If the context does not cover the question, say that this lecture does not cover it',
+  'and suggest what the student could search for instead. Do not answer from outside knowledge.',
+  'Answer concisely in 3-6 sentences.',
+].join(' ');
 
 async function requestVideoChat(message, video) {
   const openai = await getOpenAiClient();
@@ -196,7 +206,7 @@ async function requestVideoChat(message, video) {
     temperature: 0.2,
     max_tokens: Math.min(videoChatMaxTokens, 800),
     messages: [
-      { role: 'system', content: 'You are a helpful medical tutor. Answer concisely in 3-6 sentences.' },
+      { role: 'system', content: VIDEO_CHAT_SYSTEM_PROMPT },
       { role: 'user', content: [context, truncateText(message, MAX_CHAT_MESSAGE_LENGTH)].filter(Boolean).join('\n\n') },
     ],
   });
@@ -373,4 +383,5 @@ module.exports = {
   requestVideoChat,
   requestClassSummary,
   requestClassChat,
+  VIDEO_CHAT_SYSTEM_PROMPT,
 };
