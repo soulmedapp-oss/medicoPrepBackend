@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const Role = require('../models/Role');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
+const { isTokenVersionCurrent } = require('../utils/security');
+const { loadPermissions } = require('../rbac/loadPermissions');
 
 const { JWT_SECRET } = process.env;
 
@@ -18,24 +19,15 @@ async function authMiddleware(req, res, next) {
     if (!user || user.is_active === false) {
       return res.status(401).json({ error: 'Account is inactive' });
     }
-    user = await expireSubscriptionIfNeeded(user);
-    if (!Array.isArray(user.permissions) || user.permissions.length === 0) {
-      const roleNames = Array.isArray(user.roles) && user.roles.length > 0
-        ? user.roles
-        : (user.role ? [user.role] : []);
-      const normalized = roleNames
-        .map((role) => String(role || '').toLowerCase())
-        .filter(Boolean);
-      if (normalized.length > 0 && !normalized.includes('admin')) {
-        const roles = await Role.find({ name: { $in: normalized }, is_active: true }).lean();
-        const merged = roles
-          .flatMap((role) => role.permissions || [])
-          .filter(Boolean);
-        if (merged.length > 0) {
-          user.effective_permissions = Array.from(new Set(merged));
-        }
-      }
+    // Tokens are revoked by bumping user.token_version (password reset/change).
+    // Tokens without a `tv` claim count as version 0.
+    if (!isTokenVersionCurrent(payload, user)) {
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
     }
+    user = await expireSubscriptionIfNeeded(user);
+    const { roleNames, permissions } = await loadPermissions(user);
+    user.role_names = roleNames;
+    user.effective_permissions = permissions;
     req.user = user;
     return next();
   } catch (err) {
@@ -43,48 +35,11 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-async function requireAdmin(req, res, next) {
-  try {
-    const user = req.user || await User.findById(req.userId).lean();
-    if (!user || user.is_active === false || user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    req.user = user;
-    return next();
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to verify admin access' });
-  }
-}
-
-async function requireStaff(req, res, next) {
-  try {
-    const user = req.user || await User.findById(req.userId).lean();
-    if (!user || user.is_active === false || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
-      return res.status(403).json({ error: 'Staff access required' });
-    }
-    req.user = user;
-    return next();
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to verify staff access' });
-  }
-}
-
-function hasPermission(user, permission) {
-  if (!user) return false;
-  if (user.role === 'admin') {
-    if (!Array.isArray(user.permissions) || user.permissions.length === 0) return true;
-    if (user.permissions.includes(permission)) return true;
-    if (permission === 'manage_feedback') return true;
-    return false;
-  }
-  if (Array.isArray(user.permissions) && user.permissions.includes(permission)) return true;
-  if (Array.isArray(user.effective_permissions) && user.effective_permissions.includes(permission)) return true;
-  return false;
-}
+// Marker so listRoutes (Fix round 1, item B) can find where in a route's
+// handler stack login is actually enforced, the same way authorize/
+// selfService/publicRoute carry `.rbacRule`.
+authMiddleware.rbacAuth = true;
 
 module.exports = {
   authMiddleware,
-  requireAdmin,
-  requireStaff,
-  hasPermission,
 };

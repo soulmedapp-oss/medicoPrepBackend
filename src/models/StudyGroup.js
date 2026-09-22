@@ -20,4 +20,7 @@ const studyGroupSchema = new mongoose.Schema(
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
 
+// "Groups I belong to" lookups query members.user_id.
+studyGroupSchema.index({ 'members.user_id': 1 });
+
 module.exports = mongoose.model('StudyGroup', studyGroupSchema);

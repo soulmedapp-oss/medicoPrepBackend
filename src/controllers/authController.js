@@ -4,11 +4,12 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
-const Role = require('../models/Role');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
+const { normalizeTokenVersion } = require('../utils/security');
+const { loadPermissions } = require('../rbac/loadPermissions');
 
 const {
   GOOGLE_CLIENT_ID,
@@ -54,31 +55,19 @@ function ensureEmailConfigured() {
   return from;
 }
 
-function signToken(userId) {
-  return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
+function signToken(user) {
+  return jwt.sign(
+    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version) },
+    JWT_SECRET,
+    { expiresIn: tokenExpiry }
+  );
 }
 
 async function attachEffectivePermissions(payload) {
   if (!payload) return payload;
-  if (Array.isArray(payload.permissions) && payload.permissions.length > 0) {
-    return payload;
-  }
-  const roleNames = Array.isArray(payload.roles) && payload.roles.length > 0
-    ? payload.roles
-    : (payload.role ? [payload.role] : []);
-  const normalized = roleNames
-    .map((role) => String(role || '').toLowerCase())
-    .filter(Boolean);
-  if (normalized.length === 0 || normalized.includes('admin')) {
-    return payload;
-  }
-  const roles = await Role.find({ name: { $in: normalized }, is_active: true }).lean();
-  const merged = roles
-    .flatMap((role) => role.permissions || [])
-    .filter(Boolean);
-  if (merged.length > 0) {
-    payload.effective_permissions = Array.from(new Set(merged));
-  }
+  const { roleNames, permissions } = await loadPermissions(payload);
+  payload.roles = roleNames;
+  payload.effective_permissions = permissions;
   return payload;
 }
 
@@ -304,7 +293,7 @@ async function login(req, res) {
     }
 
     const updatedUser = await expireSubscriptionIfNeeded(user);
-    const token = signToken(user.id);
+    const token = signToken(user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
@@ -472,6 +461,8 @@ async function resetPassword(req, res) {
     user.password_reset_token = undefined;
     user.password_reset_expires = undefined;
     user.password_reset_requested_at = undefined;
+    // Revoke every JWT issued before this reset.
+    user.token_version = normalizeTokenVersion(user.token_version) + 1;
     await user.save();
 
     return res.json({ ok: true });
@@ -610,20 +601,33 @@ async function googleAuth(req, res) {
     if (!email) {
       return res.status(400).json({ error: 'Google account has no email' });
     }
+    // Only a Google-verified email may be linked to (or create) an account.
+    if (googlePayload.email_verified !== true) {
+      return res.status(403).json({ error: 'Google email is not verified' });
+    }
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
+    // Prefer the account already linked to this Google identity; otherwise link by email.
+    let user = await User.findOne({ googleId });
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user && user.googleId && user.googleId !== googleId) {
+        return res.status(409).json({ error: 'This email is linked to a different Google account' });
+      }
+    }
     if (user && user.is_active === false) {
       return res.status(403).json({ error: 'Account is inactive' });
     }
     if (user) {
       user.googleId = googleId;
-      user.email = email;
+      // Never overwrite an existing account's email with the Google one.
       user.full_name = name || user.full_name;
       user.profile_image = picture || user.profile_image;
-      user.email_verified = true;
-      user.email_verified_at = user.email_verified_at || new Date();
-      user.email_verification_token = undefined;
-      user.email_verification_expires = undefined;
+      if (String(user.email).toLowerCase() === String(email).toLowerCase()) {
+        user.email_verified = true;
+        user.email_verified_at = user.email_verified_at || new Date();
+        user.email_verification_token = undefined;
+        user.email_verification_expires = undefined;
+      }
       await user.save();
     } else {
       user = await User.create({
@@ -636,7 +640,7 @@ async function googleAuth(req, res) {
       });
     }
 
-    const token = signToken(user.id);
+    const token = signToken(user);
     const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: responsePayload, token });

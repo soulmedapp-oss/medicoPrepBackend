@@ -1,7 +1,11 @@
 const SubscriptionPlan = require('../models/SubscriptionPlan');
+const { capLimit } = require('../utils/security');
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
+const { can } = require('../rbac/can');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
+const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 
 function createSubscriptionsController({
   createNotification,
@@ -64,7 +68,13 @@ function createSubscriptionsController({
 
   async function updatePlan(req, res) {
     try {
+      const existing = await SubscriptionPlan.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Plan not found' });
+      }
       const updates = req.body || {};
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       const plan = await SubscriptionPlan.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
@@ -73,6 +83,7 @@ function createSubscriptionsController({
       if (!plan) {
         return res.status(404).json({ error: 'Plan not found' });
       }
+      await recordActiveStateChange(req, { resource: 'subscription_plan', before: existing, after: plan, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
       return res.json({ plan });
     } catch (err) {
@@ -89,6 +100,7 @@ function createSubscriptionsController({
       }
       plan.is_active = false;
       await plan.save();
+      await recordDeactivated(req, { resource: 'subscription_plan', targetId: plan._id, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
       return res.json({ ok: true, plan: plan.toObject() });
     } catch (err) {
@@ -105,16 +117,15 @@ function createSubscriptionsController({
       if (plan) filter.plan = plan;
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || user.role !== 'admin') {
-          return res.status(403).json({ error: 'Admin access required' });
+        if (!can(req.user, 'CanViewAllSubscriptions')) {
+          return res.status(403).json({ error: 'Permission denied', required: ['CanViewAllSubscriptions'] });
         }
       } else {
         filter.user_id = req.userId;
         filter.is_active = true;
       }
 
-      const max = Number(limit) || 100;
+      const max = capLimit(limit, 100, 200);
       const subscriptions = await Subscription.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
@@ -132,11 +143,6 @@ function createSubscriptionsController({
       const data = req.body || {};
       if (!data.plan) {
         return res.status(400).json({ error: 'plan is required' });
-      }
-
-      const adminUser = req.user || await User.findById(req.userId).lean();
-      if (!adminUser || adminUser.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
       }
 
       const plan = await SubscriptionPlan.findOne({ plan_name: data.plan, is_active: true }).lean();
@@ -193,12 +199,6 @@ function createSubscriptionsController({
         return res.status(404).json({ error: 'Subscription not found' });
       }
 
-      const user = req.user || await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
-
       const updates = req.body || {};
       const allowed = ['status', 'plan', 'start_date', 'end_date'];
       allowed.forEach((field) => {
@@ -231,14 +231,10 @@ function createSubscriptionsController({
       if (!subscription) {
         return res.status(404).json({ error: 'Subscription not found' });
       }
-      const user = req.user || await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
       subscription.is_active = false;
       subscription.status = 'cancelled';
       await subscription.save();
+      await recordDeactivated(req, { resource: 'subscription', targetId: subscription._id, targetLabel: subscription.user_email || subscription.plan });
       return res.json({ ok: true, subscription: subscription.toObject() });
     } catch (err) {
       console.error(err);
@@ -252,10 +248,6 @@ function createSubscriptionsController({
       const days = Number(extend_days);
       if (!days || Number.isNaN(days) || days <= 0) {
         return res.status(400).json({ error: 'extend_days must be a positive number' });
-      }
-      const user = await User.findById(req.userId).lean();
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
       }
       const subscription = await Subscription.findById(req.params.id);
       if (!subscription) {

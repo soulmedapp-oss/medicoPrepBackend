@@ -10,6 +10,8 @@ const subscriptionSchema = new mongoose.Schema(
     start_date: { type: Date, required: true },
     end_date: { type: Date },
     is_active: { type: Boolean, default: true },
+    // Payment that created this subscription (used to revoke it on refund).
+    payment_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', index: true, sparse: true },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

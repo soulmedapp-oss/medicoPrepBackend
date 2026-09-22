@@ -12,4 +12,7 @@ const notificationSchema = new mongoose.Schema(
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
 
+// Per-user feed sorted newest first.
+notificationSchema.index({ user_email: 1, created_date: -1 });
+
 module.exports = mongoose.model('Notification', notificationSchema);

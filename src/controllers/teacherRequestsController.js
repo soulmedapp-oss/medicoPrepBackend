@@ -1,5 +1,6 @@
 const TeacherRequest = require('../models/TeacherRequest');
-const User = require('../models/User');
+const { capLimit } = require('../utils/security');
+const { can } = require('../rbac/can');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 
 function createTeacherRequestsController({ createNotification }) {
@@ -13,15 +14,14 @@ function createTeacherRequestsController({ createNotification }) {
       if (type) filter.type = type;
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || user.role !== 'admin') {
-          return res.status(403).json({ error: 'Admin access required' });
+        if (!can(req.user, 'CanViewAllTeacherRequests')) {
+          return res.status(403).json({ error: 'Permission denied', required: ['CanViewAllTeacherRequests'] });
         }
       } else {
         filter.teacher_id = req.userId;
       }
 
-      const max = Number(limit) || 100;
+      const max = capLimit(limit, 100, 200);
       const requests = await TeacherRequest.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
@@ -53,11 +53,9 @@ function createTeacherRequestsController({ createNotification }) {
         return res.status(400).json({ error: 'Invalid contact_phone format' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isTeacher = user?.role === 'teacher' || user?.is_teacher;
-      if (!isTeacher) {
-        return res.status(403).json({ error: 'Teacher access required' });
-      }
+      // The route (authorize('CanAccessTeacherRequests')) is now the only
+      // access decision for who may file a request — no role-name check here.
+      const user = req.user;
 
       const request = await TeacherRequest.create({
         teacher_id: user._id,
@@ -102,67 +100,41 @@ function createTeacherRequestsController({ createNotification }) {
         return res.status(404).json({ error: 'Request not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      const isOwner = String(request.teacher_id) === String(req.userId);
-      if (!isAdmin && !isOwner) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
-
+      // The route requires CanEditTeacherRequests to reach this handler at
+      // all (authorize('CanEditTeacherRequests'), single permission — no
+      // selfService/any() fallback), so every caller here is staff; the
+      // 2026-09-19 "owner may edit their own open request" branch is
+      // unreachable under the new gate and was deleted (spec 5.2: ownership
+      // checks for editing content are removed). progress.md's Task 8
+      // pre-check confirms PATCH /teacher-requests/:id is only called from
+      // AdminTeacherRequests.jsx today.
       const updates = req.body || {};
-      if (isAdmin) {
-        const allowed = [
-          'status',
-          'priority',
-          'developer_response',
-          'response_tags',
-          'meeting_link',
-          'meeting_time',
-          'responded_by',
-        ];
-        allowed.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(updates, field)) {
-            request[field] = updates[field];
-          }
-        });
-        if (updates.developer_response) {
-          request.responded_at = new Date();
+      const allowed = [
+        'status',
+        'priority',
+        'developer_response',
+        'response_tags',
+        'meeting_link',
+        'meeting_time',
+        'responded_by',
+      ];
+      allowed.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(updates, field)) {
+          request[field] = updates[field];
         }
-      } else if (isOwner && request.status === 'open') {
-        const allowed = [
-          'title',
-          'description',
-          'type',
-          'category',
-          'priority',
-          'module',
-          'impact',
-          'desired_outcome',
-          'reference_links',
-          'contact_methods',
-          'contact_email',
-          'contact_phone',
-          'meeting_requested',
-          'preferred_time_slots',
-          'timezone',
-        ];
-        allowed.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(updates, field)) {
-            request[field] = updates[field];
-          }
-        });
+      });
+      if (updates.developer_response) {
+        request.responded_at = new Date();
       }
 
       await request.save();
 
-      if (isAdmin) {
-        await createNotification({
-          userEmail: request.teacher_email,
-          title: 'Developer response',
-          message: updates.developer_response || `Your request is now ${request.status}.`,
-          type: 'info',
-        });
-      }
+      await createNotification({
+        userEmail: request.teacher_email,
+        title: 'Developer response',
+        message: updates.developer_response || `Your request is now ${request.status}.`,
+        type: 'info',
+      });
 
       return res.json({ request: request.toObject() });
     } catch (err) {

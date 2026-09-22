@@ -1,5 +1,5 @@
-const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 const { parse } = require('csv-parse/sync');
 const Test = require('../models/Test');
 const Question = require('../models/Question');
@@ -7,7 +7,18 @@ const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
-const { hasPermission } = require('../middlewares/auth');
+const { can, canAny } = require('../rbac/can');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
+const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
+const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { truncateText } = require('../utils/security');
+
+// Fix round 1, Minor 2: question_text is validated up to 4000 chars but
+// target_label has no maxlength — truncate before it ever reaches recordAudit.
+const LABEL_MAX = 120;
+function questionLabel(question) {
+  return truncateText(question?.question_text, LABEL_MAX);
+}
 
 const PLAN_RANKS = {
   free: 0,
@@ -17,6 +28,71 @@ const PLAN_RANKS = {
   premium: 4,
   ultimate: 5,
 };
+
+// Canonical plans for bulk uploads. Legacy aliases "medium"/"advance" (still in
+// PLAN_RANKS so old questions keep ranking correctly) are mapped to their
+// current equivalents; anything unknown falls back to free.
+function normalizePlan(value) {
+  const plan = String(value || 'free').toLowerCase();
+  if (plan === 'medium') return 'premium';
+  if (plan === 'advance') return 'ultimate';
+  return Object.prototype.hasOwnProperty.call(PLAN_RANKS, plan) ? plan : 'free';
+}
+
+const MAX_LIST_LIMIT = 200;
+function clampLimit(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.floor(n), MAX_LIST_LIMIT);
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Fields a manager may change on a test via PATCH /tests/:id.
+const EDITABLE_TEST_FIELDS = [
+  'title',
+  'description',
+  'subject',
+  'difficulty',
+  'duration_minutes',
+  'total_marks',
+  'passing_marks',
+  'is_free',
+  'required_plan',
+  'is_published',
+  'is_active',
+  'publish_at',
+  'available_from',
+  'available_until',
+];
+
+// Fields never sent to students before they have completed an attempt.
+const ANSWER_KEY_FIELDS = ['correct_answers', 'explanation', 'explanation_image_url'];
+
+function stripAnswerKey(question) {
+  const copy = { ...question };
+  ANSWER_KEY_FIELDS.forEach((field) => { delete copy[field]; });
+  if (Array.isArray(copy.media)) {
+    copy.media = copy.media.filter((m) => m && m.role !== 'explanation');
+  }
+  return copy;
+}
+
+// Mirrors the question visibility used by GET /tests/:id/questions so a user is
+// graded on exactly the questions they were shown.
+function buildQuestionFilter(testId, user) {
+  const filter = { test_id: testId };
+  if (!canAny(user, ['CanViewTests', 'CanViewQuestions'])) {
+    filter.is_active = true;
+    const userRank = getPlanRank(user?.subscription_plan);
+    filter.required_plan = {
+      $in: Object.entries(PLAN_RANKS).filter(([, rank]) => rank <= userRank).map(([plan]) => plan),
+    };
+  }
+  return filter;
+}
 
 // Scheduled publishing (decision 10.9). A test is live for students only when it
 // is published, active, past its publish_at, and inside [available_from, available_until].
@@ -103,11 +179,19 @@ async function updateTestAttemptCount(testId) {
 }
 
 async function updateUserAttemptStats(userId) {
-  const attempts = await TestAttempt.find({ user_id: userId, status: 'completed' }).lean();
-  const testsTaken = attempts.length;
-  const avgScore = testsTaken
-    ? attempts.reduce((sum, a) => sum + (a.percentage || 0), 0) / testsTaken
-    : 0;
+  const uid = mongoose.isValidObjectId(userId) ? new mongoose.Types.ObjectId(String(userId)) : userId;
+  const [agg] = await TestAttempt.aggregate([
+    { $match: { user_id: uid, status: 'completed' } },
+    {
+      $group: {
+        _id: null,
+        count: { $sum: 1 },
+        avg: { $avg: { $ifNull: ['$percentage', 0] } },
+      },
+    },
+  ]);
+  const testsTaken = agg?.count || 0;
+  const avgScore = testsTaken ? (agg.avg || 0) : 0;
   await User.findByIdAndUpdate(userId, {
     $set: { tests_taken: testsTaken, average_score: avgScore },
   });
@@ -118,16 +202,17 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     try {
       const { all } = req.query;
       if (all === 'true') {
-        const user = req.user || await User.findById(req.userId).lean();
-        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
       const filter = all === 'true'
         ? {}
         : { is_published: true, is_active: { $ne: false }, ...studentScheduleClause() };
-      const tests = await Test.find(filter).sort({ created_date: -1 }).lean();
+      const tests = await Test.find(filter)
+        .sort({ created_date: -1 })
+        .limit(clampLimit(req.query.limit, MAX_LIST_LIMIT))
+        .lean();
       return res.json({ tests });
     } catch (err) {
       console.error(err);
@@ -142,19 +227,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not found' });
       }
       if (test.is_active === false) {
-        const user = req.user || await User.findById(req.userId).lean();
-        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
           return res.status(404).json({ error: 'Test not found' });
         }
       }
       if (!test.is_published || !isTestLiveForStudent(test)) {
-        const user = req.user || await User.findById(req.userId).lean();
-        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        const isStaff = Boolean(
-          canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
-        );
-        if (!isStaff) {
+        if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
           return res.status(test.is_published ? 404 : 403).json({
             error: test.is_published ? 'Test not available' : 'Staff access required',
           });
@@ -227,7 +305,17 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
   async function updateTest(req, res) {
     try {
-      const updates = req.body || {};
+      const body = req.body || {};
+      const updates = {};
+      EDITABLE_TEST_FIELDS.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(body, field)) updates[field] = body[field];
+      });
+      const existing = await Test.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Test not found' });
+      }
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditTests', deactivate: 'CanDeactivateTests' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       if (updates.title && !isValidTextLength(String(updates.title), 2, 200)) {
         return res.status(400).json({ error: 'title must be between 2 and 200 characters' });
       }
@@ -247,15 +335,15 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const actor = getActor(req);
       updates.updated_by = actor.id;
       updates.updated_by_name = actor.name;
-      const existing = await Test.findById(req.params.id).lean();
       const test = await Test.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
-        { new: true }
+        { new: true, runValidators: true }
       ).lean();
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
+      await recordActiveStateChange(req, { resource: 'test', before: existing, after: test, targetLabel: test.title });
       const justPublished = !existing?.is_published && test.is_published;
       const changedTitle = existing?.title !== test.title;
       if (justPublished || changedTitle) {
@@ -285,6 +373,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       test.updated_by = actor.id;
       test.updated_by_name = actor.name;
       await test.save();
+      await recordDeactivated(req, { resource: 'test', targetId: test._id, targetLabel: test.title });
       return res.json({ ok: true, test: test.toObject() });
     } catch (err) {
       console.error(err);
@@ -298,29 +387,23 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (!test) {
         return res.status(404).json({ error: 'Test not found' });
       }
-      if (test.is_active === false) {
-        const user = req.user || await User.findById(req.userId).lean();
-        const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
-          return res.status(404).json({ error: 'Test not found' });
-        }
+      const isStaff = canAny(req.user, ['CanViewTests', 'CanViewQuestions']);
+      if (test.is_active === false && !isStaff) {
+        return res.status(404).json({ error: 'Test not found' });
       }
 
-      const user = req.user || await User.findById(req.userId).lean();
-      const isStaff = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions') || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
-      const filter = { test_id: req.params.id };
-
-      if (!isStaff) {
-        filter.is_active = true;
-        const userRank = getPlanRank(user?.subscription_plan);
-        const allowedPlans = Object.entries(PLAN_RANKS)
-          .filter(([, rank]) => rank <= userRank)
-          .map(([plan]) => plan);
-        filter.required_plan = { $in: allowedPlans };
+      if (!isStaff && !isTestLiveForStudent(test)) {
+        return res.status(404).json({ error: 'Test not available' });
       }
+      const filter = buildQuestionFilter(req.params.id, req.user);
 
       const questions = await Question.find(filter).sort({ created_date: 1 }).lean();
-      return res.json({ questions });
+      // Students never receive the answer key here; they get it from
+      // GET /attempts/:id/review (or the completion PATCH) once their attempt is completed.
+      // Per spec 5.2, seeing the answer key here specifically requires CanViewQuestions
+      // (narrower than the CanViewTests-or-CanViewQuestions test/question visibility gate above).
+      const canSeeAnswerKey = can(req.user, 'CanViewQuestions');
+      return res.json({ questions: canSeeAnswerKey ? questions : questions.map(stripAnswerKey) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load questions' });
@@ -391,13 +474,6 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const actor = getActor(req);
       const created = [];
       const errors = [];
-      const normalizePlan = (value) => {
-        const plan = String(value || 'free').toLowerCase();
-        if (['free', 'basic', 'premium', 'ultimate'].includes(plan)) return plan;
-        if (plan === 'medium') return 'premium';
-        if (plan === 'advance') return 'ultimate';
-        return 'free';
-      };
 
       records.forEach((row, index) => {
         try {
@@ -565,9 +641,9 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (subject) filter.subject = subject;
       if (difficulty) filter.difficulty = difficulty;
       if (search) {
-        filter.question_text = new RegExp(String(search), 'i');
+        filter.question_text = new RegExp(escapeRegex(String(search).slice(0, 200)), 'i');
       }
-      const max = Number(limit) || 500;
+      const max = clampLimit(limit, MAX_LIST_LIMIT);
       const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ questions });
     } catch (err) {
@@ -632,13 +708,6 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const actor = getActor(req);
       const created = [];
       const errors = [];
-      const normalizePlan = (value) => {
-        const plan = String(value || 'free').toLowerCase();
-        if (['free', 'basic', 'premium', 'ultimate'].includes(plan)) return plan;
-        if (plan === 'medium') return 'premium';
-        if (plan === 'advance') return 'ultimate';
-        return 'free';
-      };
 
       for (let index = 0; index < records.length; index += 1) {
         const row = records[index];
@@ -658,7 +727,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           } catch (err) {
             const message = `Subject "${subject}" does not exist. Please create it.`;
             errors.push({ row: index + 1, error: message });
-            return;
+            continue;
           }
 
           const optionA = row.option_a || row.optionA || row.a || row.A || '';
@@ -744,6 +813,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Question not found' });
       }
       const updates = req.body || {};
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditQuestionBank', deactivate: 'CanDeactivateQuestionBank' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       if (updates.subject && !isValidTextLength(String(updates.subject), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
@@ -754,11 +825,23 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
       }
       const actor = getActor(req);
+      const wasActive = existing.is_active !== false;
       Object.assign(existing, updates);
       existing.updated_by = actor.id;
       existing.updated_by_name = actor.name;
       await existing.save();
-      return res.json({ question: existing.toObject() });
+      await recordActiveStateChange(req, {
+        resource: 'question_bank',
+        before: { is_active: wasActive },
+        after: existing,
+        targetLabel: questionLabel(existing),
+      });
+      // Final review fix round 1, Important: Task 17 widened this route to
+      // any(CanEditQuestionBank, CanDeactivateQuestionBank), but the answer
+      // key (spec 5.2) is reserved for CanViewQuestions specifically — a
+      // Deactivate-only actor must not read it off this response.
+      const canSeeAnswerKeyBank = can(req.user, 'CanViewQuestions');
+      return res.json({ question: canSeeAnswerKeyBank ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to update question' });
@@ -773,7 +856,10 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       existing.is_active = false;
       await existing.save();
-      return res.json({ ok: true, question: existing.toObject() });
+      await recordDeactivated(req, { resource: 'question_bank', targetId: existing._id, targetLabel: questionLabel(existing) });
+      // Final review fix round 1, Important: same answer-key gate as above.
+      const canSeeAnswerKeyBank = can(req.user, 'CanViewQuestions');
+      return res.json({ ok: true, question: canSeeAnswerKeyBank ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to deactivate question' });
@@ -787,15 +873,24 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Question not found' });
       }
       const updates = req.body || {};
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditQuestions', deactivate: 'CanDeactivateQuestions' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
         return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
       }
       const actor = getActor(req);
       const previousTestId = existing.test_id;
+      const wasActive = existing.is_active !== false;
       Object.assign(existing, updates);
       existing.updated_by = actor.id;
       existing.updated_by_name = actor.name;
       await existing.save();
+      await recordActiveStateChange(req, {
+        resource: 'question',
+        before: { is_active: wasActive },
+        after: existing,
+        targetLabel: questionLabel(existing),
+      });
 
       const nextTestId = existing.test_id;
       const previousId = previousTestId ? String(previousTestId) : '';
@@ -808,7 +903,11 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         await updateTestQuestionCount(nextTestId);
       }
 
-      return res.json({ question: existing.toObject() });
+      // Final review fix round 1, Important: same answer-key gate as
+      // listTestQuestions/updateQuestionBank — a Deactivate-only actor (no
+      // CanViewQuestions) must not read the answer key off this response.
+      const canSeeAnswerKeyQ = can(req.user, 'CanViewQuestions');
+      return res.json({ question: canSeeAnswerKeyQ ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to update question' });
@@ -823,8 +922,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       question.is_active = false;
       await question.save();
+      // Fix round 1, Minor 1: audit immediately after the write that actually
+      // deactivates, before updateTestQuestionCount (which can throw) — so
+      // the entry survives even if that later step fails.
+      await recordDeactivated(req, { resource: 'question', targetId: question._id, targetLabel: questionLabel(question) });
       await updateTestQuestionCount(question.test_id);
-      return res.json({ ok: true, question: question.toObject() });
+      // Final review fix round 1, Important: same answer-key gate as above.
+      const canSeeAnswerKeyQ = can(req.user, 'CanViewQuestions');
+      return res.json({ ok: true, question: canSeeAnswerKeyQ ? question.toObject() : stripAnswerKey(question.toObject()) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to deactivate question' });
@@ -848,6 +953,17 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         { _id: { $in: ids } },
         { $set: { is_active: false } }
       );
+
+      // Fix round 1, Minor 1: audit immediately after the write that
+      // actually deactivates, before the per-test updateTestQuestionCount
+      // loop below (which can throw) — one entry for the whole bulk
+      // operation, not one per question (addendum A).
+      await recordAudit(req, {
+        action: 'question.deactivated',
+        target_type: 'question',
+        target_label: `${existing.length} questions`,
+        after: { ids: existing.map((question) => String(question._id)) },
+      });
 
       const testIds = [...new Set(
         existing
@@ -884,6 +1000,17 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         { $set: { is_active: true } }
       );
 
+      // Fix round 1, Minor 1: audit immediately after the write that
+      // actually reactivates, before the per-test updateTestQuestionCount
+      // loop below (which can throw) — one entry for the whole bulk
+      // operation, not one per question (addendum A).
+      await recordAudit(req, {
+        action: 'question.reactivated',
+        target_type: 'question',
+        target_label: `${existing.length} questions`,
+        after: { ids: existing.map((question) => String(question._id)) },
+      });
+
       const testIds = [...new Set(
         existing
           .map((question) => (question.test_id ? String(question.test_id) : ''))
@@ -913,16 +1040,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       if (all === 'true') {
-        const user = req.user || await User.findById(req.userId).lean();
-        const canManageTests = hasPermission(user, 'manage_tests');
-        if (!user || (!canManageTests && user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!can(req.user, 'CanViewAllAttempts')) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
         filter.user_id = req.userId;
       }
 
-      const max = Number(limit) || 100;
+      const max = clampLimit(limit, 100);
       const attempts = await TestAttempt.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
@@ -959,29 +1084,37 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not found' });
       }
 
-      const user = req.user || await User.findById(req.userId).lean();
-      const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-      const isStaff = Boolean(
-        canManageTests || user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher
-      );
+      // Test-content visibility (drafts/inactive) and attempts-data widening are
+      // separate decisions: a content role may see a draft test's stats without
+      // being able to see every user's attempts, and vice versa.
+      const canSeeDrafts = canAny(req.user, ['CanViewTests', 'CanViewQuestions']);
+      const canViewAllAttempts = can(req.user, 'CanViewAllAttempts');
 
-      if (test.is_active === false && !isStaff) {
+      if (test.is_active === false && !canSeeDrafts) {
         return res.status(404).json({ error: 'Test not found' });
       }
-      if (!test.is_published && !isStaff) {
+      if (!test.is_published && !canSeeDrafts) {
         return res.status(403).json({ error: 'Staff access required' });
       }
 
-      const attempts = await TestAttempt.find({ test_id: test._id, status: 'completed' })
-        .select('percentage score total_marks')
-        .lean();
-      const percentages = attempts
-        .map((attempt) => Number(attempt.percentage))
-        .filter((value) => Number.isFinite(value));
+      const completedFilter = { test_id: test._id, status: 'completed' };
+      const numericFilter = { ...completedFilter, percentage: { $type: 'number' } };
+      const [summary] = await TestAttempt.aggregate([
+        { $match: completedFilter },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            scored: { $sum: { $cond: [{ $isNumber: '$percentage' }, 1, 0] } },
+          },
+        },
+      ]);
+      const totalAttempts = summary?.total || 0;
+      const scoredCount = summary?.scored || 0;
 
       const stats = {
-        total_attempts: attempts.length,
-        median_percentage: computeMedian(percentages),
+        total_attempts: totalAttempts,
+        median_percentage: null,
         top_percentage: null,
         top_score: null,
         top_total_marks: null,
@@ -989,34 +1122,39 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         user_percentage: null,
       };
 
-      if (percentages.length > 0) {
-        const topAttempt = attempts.reduce((best, current) => {
-          if (!best) return current;
-          const bestPct = Number(best.percentage);
-          const currentPct = Number(current.percentage);
-          if (!Number.isFinite(bestPct)) return current;
-          if (!Number.isFinite(currentPct)) return best;
-          if (currentPct > bestPct) return current;
-          if (currentPct === bestPct && (current.score ?? -Infinity) > (best.score ?? -Infinity)) {
-            return current;
-          }
-          return best;
-        }, null);
-
-        stats.top_percentage = Math.max(...percentages);
+      if (scoredCount > 0) {
+        // Median: fetch only the middle one or two values instead of every attempt.
+        const mid = Math.floor(scoredCount / 2);
+        const even = scoredCount % 2 === 0;
+        const [middle, topAttempt] = await Promise.all([
+          TestAttempt.find(numericFilter)
+            .sort({ percentage: 1, _id: 1 })
+            .skip(even ? mid - 1 : mid)
+            .limit(even ? 2 : 1)
+            .select('percentage')
+            .lean(),
+          TestAttempt.findOne(numericFilter)
+            .sort({ percentage: -1, score: -1 })
+            .select('percentage score total_marks')
+            .lean(),
+        ]);
+        stats.median_percentage = computeMedian(middle.map((a) => Number(a.percentage)));
         if (topAttempt) {
+          stats.top_percentage = Number(topAttempt.percentage);
           stats.top_score = topAttempt.score ?? null;
           stats.top_total_marks = topAttempt.total_marks ?? test.total_marks ?? null;
         }
       }
 
       let userAttempt = null;
-      if (req.query.attempt_id) {
-        userAttempt = await TestAttempt.findOne({
+      if (req.query.attempt_id && mongoose.isValidObjectId(String(req.query.attempt_id))) {
+        const attemptFilter = {
           _id: req.query.attempt_id,
           test_id: test._id,
           status: 'completed',
-        }).select('percentage').lean();
+        };
+        if (!canViewAllAttempts) attemptFilter.user_id = req.userId;
+        userAttempt = await TestAttempt.findOne(attemptFilter).select('percentage').lean();
       }
 
       if (!userAttempt && req.userId) {
@@ -1027,11 +1165,14 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         }).sort({ completed_at: -1 }).select('percentage').lean();
       }
 
-      if (userAttempt && Number.isFinite(Number(userAttempt.percentage)) && percentages.length > 0) {
+      if (userAttempt && Number.isFinite(Number(userAttempt.percentage)) && scoredCount > 0) {
         const userPercentage = Number(userAttempt.percentage);
-        const belowCount = percentages.filter((value) => value < userPercentage).length;
+        const belowCount = await TestAttempt.countDocuments({
+          ...completedFilter,
+          percentage: { $type: 'number', $lt: userPercentage },
+        });
         stats.user_percentage = userPercentage;
-        stats.percentile = Math.round((belowCount / percentages.length) * 1000) / 10;
+        stats.percentile = Math.round((belowCount / scoredCount) * 1000) / 10;
       }
 
       return res.json({ stats });
@@ -1048,28 +1189,21 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      const canManageTests = hasPermission(user, 'manage_tests') || hasPermission(user, 'manage_questions');
-      const isStaff = Boolean(
-        canManageTests || user.role === 'admin' || user.role === 'teacher' || user.is_teacher
-      );
+      const user = req.user;
+      const isStaff = canAny(user, ['CanViewTests', 'CanViewQuestions']);
       if (!isStaff && !isTestLiveForStudent(test)) {
         return res.status(403).json({ error: 'This test is not currently available' });
       }
 
-      const data = req.body || {};
+      // Status, start time and marks are server-controlled; the request body is ignored.
       const attempt = await TestAttempt.create({
         test_id: req.params.id,
         user_id: user._id,
         user_email: user.email,
         user_name: user.full_name,
-        status: data.status || 'in_progress',
-        started_at: data.started_at || new Date().toISOString(),
-        total_marks: data.total_marks ?? test.total_marks ?? 0,
+        status: 'in_progress',
+        started_at: new Date(),
+        total_marks: test.total_marks ?? 0,
       });
 
       return res.status(201).json({ attempt });
@@ -1079,61 +1213,161 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     }
   }
 
+  function sanitizeTimeTaken(value, attempt) {
+    const startedAt = new Date(attempt.started_at || attempt.created_date || Date.now()).getTime();
+    const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return elapsed;
+    // Clients may report slightly less than wall-clock time, never more.
+    return Math.min(Math.floor(n), elapsed + 5);
+  }
+
+  async function runCompletionSideEffects(attempt) {
+    const steps = [
+      () => updateTestAttemptCount(attempt.test_id),
+      () => updateUserAttemptStats(attempt.user_id),
+      () => broadcastUserEvent && broadcastUserEvent({
+        userId: attempt.user_id,
+        userEmail: attempt.user_email,
+        type: 'attempt_completed',
+        data: { attemptId: attempt._id, testId: attempt.test_id },
+      }),
+      // The single place a tutor session is enqueued on completion. The frontend
+      // no longer POSTs /attempts/:id/tutor after submit; it only polls GET.
+      () => enqueueTutorSession && enqueueTutorSession(attempt._id),
+    ];
+    for (const step of steps) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await step();
+      } catch (err) {
+        // The attempt is already saved; a failed side effect must not fail the request.
+        console.error('Attempt completion side effect failed:', err);
+      }
+    }
+  }
+
+  // PATCH /attempts/:id
+  // Body (all optional): { answers, status: 'in_progress' | 'completed', time_taken_seconds }
+  //   answers: [{ question_id, selected_options: [optionId] }] or { [questionId]: [optionId] }
+  // Any other field (score, percentage, total_marks, completed_at, ...) is ignored.
+  // On completion the server grades the answers and responds with
+  //   { attempt, questions } where questions include correct_answers/explanations.
+  // Completed attempts are immutable (409).
   async function updateAttempt(req, res) {
     try {
-      const attempt = await TestAttempt.findById(req.params.id);
+      if (!mongoose.isValidObjectId(String(req.params.id))) {
+        return res.status(404).json({ error: 'Attempt not found' });
+      }
+      const attempt = await TestAttempt.findById(req.params.id).lean();
       if (!attempt) {
         return res.status(404).json({ error: 'Attempt not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin && String(attempt.user_id) !== String(req.userId)) {
+      const isOwner = String(attempt.user_id) === String(req.userId);
+      if (!isOwner) {
         return res.status(403).json({ error: 'Not authorized' });
       }
-
-      const updates = req.body || {};
-      const allowedFields = [
-        'status',
-        'answers',
-        'score',
-        'total_marks',
-        'percentage',
-        'time_taken_seconds',
-        'completed_at',
-      ];
-      allowedFields.forEach((field) => {
-        if (Object.prototype.hasOwnProperty.call(updates, field)) {
-          attempt[field] = updates[field];
-        }
-      });
-
-      const wasCompleted = attempt.status === 'completed';
-      await attempt.save();
-
-      if (!wasCompleted && attempt.status === 'completed') {
-        await updateTestAttemptCount(attempt.test_id);
-        await updateUserAttemptStats(attempt.user_id);
-        broadcastUserEvent({
-          userId: attempt.user_id,
-          userEmail: attempt.user_email,
-          type: 'attempt_completed',
-          data: { attemptId: attempt._id, testId: attempt.test_id },
-        });
-        if (enqueueTutorSession) {
-          try {
-            await enqueueTutorSession(attempt._id);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.error('Failed to enqueue tutor session:', err);
-          }
-        }
+      if (attempt.status === 'completed') {
+        return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
       }
 
-      return res.json({ attempt: attempt.toObject() });
+      const body = req.body || {};
+      const nextStatus = body.status === undefined ? attempt.status : body.status;
+      if (!['in_progress', 'completed'].includes(nextStatus)) {
+        return res.status(400).json({ error: "status must be 'in_progress' or 'completed'" });
+      }
+      const hasAnswers = Object.prototype.hasOwnProperty.call(body, 'answers');
+      const answerMap = hasAnswers
+        ? normalizeSubmittedAnswers(body.answers)
+        : normalizeSubmittedAnswers(attempt.answers);
+      const timeTaken = sanitizeTimeTaken(body.time_taken_seconds, attempt);
+      const notCompleted = { _id: attempt._id, status: { $ne: 'completed' } };
+
+      if (nextStatus !== 'completed') {
+        const set = { status: nextStatus, time_taken_seconds: timeTaken };
+        if (hasAnswers) {
+          set.answers = Object.entries(answerMap)
+            .filter(([id]) => mongoose.isValidObjectId(id))
+            .map(([id, selected]) => ({
+              question_id: id,
+              selected_options: selected,
+              is_correct: false,
+              marks_obtained: 0,
+            }));
+        }
+        const saved = await TestAttempt.findOneAndUpdate(notCompleted, { $set: set }, { new: true, runValidators: true }).lean();
+        if (!saved) {
+          return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
+        }
+        return res.json({ attempt: saved });
+      }
+
+      // Grade against exactly the questions the attempt owner (the caller, per the
+      // owner-only check above) can see.
+      const questions = await Question.find(buildQuestionFilter(attempt.test_id, req.user))
+        .sort({ created_date: 1 })
+        .lean();
+      const graded = gradeAttempt(questions, answerMap);
+
+      // Atomic transition: only one request can move the attempt to completed,
+      // so completion side effects (incl. tutor enqueue) run exactly once.
+      const saved = await TestAttempt.findOneAndUpdate(
+        notCompleted,
+        {
+          $set: {
+            status: 'completed',
+            answers: graded.answers,
+            score: graded.score,
+            total_marks: graded.total_marks,
+            percentage: graded.percentage,
+            time_taken_seconds: timeTaken,
+            completed_at: new Date(),
+          },
+        },
+        { new: true, runValidators: true }
+      ).lean();
+      if (!saved) {
+        return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
+      }
+
+      await runCompletionSideEffects(saved);
+      return res.json({ attempt: saved, questions });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to update attempt' });
+    }
+  }
+
+  // GET /attempts/:id/review
+  // Returns { attempt, questions } with the answer key (correct_answers,
+  // explanation, explanation_image_url) for a COMPLETED attempt. Allowed for the
+  // attempt owner, or a caller holding CanViewAllAttempts.
+  async function getAttemptReview(req, res) {
+    try {
+      if (!mongoose.isValidObjectId(String(req.params.id))) {
+        return res.status(404).json({ error: 'Attempt not found' });
+      }
+      const attempt = await TestAttempt.findById(req.params.id).lean();
+      if (!attempt) {
+        return res.status(404).json({ error: 'Attempt not found' });
+      }
+      const isOwner = String(attempt.user_id) === String(req.userId);
+      if (!isOwner && !can(req.user, 'CanViewAllAttempts')) {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
+      if (attempt.status !== 'completed') {
+        return res.status(409).json({ error: 'Answers are available once the attempt is completed' });
+      }
+
+      const ids = (attempt.answers || []).map((a) => a.question_id).filter(Boolean);
+      const found = await Question.find({ _id: { $in: ids } }).lean();
+      const byId = new Map(found.map((q) => [String(q._id), q]));
+      const questions = ids.map((id) => byId.get(String(id))).filter(Boolean);
+      return res.json({ attempt, questions });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to load attempt review' });
     }
   }
 
@@ -1162,6 +1396,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     getTestStats,
     createAttempt,
     updateAttempt,
+    getAttemptReview,
   };
 }
 

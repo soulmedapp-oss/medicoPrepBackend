@@ -1,9 +1,40 @@
 const Video = require('../models/Video');
-const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
+const { can } = require('../rbac/can');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
+const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
+const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+
+const UPDATABLE_VIDEO_FIELDS = [
+  'title',
+  'description',
+  'subject',
+  'teacher_name',
+  'teacher_email',
+  'subtopic',
+  'order',
+  'video_url',
+  'thumbnail_url',
+  'card_thumbnail_url',
+  'transcript_text',
+  'transcript_url',
+  'is_published',
+  'is_active',
+  'allowed_plans',
+];
+
+function pickFields(source, fields) {
+  const out = {};
+  fields.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(source || {}, field)) {
+      out[field] = source[field];
+    }
+  });
+  return out;
+}
 
 function canAccessVideo(video, planName) {
   if (video.is_free) return true;
@@ -13,17 +44,14 @@ function canAccessVideo(video, planName) {
 }
 
 function createVideosController() {
-  async function loadVideoForUser(userId, videoId) {
+  async function loadVideoForUser(user, videoId) {
     const video = await Video.findById(videoId).lean();
     if (!video) return { error: 'Video not found' };
-    const user = await User.findById(userId).lean();
-    if (!user) return { error: 'User not found' };
-    const isStaff = user.role === 'admin' || user.role === 'teacher' || user.is_teacher;
-    if (!isStaff) {
+    if (!can(user, 'CanViewVideos')) {
       if (!video.is_published || video.is_active === false) {
         return { error: 'Video not found' };
       }
-      const planName = user.subscription_plan || 'free';
+      const planName = user?.subscription_plan || 'free';
       if (!canAccessVideo(video, planName)) {
         return { error: 'Upgrade required', status: 403 };
       }
@@ -37,8 +65,7 @@ function createVideosController() {
       const filter = {};
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!can(req.user, 'CanViewVideos')) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
@@ -61,8 +88,7 @@ function createVideosController() {
         return res.json({ videos });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const planName = user?.subscription_plan || 'free';
+      const planName = req.user?.subscription_plan || 'free';
       const visible = videos.filter((video) => canAccessVideo(video, planName));
       return res.json({ videos: visible });
     } catch (err) {
@@ -143,7 +169,10 @@ function createVideosController() {
 
   async function updateVideo(req, res) {
     try {
-      const updates = req.body || {};
+      const updates = pickFields(req.body, UPDATABLE_VIDEO_FIELDS);
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'No updatable fields provided' });
+      }
       if (updates.title && !isValidTextLength(String(updates.title), 2, 200)) {
         return res.status(400).json({ error: 'title must be between 2 and 200 characters' });
       }
@@ -186,6 +215,17 @@ function createVideosController() {
           : [];
         updates.is_free = updates.allowed_plans.includes('free');
       }
+      if (updates.order !== undefined) {
+        updates.order = Number(updates.order);
+      }
+
+      const existing = await Video.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Video not found' });
+      }
+
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditVideos', deactivate: 'CanDeactivateVideos' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
 
       const video = await Video.findByIdAndUpdate(
         req.params.id,
@@ -195,6 +235,7 @@ function createVideosController() {
       if (!video) {
         return res.status(404).json({ error: 'Video not found' });
       }
+      await recordActiveStateChange(req, { resource: 'video', before: existing, after: video, targetLabel: video.title });
       return res.json({ video });
     } catch (err) {
       console.error(err);
@@ -211,6 +252,7 @@ function createVideosController() {
       video.is_active = false;
       video.is_published = false;
       await video.save();
+      await recordDeactivated(req, { resource: 'video', targetId: video._id, targetLabel: video.title });
       return res.json({ ok: true, video: video.toObject() });
     } catch (err) {
       console.error(err);
@@ -224,7 +266,7 @@ function createVideosController() {
       if (!value) {
         return res.status(400).json({ error: 'Tutor service is not configured' });
       }
-      const { video, error, status } = await loadVideoForUser(req.userId, req.params.id);
+      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
       if (!video) {
         return res.status(status || 404).json({ error });
       }
@@ -243,14 +285,17 @@ function createVideosController() {
         return res.status(400).json({ error: 'Tutor service is not configured' });
       }
       const { message } = req.body || {};
-      if (!message) {
+      if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ error: 'message is required' });
       }
-      const { video, error, status } = await loadVideoForUser(req.userId, req.params.id);
+      if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+        return res.status(400).json({ error: `message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less` });
+      }
+      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
       if (!video) {
         return res.status(status || 404).json({ error });
       }
-      const answer = await requestVideoChat(message, video);
+      const answer = await requestVideoChat(message.trim(), video);
       return res.json({ answer });
     } catch (err) {
       console.error(err);

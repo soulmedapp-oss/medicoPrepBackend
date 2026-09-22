@@ -1,7 +1,28 @@
+const mongoose = require('mongoose');
 const StudyGroup = require('../models/StudyGroup');
 const GroupResource = require('../models/GroupResource');
 const User = require('../models/User');
-const { isValidEmail, isValidTextLength } = require('../utils/validation');
+const { isValidTextLength } = require('../utils/validation');
+const { isHttpUrl } = require('../utils/security');
+
+function serializeGroup(group) {
+  const value = group?.toObject ? group.toObject() : group;
+  if (!value) return value;
+  return {
+    ...value,
+    members: (value.members || []).map(({ user_email, ...member }) => member),
+  };
+}
+
+function serializeResource(resource) {
+  const value = resource?.toObject ? resource.toObject() : resource;
+  if (!value) return value;
+  const { user_email, ...safeResource } = value;
+  return {
+    ...safeResource,
+    comments: (value.comments || []).map(({ user_email: commentEmail, ...comment }) => comment),
+  };
+}
 
 function createGroupsController({ createNotification, hasAcceptedConnection, isStudentUser }) {
   async function listGroups(req, res) {
@@ -9,7 +30,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
       const groups = await StudyGroup.find({ 'members.user_id': req.userId })
         .sort({ updated_date: -1 })
         .lean();
-      return res.json({ groups });
+      return res.json({ groups: groups.map(serializeGroup) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load groups' });
@@ -29,35 +50,45 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         return res.status(400).json({ error: 'description must be 1000 characters or less' });
       }
 
-      const creator = await User.findById(req.userId).lean();
-      if (!creator || !isStudentUser(creator)) {
-        return res.status(403).json({ error: 'Student access required' });
-      }
+      // The route's authorize('CanAccessCommunity') is now the only access
+      // decision for the caller; isStudentUser below applies only to the
+      // OTHER members being added — an identity check on those records, not
+      // a caller access check. (Fix round 1, item A completion: uniqueIds
+      // starts with the creator's own id, so without the isCreator carve-out
+      // below, this loop re-imposed a caller-side check on the creator by
+      // another door.)
+      const creator = req.user;
 
-      const emails = Array.isArray(data.member_emails) ? data.member_emails : [];
-      const uniqueEmails = Array.from(new Set([creator.email, ...emails].filter(Boolean)));
-      const invalidEmail = uniqueEmails.find((email) => !isValidEmail(String(email)));
-      if (invalidEmail) {
-        return res.status(400).json({ error: `Invalid email format: ${invalidEmail}` });
+      const requestedIds = Array.isArray(data.member_ids) ? data.member_ids : [];
+      const uniqueIds = Array.from(new Set([
+        String(creator._id),
+        ...requestedIds.map((id) => String(id || '')),
+      ].filter(Boolean)));
+      if (uniqueIds.some((id) => !mongoose.isValidObjectId(id))) {
+        return res.status(400).json({ error: 'member_ids contains an invalid user ID' });
       }
 
       const members = [];
-      for (const email of uniqueEmails) {
-        const user = await User.findOne({ email }).lean();
-        if (!user || !isStudentUser(user)) {
-          return res.status(404).json({ error: `Student not found: ${email}` });
+      for (const userId of uniqueIds) {
+        const isCreator = String(userId) === String(creator._id);
+        const user = await User.findOne({ _id: userId, is_active: { $ne: false } }).lean();
+        if (!user) {
+          return res.status(404).json({ error: 'Student not found' });
         }
-        if (String(user._id) !== String(creator._id)) {
+        if (!isCreator && !isStudentUser(user)) {
+          return res.status(404).json({ error: 'Student not found' });
+        }
+        if (!isCreator) {
           const ok = await hasAcceptedConnection(creator._id, user._id);
           if (!ok) {
-            return res.status(400).json({ error: `No accepted connection with ${email}` });
+            return res.status(400).json({ error: 'All group members must be accepted connections' });
           }
         }
         members.push({
           user_id: user._id,
           user_email: user.email,
           user_name: user.full_name || '',
-          role: String(user._id) === String(creator._id) ? 'admin' : 'member',
+          role: isCreator ? 'admin' : 'member',
         });
       }
 
@@ -83,7 +114,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         )
       );
 
-      return res.status(201).json({ group });
+      return res.status(201).json({ group: serializeGroup(group) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to create group' });
@@ -92,12 +123,9 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
   async function addGroupMember(req, res) {
     try {
-      const { email } = req.body || {};
-      if (!email) {
-        return res.status(400).json({ error: 'email is required' });
-      }
-      if (!isValidEmail(String(email))) {
-        return res.status(400).json({ error: 'Invalid email format' });
+      const { user_id: userId } = req.body || {};
+      if (!mongoose.isValidObjectId(userId)) {
+        return res.status(400).json({ error: 'Valid user_id is required' });
       }
 
       const group = await StudyGroup.findById(req.params.id);
@@ -112,7 +140,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         return res.status(403).json({ error: 'Only group admin can add members' });
       }
 
-      const user = await User.findOne({ email }).lean();
+      const user = await User.findOne({ _id: userId, is_active: { $ne: false } }).lean();
       if (!user || !isStudentUser(user)) {
         return res.status(404).json({ error: 'Student not found' });
       }
@@ -124,7 +152,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       const ok = await hasAcceptedConnection(req.userId, user._id);
       if (!ok) {
-        return res.status(400).json({ error: `No accepted connection with ${email}` });
+        return res.status(400).json({ error: 'No accepted connection with this student' });
       }
 
       group.members.push({
@@ -142,7 +170,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         type: 'info',
       });
 
-      return res.json({ group: group.toObject() });
+      return res.json({ group: serializeGroup(group) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to add group member' });
@@ -165,7 +193,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         .sort({ created_date: -1 })
         .lean();
 
-      return res.json({ resources });
+      return res.json({ resources: resources.map(serializeResource) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load resources' });
@@ -186,6 +214,10 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
       }
       if (data.url && !isValidTextLength(String(data.url), 0, 1000)) {
         return res.status(400).json({ error: 'url must be 1000 characters or less' });
+      }
+      // Blocks javascript:, data: and other schemes that would execute when clicked.
+      if (data.url && !isHttpUrl(String(data.url))) {
+        return res.status(400).json({ error: 'url must be a valid http(s) URL' });
       }
 
       const group = await StudyGroup.findById(req.params.id);
@@ -224,7 +256,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         )
       );
 
-      return res.status(201).json({ resource });
+      return res.status(201).json({ resource: serializeResource(resource) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to add resource' });
@@ -261,7 +293,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
       resource.like_count = resource.liked_by.length;
       await resource.save();
 
-      return res.json({ resource: resource.toObject() });
+      return res.json({ resource: serializeResource(resource) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to update like' });
@@ -320,7 +352,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         )
       );
 
-      return res.json({ resource: resource.toObject() });
+      return res.json({ resource: serializeResource(resource) });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to add comment' });

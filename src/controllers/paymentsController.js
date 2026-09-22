@@ -6,6 +6,7 @@ const SubscriptionPlan = require('../models/SubscriptionPlan');
 const User = require('../models/User');
 const { sendEmail } = require('../services/emailService');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
+const { capLimit } = require('../utils/security');
 const {
   createOrder,
   verifyPaymentSignature,
@@ -35,63 +36,138 @@ function extractRazorpayError(err) {
   };
 }
 
-async function applyPostPaymentUpdates(payment) {
-  if (!payment || payment.subscription_activated) return;
-  const plan = await SubscriptionPlan.findOne({ plan_name: payment.plan }).lean();
-  const startDate = new Date();
-  const endDate = computeSubscriptionEndDate(plan, startDate);
-
-  await Subscription.updateMany(
-    { user_id: payment.user_id, status: 'active' },
-    { $set: { status: 'expired', is_active: false } }
-  );
-
-  const subscription = await Subscription.create({
-    user_id: payment.user_id,
-    user_email: payment.user_email,
-    user_name: payment.user_name || '',
-    plan: payment.plan,
-    status: 'active',
-    start_date: startDate,
-    end_date: endDate || null,
-  });
-
-  await User.findByIdAndUpdate(payment.user_id, {
-    $set: {
-      subscription_plan: payment.plan,
-      subscription_status: 'active',
-      subscription_start_date: startDate,
-      subscription_end_date: endDate || null,
-    },
-  });
-
-  if (payment.coupon_code && !payment.coupon_redeemed) {
-    const coupon = await Coupon.findOne({ code: payment.coupon_code }).lean();
-    if (coupon) {
-      await CouponRedemption.updateOne(
-        { coupon_code: coupon.code, user_id: payment.user_id },
-        {
-          $setOnInsert: {
-            coupon_code: coupon.code,
-            coupon_id: coupon._id,
-            user_id: payment.user_id,
-            payment_id: payment._id,
-          },
+/**
+ * Records the coupon redemption for a *paid* payment. Runs only after payment
+ * success, so abandoned/failed checkouts never burn a coupon. The unique
+ * (coupon_code, user_id) index plus the "already used" check at order creation
+ * prevent reuse after a successful payment.
+ */
+async function redeemCouponForPayment(payment) {
+  if (!payment || !payment.coupon_code || payment.coupon_redeemed) return;
+  const coupon = await Coupon.findOne({ code: payment.coupon_code }).lean();
+  if (!coupon) return;
+  let inserted = false;
+  try {
+    const result = await CouponRedemption.updateOne(
+      { coupon_code: coupon.code, user_id: payment.user_id },
+      {
+        $setOnInsert: {
+          coupon_code: coupon.code,
+          coupon_id: coupon._id,
+          user_id: payment.user_id,
+          payment_id: payment._id,
         },
-        { upsert: true }
-      );
-      await Coupon.updateOne(
-        { _id: coupon._id },
-        { $inc: { uses_total: 1 } }
-      );
-      payment.coupon_redeemed = true;
-    }
+      },
+      { upsert: true }
+    );
+    inserted = Boolean(result.upsertedCount);
+  } catch (err) {
+    if (!err || err.code !== 11000) throw err;
+  }
+  if (inserted) {
+    await Coupon.updateOne({ _id: coupon._id }, { $inc: { uses_total: 1 } });
+  }
+  await Payment.updateOne({ _id: payment._id }, { $set: { coupon_redeemed: true } });
+}
+
+/**
+ * Activates the subscription for a paid payment exactly once. The
+ * subscription_activated flag is claimed atomically, so concurrent
+ * verify + webhook calls cannot both activate. If a downstream step fails the
+ * claim is released so a later retry (verify or webhook redelivery) can finish.
+ */
+async function applyPostPaymentUpdates(payment) {
+  if (!payment) return null;
+  const claimed = await Payment.findOneAndUpdate(
+    { _id: payment._id, status: 'paid', subscription_activated: { $ne: true } },
+    { $set: { subscription_activated: true } },
+    { new: true }
+  );
+  if (!claimed) return null;
+
+  let subscription;
+  try {
+    const plan = await SubscriptionPlan.findOne({ plan_name: claimed.plan }).lean();
+    const startDate = new Date();
+    const endDate = computeSubscriptionEndDate(plan, startDate);
+
+    await Subscription.updateMany(
+      { user_id: claimed.user_id, status: 'active' },
+      { $set: { status: 'expired', is_active: false } }
+    );
+
+    subscription = await Subscription.create({
+      user_id: claimed.user_id,
+      user_email: claimed.user_email,
+      user_name: claimed.user_name || '',
+      plan: claimed.plan,
+      status: 'active',
+      start_date: startDate,
+      end_date: endDate || null,
+      payment_id: claimed._id,
+    });
+
+    await User.findByIdAndUpdate(claimed.user_id, {
+      $set: {
+        subscription_plan: claimed.plan,
+        subscription_status: 'active',
+        subscription_start_date: startDate,
+        subscription_end_date: endDate || null,
+      },
+    });
+  } catch (err) {
+    await Payment.updateOne(
+      { _id: claimed._id },
+      { $set: { subscription_activated: false } }
+    ).catch(() => {});
+    throw err;
   }
 
-  payment.subscription_activated = true;
-  await payment.save();
+  try {
+    await redeemCouponForPayment(claimed);
+  } catch (err) {
+    // The subscription is already active; a coupon bookkeeping failure must not undo it.
+    console.error('Coupon redemption failed for payment', String(claimed._id), err);
+  }
 
   return subscription;
+}
+
+/** Full refund: deactivate the subscription this payment bought. */
+async function revokeSubscriptionForPayment(payment) {
+  const result = await Subscription.updateMany(
+    { payment_id: payment._id, status: 'active' },
+    { $set: { status: 'refunded', is_active: false } }
+  );
+  let revoked = result.modifiedCount || 0;
+  if (!revoked && payment.subscription_activated) {
+    // Subscriptions created before payment_id was recorded: match by user + plan.
+    const legacy = await Subscription.updateMany(
+      { user_id: payment.user_id, plan: payment.plan, status: 'active', payment_id: { $exists: false } },
+      { $set: { status: 'refunded', is_active: false } }
+    );
+    revoked = legacy.modifiedCount || 0;
+  }
+  if (revoked) {
+    await User.updateOne(
+      { _id: payment.user_id, subscription_plan: payment.plan },
+      {
+        $set: {
+          subscription_plan: 'free',
+          subscription_status: 'inactive',
+          subscription_end_date: new Date(),
+        },
+      }
+    );
+  }
+  return revoked;
+}
+
+function applyGatewayDetails(target, entity) {
+  target.method = entity?.method || '';
+  target.bank = entity?.bank || '';
+  target.wallet = entity?.wallet || '';
+  target.vpa = entity?.vpa || '';
 }
 
 function createPaymentsController() {
@@ -104,7 +180,7 @@ function createPaymentsController() {
         });
       }
       const { plan: planName, coupon_code } = req.body || {};
-      if (!planName) {
+      if (!planName || typeof planName !== 'string') {
         return res.status(400).json({ error: 'plan is required' });
       }
       const plan = await SubscriptionPlan.findOne({ plan_name: planName, is_active: true }).lean();
@@ -125,7 +201,7 @@ function createPaymentsController() {
       let discountPercent = 0;
       let discountAmount = 0;
       if (coupon_code) {
-        coupon = await Coupon.findOne({ code: coupon_code.toUpperCase(), is_active: true }).lean();
+        coupon = await Coupon.findOne({ code: String(coupon_code).trim().toUpperCase(), is_active: true }).lean();
         if (!coupon) {
           return res.status(400).json({ error: 'Invalid coupon code' });
         }
@@ -135,6 +211,8 @@ function createPaymentsController() {
         if (coupon.max_uses_total && coupon.uses_total >= coupon.max_uses_total) {
           return res.status(400).json({ error: 'Coupon usage limit reached' });
         }
+        // Redemptions are recorded only after a successful payment, so this
+        // blocks reuse once a discounted payment has gone through.
         const alreadyUsed = await CouponRedemption.findOne({
           coupon_code: coupon.code,
           user_id: user._id,
@@ -196,21 +274,6 @@ function createPaymentsController() {
         upgrade_from: upgradeFrom,
       });
 
-      if (coupon?.code) {
-        await CouponRedemption.updateOne(
-          { coupon_code: coupon.code, user_id: user._id },
-          {
-            $setOnInsert: {
-              coupon_code: coupon.code,
-              coupon_id: coupon._id,
-              user_id: user._id,
-              payment_id: payment._id,
-            },
-          },
-          { upsert: true }
-        );
-      }
-
       return res.json({
         order_id: order.id,
         amount: order.amount,
@@ -224,25 +287,20 @@ function createPaymentsController() {
         upgrade_from: upgradeFrom,
       });
     } catch (err) {
-      const debugEnabled = String(process.env.DEBUG_API_ERRORS || '').toLowerCase() === 'true';
+      // Full details go to the server log only (correlated by id), never to the client.
       const razorpayDetails = extractRazorpayError(err);
-      const rawDetails = err instanceof Error
-        ? err.message
-        : (typeof err === 'object' ? JSON.stringify(err, Object.getOwnPropertyNames(err)) : String(err));
-      const errorObj = err instanceof Error ? err : new Error(rawDetails);
-      console.error(`Payment order failed [${req.correlationId}]`, errorObj);
-      const response = {
-        error: razorpayDetails?.description || errorObj.message || 'Failed to create payment order',
+      const errorObj = err instanceof Error
+        ? err
+        : new Error(typeof err === 'object' ? JSON.stringify(err, Object.getOwnPropertyNames(err || {})) : String(err));
+      console.error(
+        `Payment order failed [${req.correlationId}]`,
+        razorpayDetails ? JSON.stringify(razorpayDetails) : '',
+        errorObj
+      );
+      return res.status(500).json({
+        error: 'Failed to create payment order',
         correlationId: req.correlationId,
-      };
-      if (debugEnabled) {
-        response.details = rawDetails;
-        if (razorpayDetails) {
-          response.razorpay = razorpayDetails;
-        }
-        response.stack = errorObj.stack;
-      }
-      return res.status(500).json(response);
+      });
     }
   }
 
@@ -252,23 +310,32 @@ function createPaymentsController() {
       if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
         return res.status(400).json({ error: 'Missing payment verification data' });
       }
-      const payment = await Payment.findOne({ order_id: razorpay_order_id });
+      const payment = await Payment.findOne({
+        order_id: String(razorpay_order_id),
+        user_id: req.userId,
+      });
       if (!payment) {
         return res.status(404).json({ error: 'Payment not found' });
       }
       if (payment.status === 'paid') {
-        return res.json({ ok: true, status: 'paid' });
+        // Idempotent: finish activation if an earlier attempt failed midway.
+        const subscription = await applyPostPaymentUpdates(payment);
+        return res.json({ ok: true, status: 'paid', subscription: subscription || undefined });
+      }
+      if (payment.status === 'refunded' || payment.status === 'partially_refunded') {
+        return res.status(400).json({ error: 'Payment was refunded' });
       }
 
       const valid = verifyPaymentSignature({
-        orderId: razorpay_order_id,
-        paymentId: razorpay_payment_id,
-        signature: razorpay_signature,
+        orderId: String(razorpay_order_id),
+        paymentId: String(razorpay_payment_id),
+        signature: String(razorpay_signature),
       });
       if (!valid) {
-        payment.status = 'failed';
-        payment.error_description = 'Signature verification failed';
-        await payment.save();
+        await Payment.updateOne(
+          { _id: payment._id, status: { $nin: ['paid', 'refunded', 'partially_refunded'] } },
+          { $set: { status: 'failed', error_description: 'Signature verification failed' } }
+        );
         return res.status(400).json({ error: 'Payment verification failed' });
       }
 
@@ -279,38 +346,44 @@ function createPaymentsController() {
         paymentDetails = null;
       }
 
-      payment.status = 'paid';
-      payment.payment_id = razorpay_payment_id;
-      payment.paid_at = new Date();
-      payment.method = paymentDetails?.method || '';
-      payment.bank = paymentDetails?.bank || '';
-      payment.wallet = paymentDetails?.wallet || '';
-      payment.vpa = paymentDetails?.vpa || '';
-      await payment.save();
+      const paidUpdate = {
+        status: 'paid',
+        payment_id: String(razorpay_payment_id),
+        paid_at: new Date(),
+      };
+      applyGatewayDetails(paidUpdate, paymentDetails);
+      await Payment.updateOne(
+        { _id: payment._id, status: { $nin: ['paid', 'refunded', 'partially_refunded'] } },
+        { $set: paidUpdate }
+      );
 
       const subscription = await applyPostPaymentUpdates(payment);
 
-      try {
-        await sendEmail({
-          to: payment.user_email,
-          subject: 'Payment successful',
-          text: `Your payment for ${payment.plan} plan was successful.`,
-        });
-      } catch (err) {
-        console.error('Failed to send payment email:', err);
+      if (subscription) {
+        try {
+          await sendEmail({
+            to: payment.user_email,
+            subject: 'Payment successful',
+            text: `Your payment for ${payment.plan} plan was successful.`,
+          });
+        } catch (err) {
+          console.error('Failed to send payment email:', err);
+        }
       }
 
       return res.json({ ok: true, subscription });
     } catch (err) {
-      console.error(err);
-      return res.status(500).json({ error: err.message || 'Failed to verify payment' });
+      console.error('Payment verification failed', err);
+      return res.status(500).json({ error: 'Failed to verify payment', correlationId: req.correlationId });
     }
   }
 
   async function listPayments(req, res) {
     try {
+      const max = capLimit(req.query.limit, 100, 200);
       const payments = await Payment.find({ user_id: req.userId })
         .sort({ created_date: -1 })
+        .limit(max)
         .lean();
       return res.json({ payments });
     } catch (err) {
@@ -340,12 +413,11 @@ function createPaymentsController() {
 
   async function listAllPayments(req, res) {
     try {
-      const user = await User.findById(req.userId).lean();
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
-      }
+      // Admin ledger view: higher default/cap than user-facing lists.
+      const max = capLimit(req.query.limit, 1000, 1000);
       const payments = await Payment.find({})
         .sort({ created_date: -1 })
+        .limit(max)
         .lean();
       return res.json({ payments });
     } catch (err) {
@@ -361,44 +433,66 @@ function createPaymentsController() {
       if (!verifyWebhookSignature(rawBody, signature)) {
         return res.status(400).send('Invalid signature');
       }
-      const payload = JSON.parse(rawBody);
+      let payload;
+      try {
+        payload = JSON.parse(rawBody);
+      } catch (err) {
+        return res.status(400).json({ error: 'Invalid JSON' });
+      }
       const event = payload.event;
       const paymentEntity = payload?.payload?.payment?.entity;
       const orderId = paymentEntity?.order_id;
       if (!orderId) {
         return res.json({ ok: true });
       }
-      const payment = await Payment.findOne({ order_id: orderId });
+      const payment = await Payment.findOne({ order_id: String(orderId) });
       if (!payment) {
         return res.json({ ok: true });
       }
+
       if (event === 'payment.failed') {
-        payment.status = 'failed';
-        payment.payment_id = paymentEntity?.id || payment.payment_id;
-        payment.method = paymentEntity?.method || '';
-        payment.bank = paymentEntity?.bank || '';
-        payment.wallet = paymentEntity?.wallet || '';
-        payment.vpa = paymentEntity?.vpa || '';
-        payment.error_code = paymentEntity?.error_code || '';
-        payment.error_description = paymentEntity?.error_description || '';
-        await payment.save();
+        // Never downgrade an order that is already paid/refunded (events can arrive out of order).
+        const failedUpdate = {
+          status: 'failed',
+          payment_id: paymentEntity?.id || payment.payment_id,
+          error_code: paymentEntity?.error_code || '',
+          error_description: paymentEntity?.error_description || '',
+        };
+        applyGatewayDetails(failedUpdate, paymentEntity);
+        await Payment.updateOne(
+          { _id: payment._id, status: { $nin: ['paid', 'refunded', 'partially_refunded'] } },
+          { $set: failedUpdate }
+        );
       }
+
       if (event === 'payment.captured') {
         if (payment.status !== 'paid') {
-          payment.status = 'paid';
-          payment.payment_id = paymentEntity?.id || payment.payment_id;
-          payment.method = paymentEntity?.method || '';
-          payment.bank = paymentEntity?.bank || '';
-          payment.wallet = paymentEntity?.wallet || '';
-          payment.vpa = paymentEntity?.vpa || '';
-          payment.paid_at = new Date();
-          await payment.save();
+          const paidUpdate = {
+            status: 'paid',
+            payment_id: paymentEntity?.id || payment.payment_id,
+            paid_at: new Date(),
+          };
+          applyGatewayDetails(paidUpdate, paymentEntity);
+          await Payment.updateOne(
+            { _id: payment._id, status: { $nin: ['paid', 'refunded', 'partially_refunded'] } },
+            { $set: paidUpdate }
+          );
         }
         await applyPostPaymentUpdates(payment);
       }
+
       if (event === 'refund.processed') {
-        payment.status = 'refunded';
-        await payment.save();
+        const amountPaise = Number(paymentEntity?.amount || 0);
+        const refundedPaise = Number(paymentEntity?.amount_refunded || 0);
+        const fullRefund = paymentEntity?.refund_status === 'full'
+          || (amountPaise > 0 && refundedPaise >= amountPaise);
+        await Payment.updateOne(
+          { _id: payment._id },
+          { $set: { status: fullRefund ? 'refunded' : 'partially_refunded' } }
+        );
+        if (fullRefund) {
+          await revokeSubscriptionForPayment(payment);
+        }
       }
       return res.json({ ok: true });
     } catch (err) {
@@ -417,4 +511,10 @@ function createPaymentsController() {
   };
 }
 
-module.exports = { createPaymentsController };
+module.exports = {
+  createPaymentsController,
+  // exported for unit tests
+  applyPostPaymentUpdates,
+  redeemCouponForPayment,
+  revokeSubscriptionForPayment,
+};

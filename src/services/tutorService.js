@@ -13,6 +13,17 @@ const {
   VIDEO_AI_CHAT_MAX_TOKENS = '600',
 } = process.env;
 const { getOpenAiKey } = require('./settingsService');
+const {
+  truncateText,
+  MAX_TRANSCRIPT_CHARS,
+  MAX_CHAT_MESSAGE_LENGTH,
+  MAX_CHAT_CONTEXT_CHARS,
+} = require('../utils/security');
+
+const OPENAI_TIMEOUT_MS = 25000;
+// A pending session untouched this long is assumed lost (e.g. Lambda froze
+// before the in-memory job ran) and may be re-queued.
+const STALE_PENDING_MS = 10 * 60 * 1000;
 
 const maxTokens = Math.max(200, Number(TUTOR_MAX_TOKENS) || 600);
 const batchSize = Math.min(10, Math.max(1, Number(TUTOR_BATCH_SIZE) || 5));
@@ -28,7 +39,8 @@ async function getOpenAiClient() {
     throw new Error('OPENAI_API_KEY is not configured');
   }
   if (!client || clientKey !== value) {
-    client = new OpenAI({ apiKey: value });
+    // Bounded so a slow upstream can't hold a Lambda/API Gateway request past its limit.
+    client = new OpenAI({ apiKey: value, timeout: OPENAI_TIMEOUT_MS, maxRetries: 0 });
     clientKey = value;
   }
   return client;
@@ -128,7 +140,13 @@ async function requestChatResponse(message, context) {
     max_tokens: Math.min(maxTokens, 600),
     messages: [
       { role: 'system', content: 'You are a concise medical tutor. Answer clearly in 3-6 sentences.' },
-      { role: 'user', content: [contextBlock, message].filter(Boolean).join('\n\n') },
+      {
+        role: 'user',
+        content: [
+          truncateText(contextBlock, MAX_CHAT_CONTEXT_CHARS),
+          truncateText(message, MAX_CHAT_MESSAGE_LENGTH),
+        ].filter(Boolean).join('\n\n'),
+      },
     ],
   });
   return response.choices?.[0]?.message?.content?.trim() || '';
@@ -140,8 +158,8 @@ function buildVideoContext(video) {
     `Subject: ${video.subject || ''}`,
     `Teacher: ${video.teacher_name || ''}`,
     video.subtopic ? `Subtopic: ${video.subtopic}` : '',
-    video.description ? `Description: ${video.description}` : '',
-    video.transcript_text ? `Transcript:\n${video.transcript_text}` : '',
+    video.description ? `Description: ${truncateText(video.description, 4000)}` : '',
+    video.transcript_text ? `Transcript:\n${truncateText(video.transcript_text, MAX_TRANSCRIPT_CHARS)}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -169,6 +187,7 @@ async function requestVideoSummary(video) {
   return response.choices?.[0]?.message?.content?.trim() || '';
 }
 
+
 async function requestVideoChat(message, video) {
   const openai = await getOpenAiClient();
   const context = buildVideoContext(video);
@@ -178,7 +197,7 @@ async function requestVideoChat(message, video) {
     max_tokens: Math.min(videoChatMaxTokens, 800),
     messages: [
       { role: 'system', content: 'You are a helpful medical tutor. Answer concisely in 3-6 sentences.' },
-      { role: 'user', content: [context, message].filter(Boolean).join('\n\n') },
+      { role: 'user', content: [context, truncateText(message, MAX_CHAT_MESSAGE_LENGTH)].filter(Boolean).join('\n\n') },
     ],
   });
   return response.choices?.[0]?.message?.content?.trim() || '';
@@ -256,20 +275,45 @@ async function enqueueTutorSession(attemptId) {
     throw new Error('Attempt not found');
   }
 
-  let session = await TutorSession.findOne({ attempt_id: attemptId });
-  if (!session) {
-    session = await TutorSession.create({
-      attempt_id: attempt._id,
-      user_id: attempt.user_id,
-      test_id: attempt.test_id,
-      status: 'pending',
-    });
+  // Idempotent: processing is queued only by the caller that creates the
+  // session, or that atomically re-claims a failed / stale pending one.
+  const existing = await TutorSession.findOne({ attempt_id: attempt._id });
+  if (!existing) {
+    try {
+      const created = await TutorSession.create({
+        attempt_id: attempt._id,
+        user_id: attempt.user_id,
+        test_id: attempt.test_id,
+        status: 'pending',
+      });
+      enqueueJob(() => processTutorSession(created._id));
+      return created;
+    } catch (err) {
+      if (err && err.code === 11000) {
+        // A concurrent call created it first; that call owns processing.
+        return TutorSession.findOne({ attempt_id: attempt._id });
+      }
+      throw err;
+    }
   }
 
-  if (session.status !== 'ready') {
-    enqueueJob(() => processTutorSession(session._id));
+  const staleBefore = new Date(Date.now() - STALE_PENDING_MS);
+  const reclaimed = await TutorSession.findOneAndUpdate(
+    {
+      _id: existing._id,
+      $or: [
+        { status: 'failed' },
+        { status: 'pending', updated_date: { $lt: staleBefore } },
+      ],
+    },
+    { $set: { status: 'pending', error_message: '' } },
+    { new: true }
+  );
+  if (reclaimed) {
+    enqueueJob(() => processTutorSession(reclaimed._id));
+    return reclaimed;
   }
-  return session;
+  return existing;
 }
 
 function buildClassContext(liveClass) {
@@ -278,8 +322,8 @@ function buildClassContext(liveClass) {
     `Subject: ${liveClass.subject || ''}`,
     `Teacher: ${liveClass.teacher_name || ''}`,
     liveClass.topic_covered ? `Topic covered: ${liveClass.topic_covered}` : '',
-    liveClass.description ? `Description: ${liveClass.description}` : '',
-    liveClass.transcript_text ? `Transcript:\n${liveClass.transcript_text}` : '',
+    liveClass.description ? `Description: ${truncateText(liveClass.description, 4000)}` : '',
+    liveClass.transcript_text ? `Transcript:\n${truncateText(liveClass.transcript_text, MAX_TRANSCRIPT_CHARS)}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -316,7 +360,7 @@ async function requestClassChat(message, liveClass) {
     max_tokens: Math.min(videoChatMaxTokens, 800),
     messages: [
       { role: 'system', content: 'You are a helpful medical tutor. Answer concisely in 3-6 sentences.' },
-      { role: 'user', content: [context, message].filter(Boolean).join('\n\n') },
+      { role: 'user', content: [context, truncateText(message, MAX_CHAT_MESSAGE_LENGTH)].filter(Boolean).join('\n\n') },
     ],
   });
   return response.choices?.[0]?.message?.content?.trim() || '';

@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { safeCompare } = require('../utils/security');
 
 const {
   ZOOM_WEBHOOK_SECRET_TOKEN,
@@ -23,7 +24,8 @@ function verifyZoomWebhookSignature(rawBody, headers = {}) {
     .update(message)
     .digest('hex');
   const expected = `v0=${hash}`;
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // Length-checked constant-time compare (timingSafeEqual throws on length mismatch).
+  return safeCompare(expected, typeof signature === 'string' ? signature : '');
 }
 
 function buildZoomValidationResponse(plainToken) {

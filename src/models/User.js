@@ -43,6 +43,8 @@ const userSchema = new mongoose.Schema(
     password_reset_expires: { type: Date },
     password_reset_requested_at: { type: Date },
     is_active: { type: Boolean, default: true },
+    // Bumped on password reset/change; JWTs carry it as `tv` so older tokens are rejected.
+    token_version: { type: Number, default: 0 },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

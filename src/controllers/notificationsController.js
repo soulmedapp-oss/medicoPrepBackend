@@ -1,17 +1,22 @@
 const Notification = require('../models/Notification');
-const User = require('../models/User');
+const { capLimit } = require('../utils/security');
 const { isValidTextLength } = require('../utils/validation');
 
 function createNotificationsController({ createNotification }) {
   async function listNotifications(req, res) {
     try {
       const { limit, unread } = req.query;
-      const user = await User.findById(req.userId).lean();
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = req.user;
 
-      const isStaff = user.role === 'admin' || user.role === 'teacher' || user.is_teacher;
+      // Which broadcast audience group ("teachers" vs "students") this
+      // caller's own inbox includes — a personalization of their own
+      // notifications, not a permission gate (no catalogue permission
+      // represents "is a teacher"; Notifications only has
+      // CanSendNotifications). Reads the already-resolved `role_names`
+      // (authMiddleware/collectRoleNames) — the same staff-identity union
+      // the old check approximated by hand, kept behavior-preserving.
+      const roleNames = Array.isArray(user?.role_names) ? user.role_names : [];
+      const isStaff = roleNames.includes('admin') || roleNames.includes('teacher');
       const audiences = isStaff
         ? [user.email, 'all', 'teachers']
         : [user.email, 'all', 'students'];
@@ -20,7 +25,7 @@ function createNotificationsController({ createNotification }) {
         filter.is_read = false;
       }
 
-      const max = Number(limit) || 50;
+      const max = capLimit(limit, 50, 200);
       const notifications = await Notification.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
@@ -65,9 +70,11 @@ function createNotificationsController({ createNotification }) {
       if (!notification) {
         return res.status(404).json({ error: 'Notification not found' });
       }
-      const user = await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin && notification.user_email !== user.email && notification.user_email !== 'all') {
+      const user = req.user;
+      // selfService: own records only, no admin bypass — no permission fits
+      // "manage any notification" and nothing in the app relies on it (the
+      // only caller, NotificationBell, marks the caller's own notifications).
+      if (notification.user_email !== user.email && notification.user_email !== 'all') {
         return res.status(403).json({ error: 'Not authorized' });
       }
       if (Object.prototype.hasOwnProperty.call(req.body || {}, 'is_read')) {

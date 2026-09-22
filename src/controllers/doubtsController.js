@@ -2,6 +2,19 @@ const Doubt = require('../models/Doubt');
 const User = require('../models/User');
 const { isValidEmail, isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
+const { capLimit, isValidObjectId } = require('../utils/security');
+const { can } = require('../rbac/can');
+
+// Fields that only a CanAnswerDoubts holder may set on PATCH /doubts/:id —
+// answering and status/assignment changes (spec 5.3).
+const STAFF_ONLY_DOUBT_FIELDS = [
+  'status',
+  'answer',
+  'answer_image_url',
+  'assigned_teacher_id',
+  'assigned_teacher_email',
+  'assigned_teacher_name',
+];
 
 function createDoubtsController({ createNotification }) {
   async function listDoubts(req, res) {
@@ -13,9 +26,8 @@ function createDoubtsController({ createNotification }) {
       }
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
-          return res.status(403).json({ error: 'Staff access required' });
+        if (!can(req.user, 'CanViewAllDoubts')) {
+          return res.status(403).json({ error: 'Permission denied', required: ['CanViewAllDoubts'] });
         }
         if (studentEmail) {
           if (!isValidEmail(String(studentEmail))) {
@@ -27,7 +39,7 @@ function createDoubtsController({ createNotification }) {
         filter.student_id = req.userId;
       }
 
-      const max = Number(limit) || 100;
+      const max = capLimit(limit, 100, 200);
       const doubts = await Doubt.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ doubts });
     } catch (err) {
@@ -55,21 +67,50 @@ function createDoubtsController({ createNotification }) {
         return res.status(400).json({ error: 'Invalid assigned_teacher_email format' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = req.user;
 
+      // Whether the caller may control the answer/assignment state of the
+      // doubt they are creating (same permission that gates PATCH answering).
+      const isStaff = can(req.user, 'CanAnswerDoubts');
       let assignedTeacherId = data.assigned_teacher_id || null;
-      let assignedTeacherEmail = data.assigned_teacher_email || '';
-      let assignedTeacherName = data.assigned_teacher_name || '';
-      if (assignedTeacherId && (!assignedTeacherEmail || !assignedTeacherName)) {
+      let assignedTeacherEmail = '';
+      let assignedTeacherName = '';
+      if (isStaff) {
+        assignedTeacherEmail = data.assigned_teacher_email || '';
+        assignedTeacherName = data.assigned_teacher_name || '';
+      }
+      if (assignedTeacherId) {
+        if (!isValidObjectId(String(assignedTeacherId))) {
+          return res.status(400).json({ error: 'Invalid assigned_teacher_id' });
+        }
+        // Identity check on the TARGET user record (is the picked person a
+        // teacher?), not a permission check on the caller — effective_permissions
+        // is only computed for the authenticated caller, not for an arbitrary
+        // user looked up by id, so this stays on the target's own schema fields.
         const teacher = await User.findById(assignedTeacherId).lean();
-        if (teacher) {
+        const isTeacher = teacher && teacher.is_active !== false && (
+          teacher.role === 'teacher'
+          || teacher.role === 'admin'
+          || teacher.is_teacher
+          || (Array.isArray(teacher.roles) && teacher.roles.includes('teacher'))
+        );
+        if (!isTeacher) {
+          if (!isStaff) {
+            return res.status(400).json({ error: 'Selected teacher is not available' });
+          }
+        } else if (!isStaff) {
+          // Students may pick a teacher, but the teacher details always come from the DB.
+          assignedTeacherEmail = teacher.email || '';
+          assignedTeacherName = teacher.full_name || '';
+        } else {
           assignedTeacherEmail = assignedTeacherEmail || teacher.email || '';
           assignedTeacherName = assignedTeacherName || teacher.full_name || '';
         }
       }
+      // Students cannot set workflow status; it is derived server-side.
+      const initialStatus = isStaff && data.status
+        ? data.status
+        : (assignedTeacherId ? 'assigned' : 'pending');
 
       const subjectName = await validateSubjectIfConfigured(data.subject);
       const doubt = await Doubt.create({
@@ -81,7 +122,7 @@ function createDoubtsController({ createNotification }) {
         question: data.question,
         priority: data.priority || 'medium',
         image_url: data.image_url || '',
-        status: data.status || (assignedTeacherId ? 'assigned' : 'pending'),
+        status: initialStatus,
         assigned_teacher_id: assignedTeacherId,
         assigned_teacher_email: assignedTeacherEmail,
         assigned_teacher_name: assignedTeacherName,
@@ -125,17 +166,23 @@ function createDoubtsController({ createNotification }) {
         return res.status(404).json({ error: 'Doubt not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
+      const canAnswer = can(req.user, 'CanAnswerDoubts');
       const isOwner = String(doubt.student_id) === String(req.userId);
-      if (!isStaff && !isOwner) {
+      if (!canAnswer && !isOwner) {
         return res.status(403).json({ error: 'Not authorized' });
+      }
+
+      const updates = req.body || {};
+      const triesStaffField = STAFF_ONLY_DOUBT_FIELDS.some((field) =>
+        Object.prototype.hasOwnProperty.call(updates, field)
+      );
+      if (!canAnswer && triesStaffField) {
+        return res.status(403).json({ error: 'Permission denied', required: ['CanAnswerDoubts'] });
       }
 
       const previousStatus = doubt.status;
       const previousTeacherEmail = doubt.assigned_teacher_email || '';
       const previousTeacherId = doubt.assigned_teacher_id ? String(doubt.assigned_teacher_id) : '';
-      const updates = req.body || {};
       if (updates.assigned_teacher_email && !isValidEmail(String(updates.assigned_teacher_email))) {
         return res.status(400).json({ error: 'Invalid assigned_teacher_email format' });
       }
@@ -152,16 +199,8 @@ function createDoubtsController({ createNotification }) {
       if (updates.subject) {
         updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
-      if (isStaff) {
-        const allowed = [
-          'status',
-          'answer',
-          'answer_image_url',
-          'assigned_teacher_id',
-          'assigned_teacher_email',
-          'assigned_teacher_name',
-        ];
-        allowed.forEach((field) => {
+      if (canAnswer) {
+        STAFF_ONLY_DOUBT_FIELDS.forEach((field) => {
           if (Object.prototype.hasOwnProperty.call(updates, field)) {
             doubt[field] = updates[field];
           }
@@ -178,7 +217,7 @@ function createDoubtsController({ createNotification }) {
       const wasResolved = previousStatus === 'resolved';
       const wasAssigned = previousStatus === 'assigned';
 
-      if (isStaff && updates.assigned_teacher_id && (!updates.assigned_teacher_email || !updates.assigned_teacher_name)) {
+      if (canAnswer && updates.assigned_teacher_id && (!updates.assigned_teacher_email || !updates.assigned_teacher_name)) {
         const teacher = await User.findById(updates.assigned_teacher_id).lean();
         if (teacher) {
           if (!updates.assigned_teacher_email) {

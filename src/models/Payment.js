@@ -12,6 +12,10 @@ const paymentSchema = new mongoose.Schema(
     status: { type: String, default: 'created' },
     provider: { type: String, default: 'razorpay' },
     upgrade_from: { type: String, default: '' },
+    // Kept non-unique on purpose: an `order_id_1` non-unique index already exists
+    // in deployed DBs, so declaring unique here would fail autoIndex silently.
+    // Make it unique via a one-off migration after checking for duplicates.
+    // Payment processing is idempotent via atomic subscription_activated claims.
     order_id: { type: String, index: true },
     payment_id: { type: String, index: true },
     method: { type: String, default: '' },

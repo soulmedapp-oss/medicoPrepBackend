@@ -28,4 +28,9 @@ const testAttemptSchema = new mongoose.Schema(
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
 
+// "My attempts" listing (user, optionally by status, newest first).
+testAttemptSchema.index({ user_id: 1, status: 1, created_date: -1 });
+// Per-test completed-attempt counts and stats.
+testAttemptSchema.index({ test_id: 1, status: 1 });
+
 module.exports = mongoose.model('TestAttempt', testAttemptSchema);

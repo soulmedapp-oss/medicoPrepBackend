@@ -13,6 +13,9 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const WebSocket = require('ws');
 const { enqueueJob } = require('./utils/inMemoryQueue');
+const { syncPermissions } = require('./rbac/syncPermissions');
+const { defaultRoleUpserts } = require('./rbac/defaultRoles');
+const { authorize, selfService, publicRoute } = require('./rbac/authorize');
 const authRoutes = require('./routes/authRoutes');
 const createTestsRoutes = require('./routes/testsRoutes');
 const createDoubtsRoutes = require('./routes/doubtsRoutes');
@@ -29,6 +32,8 @@ const createClassesRoutes = require('./routes/classesRoutes');
 const createSubjectsRoutes = require('./routes/subjectsRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const createRolesRoutes = require('./routes/rolesRoutes');
+const createPermissionsRoutes = require('./routes/permissionsRoutes');
+const createAuditLogRoutes = require('./routes/auditLogRoutes');
 const createSettingsRoutes = require('./routes/settingsRoutes');
 const createPaymentsRoutes = require('./routes/paymentsRoutes');
 const createCouponsRoutes = require('./routes/couponsRoutes');
@@ -36,15 +41,17 @@ const createDashboardRoutes = require('./routes/dashboardRoutes');
 // removed: engagement routes (case of day, precision review, boss week)
 const { handleZoomWebhook } = require('./controllers/zoomController');
 const { createPaymentsController } = require('./controllers/paymentsController');
-const {
-  authMiddleware,
-  requireAdmin,
-  requireStaff,
-  hasPermission,
-} = require('./middlewares/auth');
+const { authMiddleware } = require('./middlewares/auth');
 const { getRateLimitStats } = require('./middlewares/rateLimit');
-const swaggerUi = require('swagger-ui-express');
-const swaggerDocument = require('./docs/swagger');
+const { errorHandler, createCorsError } = require('./middlewares/errorHandler');
+const {
+  createFileFilter,
+  validateUploadedFile,
+  buildUploadKey,
+  isInlineSafeExtension,
+  getExtension,
+} = require('./utils/uploadValidation');
+const { isTokenVersionCurrent } = require('./utils/security');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
@@ -55,13 +62,24 @@ const { enqueueTutorSession } = require('./services/tutorService');
 const runningOnVercel = Boolean(process.env.VERCEL);
 const runningOnLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
 const runningServerless = runningOnVercel || runningOnLambda;
+const isProduction = String(process.env.NODE_ENV || '').toLowerCase() === 'production' || runningOnLambda;
 const app = express();
 let server;
 
-const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
-if (corsEnabled) {
-  app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+// req.ip / rate limiting. On Lambda + API Gateway (HTTP API), serverless-express
+// sets the socket address from requestContext.http.sourceIp, which the client
+// cannot spoof, so X-Forwarded-For must NOT be trusted there. Locally, trust
+// only loopback proxies. Override with TRUST_PROXY (e.g. "1" behind CloudFront).
+function resolveTrustProxy() {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === '') return runningOnLambda ? false : 'loopback';
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
 }
+app.set('trust proxy', resolveTrustProxy());
+
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'soulmedapp@gmail.com';
 let supportTransport;
 const plansCacheTtlMs = Math.max(0, Number(process.env.PLANS_CACHE_TTL_MS || 60000));
@@ -134,8 +152,19 @@ function scheduleSupportEmail(payload) {
 }
 
 function resolveCorsOrigins() {
+  const enabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
+  if (!enabled) return false;
   const raw = process.env.CORS_ORIGIN;
-  if (!raw) return true;
+  if (!raw) {
+    if (isProduction) {
+      // Never reflect arbitrary origins with credentials in production.
+      process.stderr.write(
+        'WARNING: CORS_ORIGIN is not set in production; cross-origin requests will be denied.\n'
+      );
+      return false;
+    }
+    return true;
+  }
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   try {
@@ -154,11 +183,12 @@ function resolveCorsOrigins() {
 const corsOrigins = resolveCorsOrigins();
 const corsOptions = {
   origin: (origin, cb) => {
+    if (corsOrigins === false) return cb(null, false);
     if (!origin || corsOrigins === true) return cb(null, true);
     if (Array.isArray(corsOrigins) && corsOrigins.includes(origin)) {
       return cb(null, true);
     }
-    return cb(new Error('Not allowed by CORS'));
+    return cb(createCorsError());
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
@@ -167,15 +197,24 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
-app.post('/webhooks/zoom', express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
+app.options(/.*/, publicRoute, cors(corsOptions));
+app.post('/webhooks/zoom', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
 const paymentsController = createPaymentsController();
-app.get('/webhooks/razorpay', (req, res) => {
+app.get('/webhooks/razorpay', publicRoute, (req, res) => {
   res.json({ ok: true });
 });
-app.post('/webhooks/razorpay', express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
+app.post('/webhooks/razorpay', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
 app.use(express.json({ limit: '1mb' }));
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+const apiDocsEnabled =
+  String(process.env.ENABLE_API_DOCS || '').toLowerCase() === 'true' || !isProduction;
+if (apiDocsEnabled) {
+  // Loaded lazily so production cold starts skip swagger entirely.
+  // eslint-disable-next-line global-require
+  const swaggerUi = require('swagger-ui-express');
+  // eslint-disable-next-line global-require
+  const swaggerDocument = require('./docs/swagger');
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+}
 
 app.use((req, res, next) => {
   const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
@@ -240,7 +279,20 @@ function resolveUploadsDir() {
 }
 
 const uploadsDir = resolveUploadsDir();
-app.use('/uploads', express.static(uploadsDir));
+app.use(
+  '/uploads',
+  express.static(uploadsDir, {
+    dotfiles: 'deny',
+    index: false,
+    setHeaders: (res, filePath) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (!isInlineSafeExtension(getExtension(filePath))) {
+        // Anything that is not a raster image is downloaded, never rendered.
+        res.setHeader('Content-Disposition', 'attachment');
+      }
+    },
+  })
+);
 
 // Serverless (Lambda) has no persistent/shared filesystem, so uploads are held
 // in memory and pushed to S3. Local dev with no S3 bucket configured still
@@ -253,22 +305,19 @@ const uploadsS3Region =
   process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : null;
 
-function makeUploadKey(originalname) {
-  const safeName = String(originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const unique = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  return `${unique}_${safeName}`;
-}
-
-// Persists an in-memory multer file and returns its public path ("/uploads/<key>").
-async function storeUpload(file) {
-  const key = makeUploadKey(file.originalname);
+// Persists an in-memory multer file that already passed validateUploadedFile()
+// and returns its public path ("/uploads/<key>"). The key is random and its
+// extension comes from the validated type, never from the client filename.
+async function storeUpload(file, { ext, contentType }) {
+  const key = buildUploadKey(ext);
   if (s3Client) {
     await s3Client.send(
       new PutObjectCommand({
         Bucket: uploadsBucket,
         Key: `uploads/${key}`,
         Body: file.buffer,
-        ContentType: file.mimetype || 'application/octet-stream',
+        ContentType: contentType,
+        ContentDisposition: isInlineSafeExtension(ext) ? 'inline' : 'attachment',
       })
     );
   } else {
@@ -280,59 +329,25 @@ async function storeUpload(file) {
 const upload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('image'),
 });
 
 const csvUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const isCsv =
-      file.mimetype === 'text/csv' ||
-      file.mimetype === 'application/vnd.ms-excel' ||
-      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.originalname.toLowerCase().endsWith('.csv') ||
-      file.originalname.toLowerCase().endsWith('.xls') ||
-      file.originalname.toLowerCase().endsWith('.xlsx');
-    if (!isCsv) {
-      return cb(new Error('Only CSV or Excel uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('spreadsheet'),
 });
 
 const transcriptUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const name = file.originalname.toLowerCase();
-    const ok =
-      file.mimetype === 'text/vtt' ||
-      file.mimetype === 'text/plain' ||
-      name.endsWith('.vtt') ||
-      name.endsWith('.srt') ||
-      name.endsWith('.txt');
-    if (!ok) {
-      return cb(new Error('Only VTT, SRT, or TXT files are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('transcript'),
 });
 
 const videoUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 200 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('video/')) {
-      return cb(new Error('Only video uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('video'),
 });
 
 function initRealtime(serverInstance) {
@@ -357,7 +372,7 @@ function initRealtime(serverInstance) {
       const payload = jwt.verify(token, JWT_SECRET);
       User.findById(payload.sub).lean()
         .then((user) => {
-          if (!user) {
+          if (!user || user.is_active === false || !isTokenVersionCurrent(payload, user)) {
             closeUnauthorized();
             return;
           }
@@ -518,6 +533,13 @@ function logMessage(level, { userName, correlationId, errorMessage, statusCode, 
   const logType = level.charAt(0).toUpperCase() + level.slice(1);
   const entry = { logType, userName, correlationId, errorMessage, statusCode, errorStack };
   const levelValue = LOG_LEVELS[level] || LOG_LEVELS.info;
+  if (runningOnLambda) {
+    // Lambda: no sync filesystem work per request; stdout/stderr go to CloudWatch.
+    if (levelValue >= Math.min(consoleLevel, fileLevel)) {
+      writeConsoleEntry(entry, level);
+    }
+    return;
+  }
   if (levelValue >= fileLevel) {
     writeLogEntry(entry);
   }
@@ -533,6 +555,28 @@ console.error = (...args) => {
     .join(' ');
   logMessage('error', { errorMessage: message, errorStack: errorArg?.stack });
 };
+
+// Every controller's own try/catch already reaches the logger above via
+// console.error. This catches what doesn't: an error thrown outside any
+// try/catch (a fire-and-forget async task, a WebSocket handler, a timer),
+// which would otherwise only hit Node's default stderr and never reach the
+// log file. Both route through the same console.error, so they're subject
+// to the same file + console + CloudWatch handling as everything else.
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  // Node's own guidance: the process is in an undefined state afterwards
+  // and should exit, letting the process manager (nodemon locally, PM2/
+  // systemd in prod) restart it cleanly. Not safe inside a single Lambda
+  // invocation — that would tear down the execution environment for
+  // unrelated concurrent invocations — so Lambda logs and keeps running.
+  if (!runningOnLambda) {
+    setTimeout(() => process.exit(1), 100);
+  }
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason instanceof Error ? reason : new Error(String(reason)));
+});
 
 const wsClients = new Set();
 
@@ -723,76 +767,27 @@ async function ensureDefaultSubscriptionPlans() {
 }
 
 async function ensureDefaultRoles() {
-  const defaults = [
-    {
-      name: 'student',
-      description: 'Default student role',
-      permissions: [
-        'view_dashboard',
-        'view_tests',
-        'view_live_classes',
-        'view_videos',
-        'view_doubts',
-        'view_progress',
-        'view_subscription',
-        'view_payments',
-        'view_feedback',
-        'view_community',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'teacher',
-      description: 'Default teacher role',
-      permissions: [
-        'manage_tests',
-        'manage_questions',
-        'manage_classes',
-        'manage_doubts',
-        'manage_students',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'content_writer',
-      description: 'Creates and reviews question banks for teacher approval',
-      permissions: [
-        'manage_questions',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'admin',
-      description: 'Default admin role',
-      permissions: [],
-      is_active: true,
-    },
-  ];
+  await syncPermissions();
+  // Insert-only (fix round 1, item B): defaultRoleUpserts() puts everything,
+  // including `permissions`, in $setOnInsert, so an admin's edits on the
+  // Roles page are never overwritten by a later server start.
   await Promise.all(
-    defaults.map((role) => {
-      const { permissions, ...roleBase } = role;
-      const update = { $setOnInsert: roleBase };
-      if (role.permissions && role.permissions.length > 0) {
-        update.$addToSet = { permissions: { $each: role.permissions } };
-      }
-      return Role.updateOne({ name: role.name }, update, { upsert: true });
-    })
+    defaultRoleUpserts().map(({ filter, update }) => Role.updateOne(filter, update, { upsert: true }))
   );
+  await Role.updateMany({ name: { $in: ['admin', 'student'] } }, { $set: { is_system: true } });
 }
 
-app.get('/health', (req, res) => {
+app.get('/health', publicRoute, (req, res) => {
   res.json({ ok: true });
 });
 
 app.use('/auth', authRoutes);
-app.get('/admin/debug/rate-limit', authMiddleware, requireAdmin, (req, res) => {
+app.get('/admin/debug/rate-limit', authMiddleware, authorize('CanViewSettings'), (req, res) => {
   return res.json({ ok: true, stats: getRateLimitStats() });
 });
 app.use(
   createTestsRoutes({
     authMiddleware,
-    requireStaff,
-    hasPermission,
     csvUpload,
     createNotification,
     broadcastUserEvent,
@@ -831,7 +826,6 @@ app.use(
 app.use(
   createSubscriptionsRoutes({
     authMiddleware,
-    requireAdmin,
     createNotification,
     getPlansCache,
     setPlansCache,
@@ -841,7 +835,6 @@ app.use(
 app.use(
   createNotificationsRoutes({
     authMiddleware,
-    requireAdmin,
     createNotification,
   })
 );
@@ -854,46 +847,47 @@ app.use(
 app.use(
   createUsersRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 app.use(
   createSubjectsRoutes({
     authMiddleware,
-    requireStaff,
-    requireAdmin,
-    hasPermission,
   })
 );
 app.use(
   createClassesRoutes({
     authMiddleware,
-    requireStaff,
     createNotification,
   })
 );
 app.use(
   createVideosRoutes({
     authMiddleware,
-    requireStaff,
   })
 );
 app.use(
   createRolesRoutes({
     authMiddleware,
-    requireAdmin,
+  })
+);
+app.use(
+  createPermissionsRoutes({
+    authMiddleware,
+  })
+);
+app.use(
+  createAuditLogRoutes({
+    authMiddleware,
   })
 );
 app.use(
   createPaymentsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 app.use(
   createCouponsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 app.use(
@@ -914,16 +908,19 @@ app.use(
 app.use(
   createSettingsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 
-async function handleUpload(res, file) {
+async function handleUpload(res, file, kind) {
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
+  const validated = validateUploadedFile(kind, file);
+  if (!validated.ok) {
+    return res.status(400).json({ error: validated.error });
+  }
   try {
-    const url = await storeUpload(file);
+    const url = await storeUpload(file, validated);
     return res.json({ url });
   } catch (err) {
     console.error('Upload failed:', err);
@@ -931,34 +928,39 @@ async function handleUpload(res, file) {
   }
 }
 
-app.post('/uploads/questions', authMiddleware, (req, res, next) => {
-  if (hasPermission && hasPermission(req.user, 'manage_questions')) {
-    return next();
-  }
-  return requireStaff(req, res, next);
-}, upload.single('file'), (req, res) => handleUpload(res, req.file));
-
-app.post('/uploads/classes', authMiddleware, requireStaff, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post(
+  '/uploads/questions',
+  authMiddleware,
+  authorize.any('CanAddQuestions', 'CanEditQuestions', 'CanAddQuestionBank', 'CanEditQuestionBank'),
+  upload.single('file'),
+  (req, res) => handleUpload(res, req.file, 'image')
 );
 
-app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/classes', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
 );
 
-app.post('/uploads/videos', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/recordings', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'video')
 );
 
-app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.single('file'), async (req, res) => {
+app.post('/uploads/videos', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'video')
+);
+
+app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), transcriptUpload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
+  const validated = validateUploadedFile('transcript', file);
+  if (!validated.ok) {
+    return res.status(400).json({ error: validated.error });
+  }
   let text = '';
   let url;
   try {
-    url = await storeUpload(file);
+    url = await storeUpload(file, validated);
     const raw = file.buffer.toString('utf8');
     text = raw
       .replace(/\uFEFF/g, '')
@@ -977,13 +979,17 @@ app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.
   return res.json({ url, text });
 });
 
-app.post('/uploads/doubts', authMiddleware, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/doubts', authMiddleware, authorize.any('CanAccessDoubts', 'CanAnswerDoubts'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
 );
 
-app.post('/uploads/profile', authMiddleware, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/profile', authMiddleware, selfService, upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
 );
+
+// Final JSON error handler: multer (413/400), CORS (403), body-parser (400/413)
+// and unexpected errors (500, generic message; never leaks err.message/stack).
+app.use(errorHandler);
 
 const port = Number(PORT) || 4000;
 
@@ -1005,12 +1011,18 @@ if (!runningOnVercel && require.main === module) {
   });
 }
 
-let dbReady;
+let dbReady = null;
 async function ensureDbConnected() {
   if (!dbReady) {
     dbReady = connectDb();
   }
-  await dbReady;
+  try {
+    await dbReady;
+  } catch (err) {
+    // Reset so the next invocation retries instead of reusing a rejected promise.
+    dbReady = null;
+    throw err;
+  }
 }
 
 module.exports = async (req, res) => {
