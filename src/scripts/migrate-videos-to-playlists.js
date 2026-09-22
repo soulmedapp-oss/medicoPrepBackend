@@ -29,7 +29,8 @@ dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 // the failing subject has its just-created Playlist removed again (or, if
 // that removal itself fails, the orphan's id is printed so an operator can
 // remove it by hand — see fix round 2 below); every subject after it in
-// this run is completely untouched. A re-run is therefore safe.
+// this run is completely untouched. A re-run is therefore safe — once any
+// orphan reported by that cleanup-failure path has been removed by hand.
 //
 // Fix round 2: the cleanup on a failed PlaylistMigration.create is
 // unconditional, not gated on error code. An earlier version only deleted
