@@ -57,7 +57,11 @@ const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
 const ConnectionRequest = require('./models/ConnectionRequest');
 const Role = require('./models/Role');
+const Video = require('./models/Video');
 const { enqueueTutorSession } = require('./services/tutorService');
+const { verifyBunnySignature } = require('./utils/bunnyWebhook');
+const { nextProcessingStatus } = require('./utils/bunnyStatus');
+const { getStatus } = require('./services/video/bunnyProvider');
 
 const runningOnVercel = Boolean(process.env.VERCEL);
 const runningOnLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -936,6 +940,33 @@ async function handleUpload(res, file, kind) {
     return res.status(500).json({ error: 'Upload failed' });
   }
 }
+
+app.post('/webhooks/bunny/video-status', publicRoute, async (req, res) => {
+  const signature = req.get('X-BunnyStream-Signature');
+  const secret = process.env.BUNNY_STREAM_READONLY_API_KEY || '';
+  if (!verifyBunnySignature(req.rawBody, signature, secret)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+  const { VideoGuid: guid, Status: status } = req.body || {};
+  const video = await Video.findOne({ bunny_video_id: guid });
+  // 200 on an unknown guid so Bunny stops retrying a webhook we cannot use.
+  if (!video) return res.status(200).json({ ok: true });
+
+  const next = nextProcessingStatus(video.processing_status, status);
+  if (next) {
+    video.processing_status = next;
+    if (next === 'ready') {
+      const { duration_seconds: duration } = await getStatus(guid);
+      video.duration_seconds = duration;
+    }
+    await video.save();
+  }
+  if (Number(status) === 9) {
+    video.transcript_status = 'ready';
+    await video.save();
+  }
+  return res.json({ ok: true });
+});
 
 app.post(
   '/uploads/questions',

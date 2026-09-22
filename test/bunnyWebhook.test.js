@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { verifyBunnySignature } = require('../src/utils/bunnyWebhook');
+const { nextProcessingStatus } = require('../src/utils/bunnyStatus');
 
 const SECRET = 'readonly-key';
 const BODY = '{"VideoLibraryId":12,"VideoGuid":"abc","Status":3}';
@@ -30,4 +31,25 @@ test('a missing signature or secret is rejected rather than throwing', () => {
   assert.equal(verifyBunnySignature(BODY, undefined, SECRET), false);
   assert.equal(verifyBunnySignature(BODY, sign(BODY), ''), false);
   assert.equal(verifyBunnySignature(undefined, sign(BODY), SECRET), false);
+});
+
+test('finished maps to ready and failed maps to failed', () => {
+  assert.equal(nextProcessingStatus('processing', 3), 'ready');
+  assert.equal(nextProcessingStatus('processing', 5), 'failed');
+});
+
+// Review Focus #1: Bunny may deliver an Encoding webhook after Finished.
+// Demoting a ready video would silently revoke student access.
+test('a late encoding webhook does not demote a ready video', () => {
+  assert.equal(nextProcessingStatus('ready', 2), null);
+  assert.equal(nextProcessingStatus('ready', 1), null);
+  assert.equal(nextProcessingStatus('ready', 0), null);
+});
+
+test('an unknown status code is ignored', () => {
+  assert.equal(nextProcessingStatus('processing', 99), null);
+});
+
+test('encoding progress moves an uploading video to processing', () => {
+  assert.equal(nextProcessingStatus('uploading', 2), 'processing');
 });
