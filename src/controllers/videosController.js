@@ -286,14 +286,59 @@ function createVideosController() {
       if (video.provider !== 'bunny') {
         return res.status(400).json({ error: 'Not a hosted lecture' });
       }
-      const { videoId, libraryId } = video.bunny_video_id
-        ? { videoId: video.bunny_video_id, libraryId: video.bunny_library_id }
-        : await bunnyProvider.createUpload({ title: video.title });
 
-      video.bunny_video_id = videoId;
-      video.bunny_library_id = libraryId;
-      video.processing_status = 'uploading';
-      await video.save();
+      let videoId = video.bunny_video_id;
+      let libraryId = video.bunny_library_id;
+
+      if (!videoId) {
+        // Claim the "no Bunny video yet" slot atomically. Two near-simultaneous
+        // requests for the same video both reading bunny_video_id === '' via a
+        // plain findById would both call createUpload() and both save() — one
+        // write wins, orphaning the other Bunny video and handing the two
+        // callers mismatched credentials for what was one click. Only the
+        // request whose update actually matches (and flips bunny_video_id away
+        // from '') proceeds to call Bunny.
+        const claimed = await Video.findOneAndUpdate(
+          { _id: video._id, provider: 'bunny', bunny_video_id: '' },
+          { $set: { processing_status: 'uploading' } },
+          { new: true }
+        );
+
+        if (!claimed) {
+          // Lost the race: another request claimed the slot. Re-read so we
+          // return its videoId/libraryId instead of the stale empty one we
+          // started with; if it hasn't finished creating the Bunny video yet,
+          // ask the caller to retry rather than guessing.
+          const current = await Video.findById(video._id);
+          if (!current || !current.bunny_video_id) {
+            return res.status(409).json({ error: 'Upload already starting, please retry' });
+          }
+          videoId = current.bunny_video_id;
+          libraryId = current.bunny_library_id;
+        } else {
+          const created = await bunnyProvider.createUpload({ title: claimed.title });
+          videoId = created.videoId;
+          libraryId = created.libraryId;
+
+          try {
+            claimed.bunny_video_id = videoId;
+            claimed.bunny_library_id = libraryId;
+            await claimed.save();
+          } catch (saveErr) {
+            // The Bunny video now exists upstream but our record never ended
+            // up pointing at it. We can't recover it here, but we can make it
+            // findable: log every id needed to reconcile it by hand instead of
+            // losing it silently.
+            console.error('Bunny upload created but not persisted — orphaned Bunny video', {
+              video_id: String(claimed._id),
+              bunny_video_id: videoId,
+              bunny_library_id: libraryId,
+              error: saveErr,
+            });
+            return res.status(500).json({ error: 'Failed to start upload' });
+          }
+        }
+      }
 
       return res.json(bunnyProvider.createUploadCredentials({ libraryId, videoId }));
     } catch (err) {

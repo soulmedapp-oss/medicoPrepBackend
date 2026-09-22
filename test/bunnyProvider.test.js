@@ -5,7 +5,27 @@ const {
   buildPlaybackToken,
   buildUploadSignature,
   getPlaybackToken,
+  createUploadCredentials,
+  createUpload,
 } = require('../src/services/video/bunnyProvider');
+
+// Sets an env var for the duration of `fn` and restores the previous value
+// (or removes the key entirely if it was unset) afterwards, even if `fn`
+// throws — so these tests never leak env mutations into tests that run
+// after them.
+async function withEnv(vars, fn) {
+  const previous = {};
+  for (const key of Object.keys(vars)) previous[key] = process.env[key];
+  Object.assign(process.env, vars);
+  try {
+    return await fn();
+  } finally {
+    for (const key of Object.keys(vars)) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
 
 // Formula verified against the live library — see the spec's
 // "Verified against the live library" table. Do not substitute the embed-view
@@ -89,4 +109,54 @@ test('upload payload carries a signature but never the api key', () => {
   assert.equal(payload.library_id, '12');
   assert.ok(payload.expires > 1800000000, 'signature must have a future expiry');
   assert.match(payload.signature, /^[0-9a-f]{64}$/);
+});
+
+// This is the function the route actually calls, and the one the Task 5
+// review was about: it reads the real apiKey out of module-private config()
+// on the caller's behalf. A regression here — e.g. spreading config() into
+// the response — would leak the key while every other test (including the
+// one above, which only exercises the pure buildUploadPayload with a fake
+// key) stays green. Setting a distinctive env sentinel and asserting it
+// never appears in the serialised output is the only way to pin this.
+test('createUploadCredentials reads config() internally but never leaks the api key it finds there', async () => {
+  await withEnv({ BUNNY_STREAM_API_KEY: 'SENTINEL-REAL-BUNNY-KEY-7f3a9c' }, () => {
+    const result = createUploadCredentials({ libraryId: '12', videoId: 'GUID' });
+    const serialised = JSON.stringify(result);
+    assert.ok(
+      !serialised.includes('SENTINEL-REAL-BUNNY-KEY-7f3a9c'),
+      'api key must not leak from createUploadCredentials'
+    );
+    assert.equal(result.video_id, 'GUID');
+    assert.equal(result.library_id, '12');
+    assert.match(result.signature, /^[0-9a-f]{64}$/);
+  });
+});
+
+// Nothing previously asserted the shape of the HTTP request createUpload
+// sends to Bunny (URL, method, AccessKey header, body, or that it carries a
+// timeout signal) — a regression there would only ever surface against the
+// live service. Faking global.fetch pins that shape without any network
+// call, and restoring it in `finally` keeps the fake from leaking into
+// other tests.
+test('createUpload posts to the correct Bunny endpoint with an AccessKey header, JSON title body, and a timeout signal', async () => {
+  const previousFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, json: async () => ({ guid: 'new-guid' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const result = await createUpload({ title: 'Lecture 1' });
+      assert.equal(captured.url, 'https://video.bunnycdn.com/library/99/videos');
+      assert.equal(captured.options.method, 'POST');
+      assert.equal(captured.options.headers.AccessKey, 'FAKE-KEY');
+      assert.equal(captured.options.headers['content-type'], 'application/json');
+      assert.deepEqual(JSON.parse(captured.options.body), { title: 'Lecture 1' });
+      assert.ok(captured.options.signal instanceof AbortSignal, 'a timeout signal must be attached');
+      assert.deepEqual(result, { videoId: 'new-guid', libraryId: '99' });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
 });

@@ -82,12 +82,20 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
   };
 }
 
+// Without a timeout, a stalled Bunny call (DNS hang, no response) never
+// settles the await — the try/catch around it never fires, and on Lambda
+// that burns the whole function duration until a bare platform 504 with no
+// application log at all. 12s is comfortably inside typical Lambda budgets
+// while leaving headroom past normal Bunny API latency.
+const BUNNY_FETCH_TIMEOUT_MS = 12000;
+
 async function createUpload({ title }) {
   const { libraryId, apiKey } = config();
   const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos`, {
     method: 'POST',
     headers: { AccessKey: apiKey, 'content-type': 'application/json' },
     body: JSON.stringify({ title }),
+    signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Bunny create video failed (${response.status})`);
   const created = await response.json();
@@ -98,6 +106,7 @@ async function getStatus(videoId) {
   const { libraryId, apiKey } = config();
   const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${videoId}`, {
     headers: { AccessKey: apiKey },
+    signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Bunny get video failed (${response.status})`);
   const video = await response.json();
