@@ -27,4 +27,10 @@ function subjectWriteFields(subject) {
   return { subject_id: subject._id, subject: subject.name };
 }
 
-module.exports = { resolveSubjectIds, subjectWriteFields };
+// An unresolvable subject must match NOTHING. Returning {} would drop the
+// filter and silently show a student every lecture in the library.
+function buildSubjectFilter(subject) {
+  return subject && subject._id ? { subject_id: subject._id } : { _id: null };
+}
+
+module.exports = { resolveSubjectIds, subjectWriteFields, buildSubjectFilter };

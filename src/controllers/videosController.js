@@ -5,7 +5,7 @@ const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
 const { isValidTextLength } = require('../utils/validation');
 const { resolveSubjectForWrite } = require('../utils/subjects');
-const { subjectWriteFields } = require('../utils/subjectResolution');
+const { subjectWriteFields, buildSubjectFilter } = require('../utils/subjectResolution');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
 const { can } = require('../rbac/can');
@@ -200,7 +200,18 @@ function createVideosController() {
       }
 
       if (subject) {
-        filter.subject = subject;
+        // Filter on subject_id, not the display string — but an unmatched or
+        // inactive subject name must filter to NOTHING (buildSubjectFilter's
+        // { _id: null }), the same zero-result outcome a plain string filter
+        // gave before. It must never fall through to an unfiltered list.
+        let resolvedSubject = null;
+        try {
+          resolvedSubject = await resolveSubjectForWrite(subject);
+        } catch (err) {
+          if (err.code !== 'SUBJECT_INACTIVE') throw err;
+          resolvedSubject = null;
+        }
+        Object.assign(filter, buildSubjectFilter(resolvedSubject));
       }
       if (teacher_name) {
         filter.teacher_name = teacher_name;

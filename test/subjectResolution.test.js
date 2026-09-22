@@ -56,3 +56,14 @@ test('an unresolved subject yields no write fields', () => {
   assert.deepEqual(subjectWriteFields(null), {});
   assert.deepEqual(subjectWriteFields(undefined), {});
 });
+
+const { buildSubjectFilter } = require('../src/utils/subjectResolution');
+
+// Review Focus #5: a filter that silently matches nothing is worse than an error.
+test('subject filter uses subject_id when the subject resolves', () => {
+  assert.deepEqual(buildSubjectFilter({ _id: 's1', name: 'ENT' }), { subject_id: 's1' });
+});
+
+test('an unresolvable subject filter matches nothing explicitly, not everything', () => {
+  assert.deepEqual(buildSubjectFilter(null), { _id: null });
+});
