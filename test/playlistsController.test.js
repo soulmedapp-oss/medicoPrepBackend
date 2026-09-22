@@ -3,10 +3,14 @@ const assert = require('node:assert/strict');
 const {
   buildPlaylistPayload,
   normaliseItems,
+  normaliseSubjectIds,
+  invalidSubjectIds,
+  onlyTogglesActive,
   browseFilter,
   playlistsForLecture,
   requiresDeactivatePermission,
 } = require('../src/controllers/playlistsController');
+const { STUDENT_LECTURE_FIELDS, studentPlaylistView } = require('../src/utils/studentProjection');
 
 const user = (...perms) => ({ effective_permissions: perms });
 
@@ -141,4 +145,110 @@ test('requiresDeactivatePermission: a non-strict-boolean is_active still fails c
     requiresDeactivatePermission(user('CanEditVideos'), { is_active: 'false' }, { is_active: true }),
     true
   );
+});
+
+
+// --- Final fix wave, B8: the student-facing response shapes, pinned ---
+
+// B8 (i). The one allowlist every student lecture read projects through. A
+// field added to the Video schema is invisible to students until someone
+// adds it here on purpose, and these four are the ones that must never
+// arrive: the transcript (large), the Bunny identifiers (internal), staff
+// provenance, and per-video entitlement (the playlist is the gate).
+test('the student lecture allowlist exposes no transcript, bunny id, provenance or per-video entitlement', () => {
+  ['transcript_text', 'bunny_', '_by', 'allowed_plans'].forEach((forbidden) => {
+    assert.ok(
+      !STUDENT_LECTURE_FIELDS.includes(forbidden),
+      `student lecture projection must not mention ${forbidden}`
+    );
+  });
+});
+
+// B6/B8 (ii). browsePlaylists used to spread the whole lean document and
+// getPlaylist returned it raw, so students received items (the full lecture
+// id list), created_by/updated_by/updated_by_at (staff provenance) and the
+// is_published/is_active/created_date/updated_date curation state.
+test('studentPlaylistView keeps exactly the six student fields and drops the rest', () => {
+  const view = studentPlaylistView({
+    _id: 'p1',
+    name: 'ENT',
+    description: 'd',
+    subject_ids: ['s1'],
+    allowed_plans: ['gold'],
+    is_free: false,
+    items: [{ lecture_id: 'L1', order: 0 }],
+    created_by: 'admin-1',
+    updated_by: 'admin-2',
+    updated_by_at: '2026-09-01',
+    is_published: true,
+    is_active: true,
+    created_date: '2026-08-01',
+    updated_date: '2026-09-01',
+    __v: 3,
+  });
+  assert.deepEqual(
+    Object.keys(view).sort(),
+    ['_id', 'allowed_plans', 'description', 'is_free', 'name', 'subject_ids']
+  );
+});
+
+test('studentPlaylistView carries lecture_count through when the browse read supplies one', () => {
+  const view = studentPlaylistView({ _id: 'p1', name: 'ENT' }, { lecture_count: 4 });
+  assert.equal(view.lecture_count, 4);
+  assert.deepEqual(
+    Object.keys(view).sort(),
+    ['_id', 'allowed_plans', 'description', 'is_free', 'lecture_count', 'name', 'subject_ids']
+  );
+});
+
+test('studentPlaylistView never lets an extra field smuggle items or provenance back in', () => {
+  const view = studentPlaylistView({ _id: 'p1', name: 'ENT', items: [{ lecture_id: 'L1' }] }, { items: 'x', created_by: 'admin' });
+  assert.equal(view.items, undefined);
+  assert.equal(view.created_by, undefined);
+});
+
+test('studentPlaylistView tolerates a missing playlist rather than throwing', () => {
+  assert.doesNotThrow(() => assert.equal(studentPlaylistView(null), null));
+});
+
+// B5/B8 (iii). A deactivate-only role (CanDeactivateVideos without
+// CanAddVideos/CanEditVideos) may flip is_active and nothing else, so the
+// PATCH route can admit it without also handing it the edit surface.
+test('onlyTogglesActive accepts a body that changes is_active alone', () => {
+  assert.equal(onlyTogglesActive({ is_active: true }), true);
+  assert.equal(onlyTogglesActive({ is_active: false }), true);
+});
+
+test('onlyTogglesActive rejects a body that changes anything besides is_active', () => {
+  assert.equal(onlyTogglesActive({ is_active: true, name: 'x' }), false);
+  assert.equal(onlyTogglesActive({ name: 'x' }), false);
+  assert.equal(onlyTogglesActive({ is_published: true }), false);
+});
+
+test('onlyTogglesActive rejects an empty or missing body rather than treating it as a toggle', () => {
+  assert.equal(onlyTogglesActive({}), false);
+  assert.equal(onlyTogglesActive(null), false);
+  assert.equal(onlyTogglesActive(undefined), false);
+});
+
+// B11. subject_ids is ObjectId-typed: an element like 'abc' reached Mongoose
+// as a cast attempt and surfaced as a CastError 500. The array shape was
+// validated; its elements were not.
+test('normaliseSubjectIds drops an element that is not a well-formed ObjectId', () => {
+  const valid = '507f1f77bcf86cd799439011';
+  assert.deepEqual(normaliseSubjectIds([valid, 'abc', '']), [valid]);
+});
+
+test('normaliseSubjectIds still trims, de-duplicates and preserves order', () => {
+  const a = '507f1f77bcf86cd799439011';
+  const b = '507f1f77bcf86cd799439012';
+  assert.deepEqual(normaliseSubjectIds([` ${b} `, a, b]), [b, a]);
+});
+
+test('invalidSubjectIds names the malformed elements so the controller can answer 400, not 500', () => {
+  const valid = '507f1f77bcf86cd799439011';
+  assert.deepEqual(invalidSubjectIds(['abc']), ['abc']);
+  assert.deepEqual(invalidSubjectIds([valid]), []);
+  assert.deepEqual(invalidSubjectIds(undefined), []);
+  assert.deepEqual(invalidSubjectIds('not-an-array'), []);
 });

@@ -139,3 +139,27 @@ test('a missing lecture returns "Video not found" rather than throwing', () => {
     assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
   });
 });
+
+// Final fix wave, B1: the playlist gate is the SINGLE entitlement gate (spec
+// §5) — the lecture's own `is_published` is not part of it. A lecture left
+// unpublished but placed in a published playlist is reachable, and a lecture
+// whose only playlist has been unpublished is not, whatever the lecture says
+// about itself. Pinned here because getVideoSummary/chatAboutVideo now route
+// through this same decision instead of the old per-video gate.
+test('a lecture with is_published:false is still playable when a published playlist carries it', () => {
+  const lecture = { _id: 'L1', is_active: true, is_published: false };
+  const playlists = [
+    { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
+  ];
+  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  assert.equal(result.allowed, true);
+});
+
+test('a lecture whose only playlist was unpublished is refused, even though the lecture itself is published', () => {
+  const lecture = { _id: 'L1', is_active: true, is_published: true };
+  const playlists = [
+    { is_published: false, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
+  ];
+  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
+});

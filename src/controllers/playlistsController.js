@@ -5,15 +5,11 @@ const { isValidObjectId } = require('../utils/security');
 const { canAccessPlaylist, visibleItems, countVisibleItems } = require('../utils/playlistAccess');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
-
-// Fields the student detail read (getPlaylist) is allowed to expose about a
-// lecture. Deliberately excludes every bunny_* field (internal Bunny
-// identifiers — the playback token continues to come only from
-// /videos/:id/playback, never this route), every *_by field (staff-only
-// provenance), and transcript_text (large, and not needed to browse/open a
-// playlist).
-const STUDENT_LECTURE_FIELDS =
-  'title description teacher_name teacher_email subtopic provider video_url processing_status duration_seconds thumbnail_url card_thumbnail_url is_active subject subject_id';
+const { can } = require('../rbac/can');
+// Final fix wave, B1/B6: the lecture allowlist used to live here as a local
+// constant while videosController's student list had no projection at all.
+// Both now share this one definition, so the two student reads cannot drift.
+const { STUDENT_LECTURE_FIELDS, studentPlaylistView } = require('../utils/studentProjection');
 
 // Allowlist: created_by/updated_by/items can never be set through req.body —
 // created_by is set only from req.userId on create, updated_by/updated_by_at
@@ -59,9 +55,17 @@ function normalisePlans(plans) {
   return out;
 }
 
-// Pure: normalises subject_ids to an array of non-empty, de-duplicated
-// string ids, preserving order. Absent entirely from the output when not an
-// array, so a malformed value never reaches Mongoose as a cast attempt.
+// Pure: normalises subject_ids to an array of non-empty, de-duplicated,
+// well-formed ObjectId strings, preserving order. Absent entirely from the
+// output when not an array, so a malformed value never reaches Mongoose as a
+// cast attempt.
+//
+// Fix round 3, Minor 10: the array shape was validated but its ELEMENTS were
+// not — subject_ids is ObjectId-typed, so `['abc']` sailed through here and
+// died in Mongoose as a CastError, i.e. a generic 500 for what is plainly a
+// bad request. isValidObjectId now filters them out here, and
+// invalidSubjectIds below lets the handlers answer 400 instead of silently
+// dropping what the caller asked for.
 function normaliseSubjectIds(subjectIds) {
   if (!Array.isArray(subjectIds)) return [];
   const seen = new Set();
@@ -69,10 +73,22 @@ function normaliseSubjectIds(subjectIds) {
   subjectIds.forEach((id) => {
     const trimmed = String(id || '').trim();
     if (!trimmed || seen.has(trimmed)) return;
+    if (!isValidObjectId(trimmed)) return;
     seen.add(trimmed);
     out.push(trimmed);
   });
   return out;
+}
+
+// Pure: the elements normaliseSubjectIds had to throw away as malformed, in
+// the order given. Empty for a non-array (that case is "no subject_ids were
+// supplied", not "they were wrong"), so only a genuinely bad element ever
+// turns into a 400.
+function invalidSubjectIds(subjectIds) {
+  if (!Array.isArray(subjectIds)) return [];
+  return subjectIds
+    .map((id) => String(id || '').trim())
+    .filter((id) => id && !isValidObjectId(id));
 }
 
 // Pure: the request-shaping allowlist for playlist create/update. Only
@@ -143,6 +159,24 @@ function browseFilter(subjectId) {
 // unchanged, so either permission still admits a non-is_active edit; only
 // the is_active-specific gate needed the videos-parity fix (Fix round 1,
 // Important 1).
+// Pure: is this (already allowlisted) update body a pure is_active toggle
+// and nothing else?
+//
+// Fix round 3, Important 5: PATCH /playlists/:id is the only way to
+// REACTIVATE a playlist (DELETE deactivates), but its route marker demanded
+// CanAddVideos/CanEditVideos — so a deactivate-only role could switch a
+// playlist off and then never switch it back on. The marker now also admits
+// CanDeactivateVideos; this function is what keeps that from handing such a
+// role the whole edit surface: without CanAddVideos or CanEditVideos, a body
+// carrying any other field is refused. An empty body is not a toggle (the
+// handler rejects it earlier anyway) and neither is a body that merely
+// mentions is_active alongside something else.
+function onlyTogglesActive(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const keys = Object.keys(payload);
+  return keys.length === 1 && keys[0] === 'is_active';
+}
+
 function requiresDeactivatePermission(user, updates, existing) {
   const missing = missingUpdatePermissions(user, updates, existing, {
     edit: 'CanEditVideos',
@@ -183,6 +217,12 @@ function createPlaylistsController() {
       if (!data.name || !isValidTextLength(String(data.name), 2, 200)) {
         return res.status(400).json({ error: 'name must be between 2 and 200 characters' });
       }
+      const malformedSubjectIds = invalidSubjectIds(data.subject_ids);
+      if (malformedSubjectIds.length) {
+        return res
+          .status(400)
+          .json({ error: 'subject_ids must be valid ids', invalid: malformedSubjectIds });
+      }
       const payload = buildPlaylistPayload(data);
       const playlist = await Playlist.create({
         ...payload,
@@ -204,6 +244,12 @@ function createPlaylistsController() {
       if (updates.name !== undefined && !isValidTextLength(String(updates.name), 2, 200)) {
         return res.status(400).json({ error: 'name must be between 2 and 200 characters' });
       }
+      const malformedSubjectIds = invalidSubjectIds((req.body || {}).subject_ids);
+      if (malformedSubjectIds.length) {
+        return res
+          .status(400)
+          .json({ error: 'subject_ids must be valid ids', invalid: malformedSubjectIds });
+      }
 
       const existing = await Playlist.findById(req.params.id).lean();
       if (!existing) {
@@ -216,6 +262,17 @@ function createPlaylistsController() {
       // — same status/shape as updateVideo's own check.
       if (requiresDeactivatePermission(req.user, updates, existing)) {
         return res.status(403).json({ error: 'Permission denied', required: ['CanDeactivateVideos'] });
+      }
+
+      // Fix round 3, Important 5: this route's marker now also admits
+      // CanDeactivateVideos, because reactivating a playlist happens here
+      // and nowhere else. A caller holding ONLY that permission gets exactly
+      // the is_active switch — any other field in the body is refused, so
+      // widening the marker did not widen the edit surface.
+      if (!can(req.user, 'CanAddVideos') && !can(req.user, 'CanEditVideos') && !onlyTogglesActive(updates)) {
+        return res
+          .status(403)
+          .json({ error: 'Permission denied', required: ['CanAddVideos', 'CanEditVideos'] });
       }
 
       // updated_by/updated_by_at are written as a pair, only here — matches
@@ -373,10 +430,16 @@ function createPlaylistsController() {
             ).map((lecture) => String(lecture._id))
           )
         : new Set();
-      const withCounts = visible.map((playlist) => ({
-        ...playlist,
-        lecture_count: countVisibleItems(playlist, activeLectureIds),
-      }));
+      // Fix round 3, Important 6: projected through studentPlaylistView
+      // rather than spread — the spread handed students `items` (every
+      // lecture id on the playlist, reachable or not), staff provenance and
+      // the curation flags. lecture_count is the only computed field that
+      // survives the projection.
+      const withCounts = visible.map((playlist) =>
+        studentPlaylistView(playlist, {
+          lecture_count: countVisibleItems(playlist, activeLectureIds),
+        })
+      );
 
       return res.json({ playlists: withCounts });
     } catch (err) {
@@ -417,7 +480,11 @@ function createPlaylistsController() {
       const lecturesById = new Map(lectures.map((lecture) => [String(lecture._id), lecture]));
       const visibleLectures = visibleItems(playlist, lecturesById);
 
-      return res.json({ playlist, lectures: visibleLectures });
+      // Fix round 3, Important 6: the raw lean document used to go back
+      // whole. The detail read needs no more of the playlist than the
+      // browse read does — the lectures it carries arrive separately,
+      // already filtered and ordered.
+      return res.json({ playlist: studentPlaylistView(playlist), lectures: visibleLectures });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to load playlist' });
@@ -465,6 +532,9 @@ module.exports = {
   createPlaylistsController,
   buildPlaylistPayload,
   normaliseItems,
+  normaliseSubjectIds,
+  invalidSubjectIds,
+  onlyTogglesActive,
   browseFilter,
   playlistsForLecture,
   requiresDeactivatePermission,

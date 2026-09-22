@@ -48,9 +48,12 @@ dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 //
 // This also means --execute is monotonic, matching
 // backfill-video-subject-ids.js's own convention: it writes every playlist
-// it CAN resolve even when some videos remain unmigrated, then exits
-// non-zero so the unmigrated rows are never silently missed. It does not
-// wait for every video to be resolvable before writing anything.
+// it CAN resolve even when some videos remain unplaced, then exits non-zero
+// if any PUBLISHED video lacked a subject_id, so that backlog is never
+// silently missed. It does not wait for every video to be resolvable before
+// writing anything. Unpublished videos joining no playlist is the expected
+// outcome of spec §6 step 4, not a failure, and does not affect the exit
+// code — see planPlaylistsFromVideos for the split.
 
 const isDryRun = process.argv.includes('--dry-run');
 const isExecute = process.argv.includes('--execute');
@@ -65,7 +68,11 @@ function printUsage() {
   // eslint-disable-next-line no-console
   console.log('              Writes every resolvable playlist even if some videos remain');
   // eslint-disable-next-line no-console
-  console.log('              unmigrated, then exits non-zero so those rows are never missed.');
+  console.log('              unplaced, then exits non-zero if any PUBLISHED video had no');
+  // eslint-disable-next-line no-console
+  console.log('              subject_id, so that backlog is never missed. Unpublished');
+  // eslint-disable-next-line no-console
+  console.log('              videos joining no playlist is expected and exits zero.');
 }
 
 async function loadMigratedSubjectIds() {
@@ -95,12 +102,33 @@ async function migrateVideosToPlaylists() {
 
   await mongoose.connect(mongoUri, { autoIndex: false });
 
+  // Fix round 3, Important 4: this script connects with autoIndex:false and
+  // server.js never loads PlaylistMigration, so nothing had ever built the
+  // unique index on subject_id — the very thing the concurrency guard above
+  // relies on. Without it a second, simultaneous --execute would not lose
+  // the race, it would simply insert a second log row and a duplicate
+  // playlist. Build both models' indexes explicitly, in BOTH modes:
+  // creating an index is a schema operation, not a data write, so it does
+  // not violate the dry run's read-only contract — and a dry run that could
+  // not build the index would be a dry run that never proved --execute is
+  // safe.
+  //
+  // createIndexes(), not init() or syncIndexes(): with autoIndex:false on
+  // the connection Model.init() deliberately skips index building (verified
+  // against this database — the subject_id index was still absent after an
+  // init()-based dry run), and syncIndexes() would additionally DROP any
+  // index not declared in the schema, which is not a migration script's
+  // business. createIndexes() creates what is missing and leaves the rest
+  // alone; it is a no-op once the index exists, so re-runs cost nothing.
+  await PlaylistMigration.createIndexes();
+  await Playlist.createIndexes();
+
   const videos = await Video.find(
     {},
     '_id subject_id subject is_published is_active is_free allowed_plans order created_date'
   ).lean();
 
-  const { playlists, unmigrated } = planPlaylistsFromVideos(videos);
+  const { playlists, unpublished, missingSubjectId, grants } = planPlaylistsFromVideos(videos);
 
   const migratedSubjectIds = await loadMigratedSubjectIds();
   const toCreate = playlists.filter((playlist) => !migratedSubjectIds.has(String(playlist.subject_ids[0])));
@@ -121,14 +149,53 @@ async function migrateVideosToPlaylists() {
     );
   });
 
+  // Rec 2: the union-of-plans and any-free-makes-free rules only ever widen
+  // access, so --execute can hand a student a lecture they could not reach
+  // the day before. Say exactly which, under its own heading, BEFORE the
+  // unplaced-rows summary below — an operator must be able to read this and
+  // stop. Printed in both modes: in a dry run it is the warning; in an
+  // --execute run it is the record of what was granted.
   // eslint-disable-next-line no-console
-  console.log(`Unmigrated videos: ${unmigrated.length}`);
-  if (unmigrated.length) {
-    unmigrated.forEach((row) => {
-      // eslint-disable-next-line no-console
-      console.log(`  ${row._id}  subject=${JSON.stringify(row.subject)}  reason=${row.reason}`);
-    });
+  console.log('');
+  // eslint-disable-next-line no-console
+  console.log(`ACCESS GRANTED BY THIS MIGRATION (playlists affected: ${grants.length})`);
+  if (!grants.length) {
+    // eslint-disable-next-line no-console
+    console.log('  None: no lecture becomes reachable to anyone it was not already reachable to.');
   }
+  grants.forEach((grant) => {
+    // eslint-disable-next-line no-console
+    console.log(
+      `  "${grant.name}"  plans=${JSON.stringify(grant.allowed_plans)}  is_free=${grant.is_free}`
+    );
+    grant.lectures.forEach((lecture) => {
+      const gains = [];
+      if (lecture.gains_plans.length) gains.push(`now also on plan(s) ${lecture.gains_plans.join(', ')}`);
+      if (lecture.gains_free) gains.push('now free to everyone');
+      // eslint-disable-next-line no-console
+      console.log(`    ${lecture._id}  ${gains.join('; ')}`);
+    });
+  });
+
+  // Two separate sections, deliberately: an unpublished video joining no
+  // playlist is the expected outcome of spec §6 step 4 and needs nothing
+  // from anyone; a PUBLISHED video with no subject_id is a backlog that
+  // only the subject backfill can clear. Only the second sets the exit code.
+  // eslint-disable-next-line no-console
+  console.log('');
+  // eslint-disable-next-line no-console
+  console.log(`Unpublished videos, left out of every playlist as expected (no action): ${unpublished.length}`);
+  unpublished.forEach((row) => {
+    // eslint-disable-next-line no-console
+    console.log(`  ${row._id}  subject=${JSON.stringify(row.subject)}`);
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`Published videos with no subject_id — ACTION REQUIRED, run backfill-video-subject-ids.js then re-run: ${missingSubjectId.length}`);
+  missingSubjectId.forEach((row) => {
+    // eslint-disable-next-line no-console
+    console.log(`  ${row._id}  subject=${JSON.stringify(row.subject)}`);
+  });
 
   if (isExecute) {
     let createdCount = 0;
@@ -187,8 +254,10 @@ async function migrateVideosToPlaylists() {
 
   await mongoose.disconnect();
 
-  // An operator must never be able to miss unmigrated rows.
-  if (unmigrated.length) {
+  // An operator must never be able to miss the rows that need action — and
+  // must never be trained to ignore a non-zero exit by runs that are
+  // perfectly healthy. Only the published-but-unresolvable rows qualify.
+  if (missingSubjectId.length) {
     process.exitCode = 1;
   }
 }

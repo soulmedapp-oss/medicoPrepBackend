@@ -10,28 +10,36 @@
 // video here would be exactly the write-time filtering the spec forbids, so
 // `is_active` is accepted as an input field but intentionally unused by the
 // grouping/placement logic below.
+// Fix round 3, Important 3: the rows that join no playlist are returned as
+// TWO lists, not one. `unpublished` is the expected, no-action outcome of
+// spec §6 step 4 — an unpublished video is meant to stay out of every
+// playlist. `missingSubjectId` is the one that needs an operator: the
+// subject backfill has not covered that video yet, so it can never be
+// placed until someone runs it. Pooling them meant a perfectly healthy run
+// full of drafts exited non-zero and read exactly like a broken one, which
+// is the fastest way to teach an operator to ignore the exit code.
 function planPlaylistsFromVideos(videos) {
   const rows = Array.isArray(videos) ? videos : [];
-  const unmigrated = [];
+  const unpublished = [];
+  const missingSubjectId = [];
   // subject_id (stringified) -> { subjectId, subjectName, members: [video] }
   const groups = new Map();
 
   rows.forEach((video) => {
     // Rule 1: only published videos join a playlist. An unpublished video
     // stays a lecture in no playlist — invisible to students, same
-    // effective state as before the migration.
+    // effective state as before the migration. Reported here and nowhere
+    // else, even when it ALSO lacks a subject_id: while it is unpublished
+    // its missing subject_id costs nothing, and counting it twice would
+    // make a no-action run exit non-zero.
     if (!video.is_published) {
-      unmigrated.push({ _id: video._id, subject: video.subject, reason: 'not published' });
+      unpublished.push({ _id: video._id, subject: video.subject });
       return;
     }
     // Rule 6: a published video with no subject_id (the subject backfill
     // has not run for it yet) can never be defaulted into some playlist.
     if (!video.subject_id) {
-      unmigrated.push({
-        _id: video._id,
-        subject: video.subject,
-        reason: 'no subject_id (run the subject backfill first)',
-      });
+      missingSubjectId.push({ _id: video._id, subject: video.subject });
       return;
     }
 
@@ -47,6 +55,7 @@ function planPlaylistsFromVideos(videos) {
   });
 
   const playlists = [];
+  const grants = [];
   groups.forEach(({ subjectId, subjectName, members }) => {
     // Rule 3: plans are the UNION across member videos, never the
     // intersection — the migration must never remove access a student
@@ -73,10 +82,40 @@ function planPlaylistsFromVideos(videos) {
       })
       .map((video, index) => ({ lecture_id: video._id, order: index }));
 
+    const allowedPlans = [...plans];
+
+    // Fix round 3, Rec 2: rules 3 and 4 only ever WIDEN access, which means
+    // --execute can hand a student a lecture they could not reach the day
+    // before. Work out exactly which lectures that is, so the dry run can
+    // say so before anyone types --execute. A member whose own
+    // allowed_plans list was EMPTY was already reachable on every plan
+    // (canAccessPlaylist, and the per-video gate before it, both read an
+    // empty list as "everyone"), so it cannot gain plans here — the union
+    // can only narrow it, which is a different question and not the one
+    // this warning answers.
+    const grantedLectures = [];
+    members.forEach((video) => {
+      const own = Array.isArray(video.allowed_plans) ? video.allowed_plans : [];
+      const gainsPlans = !isFree && own.length ? allowedPlans.filter((plan) => !own.includes(plan)) : [];
+      const gainsFree = isFree && video.is_free !== true;
+      if (gainsPlans.length || gainsFree) {
+        grantedLectures.push({ _id: video._id, gains_plans: gainsPlans, gains_free: gainsFree });
+      }
+    });
+    if (grantedLectures.length) {
+      grants.push({
+        name: subjectName,
+        subject_id: subjectId,
+        allowed_plans: allowedPlans,
+        is_free: isFree,
+        lectures: grantedLectures,
+      });
+    }
+
     playlists.push({
       name: subjectName,
       subject_ids: [subjectId],
-      allowed_plans: [...plans],
+      allowed_plans: allowedPlans,
       is_free: isFree,
       is_published: true,
       is_active: true,
@@ -84,7 +123,7 @@ function planPlaylistsFromVideos(videos) {
     });
   });
 
-  return { playlists, unmigrated };
+  return { playlists, unpublished, missingSubjectId, grants };
 }
 
 // Pure: classifies an error thrown while inserting a PlaylistMigration row

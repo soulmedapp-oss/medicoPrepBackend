@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 
 const LiveClass = require('../src/models/LiveClass');
 const Video = require('../src/models/Video');
+const Playlist = require('../src/models/Playlist');
 const User = require('../src/models/User');
 const AuditLog = require('../src/models/AuditLog');
 
@@ -32,6 +33,7 @@ const oid = () => new mongoose.Types.ObjectId();
 function q(value) {
   const chain = {
     sort: () => chain,
+    select: () => chain,
     lean: async () => value,
     then: (resolve, reject) => Promise.resolve(value).then(resolve, reject),
   };
@@ -359,11 +361,15 @@ test('listVideos: all=true — holder of CanViewVideos (role=student) sees the f
   assert.equal(resStudent.statusCode, 403);
 });
 
-// --- videosController.getVideoSummary / chatAboutVideo (loadVideoForUser) ---
+// --- videosController.getVideoSummary / chatAboutVideo (loadVideoForPlayback) ---
 // The DB stub below returns a plain non-staff user for a fresh User.findById
 // lookup (what the OLD loadVideoForUser(userId, videoId) used); the req.user
 // passed to the controller carries CanViewVideos. Only the NEW code (which
 // must use req.user, not a fresh DB fetch) can pass this.
+//
+// Final fix wave, B1: both handlers now go through loadVideoForPlayback, so
+// the playlist gate (spec §5) decides them exactly as it decides playback --
+// a lecture's own is_published/allowed_plans no longer grant anything.
 
 test('getVideoSummary: the CanViewVideos bypass reads req.user, not a fresh DB lookup', async () => {
   const video = { _id: oid(), is_published: false, is_active: true, allowed_plans: [] };
@@ -378,14 +384,38 @@ test('getVideoSummary: the CanViewVideos bypass reads req.user, not a fresh DB l
   );
   assert.equal(resStaff.statusCode, 200);
   assert.equal(resStaff.body.summary, 'video summary');
+});
+
+test('getVideoSummary: a student whose lecture sits in no playlist is refused with playbacks own 403', async () => {
+  const video = { _id: oid(), is_published: true, is_active: true, allowed_plans: [] };
+  stub(Video, 'findById', () => q(video));
+  stub(Playlist, 'find', () => q([]));
 
   const studentReqUser = makeUser(['CanAccessVideos'], { role: 'student', is_teacher: false });
-  const resStudent = mockRes();
+  const res = mockRes();
   await videosController().getVideoSummary(
     { userId: String(studentReqUser._id), user: studentReqUser, params: { id: String(video._id) } },
-    resStudent
+    res
   );
-  assert.equal(resStudent.statusCode, 404);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, 'Upgrade required');
+});
+
+test('getVideoSummary: an unpublished lecture inside a published, free playlist is answerable', async () => {
+  const video = { _id: oid(), is_published: false, is_active: true, allowed_plans: [] };
+  stub(Video, 'findById', () => q(video));
+  stub(Playlist, 'find', () => q([
+    { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: video._id }] },
+  ]));
+
+  const studentReqUser = makeUser(['CanAccessVideos'], { role: 'student', is_teacher: false });
+  const res = mockRes();
+  await videosController().getVideoSummary(
+    { userId: String(studentReqUser._id), user: studentReqUser, params: { id: String(video._id) } },
+    res
+  );
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.summary, 'video summary');
 });
 
 test('chatAboutVideo: the CanViewVideos bypass reads req.user, not a fresh DB lookup', async () => {
@@ -401,6 +431,62 @@ test('chatAboutVideo: the CanViewVideos bypass reads req.user, not a fresh DB lo
   );
   assert.equal(resStaff.statusCode, 200);
   assert.equal(resStaff.body.answer, 'video chat answer');
+});
+
+test('chatAboutVideo: a lecture whose only playlist was unpublished is refused, published lecture or not', async () => {
+  const video = { _id: oid(), is_published: true, is_active: true, allowed_plans: [] };
+  stub(Video, 'findById', () => q(video));
+  // The controller's own Mongo filter already excludes unpublished
+  // playlists; returning one here proves the decision function refuses it
+  // too, so the gate cannot be widened by a filter change alone.
+  stub(Playlist, 'find', () => q([
+    { is_published: false, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: video._id }] },
+  ]));
+
+  const studentReqUser = makeUser(['CanAccessVideos'], { role: 'student', is_teacher: false });
+  const res = mockRes();
+  await videosController().chatAboutVideo(
+    { userId: String(studentReqUser._id), user: studentReqUser, params: { id: String(video._id) }, body: { message: 'hi' } },
+    res
+  );
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, 'Upgrade required');
+});
+
+// --- videosController.listVideos: the student branch obeys the same gate ---
+
+test('listVideos: a student sees only lectures a published, entitled playlist carries', async () => {
+  const inPlaylist = { _id: oid(), title: 'In', is_published: false, is_active: true };
+  const orphan = { _id: oid(), title: 'Orphan', is_published: true, is_active: true };
+  stub(Video, 'find', () => q([inPlaylist, orphan]));
+  stub(Playlist, 'find', () => q([
+    { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: inPlaylist._id }] },
+  ]));
+
+  const student = makeUser(['CanAccessVideos'], { role: 'student', is_teacher: false });
+  const res = mockRes();
+  await videosController().listVideos({ userId: String(student._id), user: student, query: {} }, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.videos.map((video) => video.title), ['In']);
+});
+
+test('listVideos: the student branch projects through the shared student lecture allowlist', async () => {
+  const { STUDENT_LECTURE_FIELDS } = require('../src/utils/studentProjection');
+  let selected;
+  const chain = {
+    sort: () => chain,
+    select: (fields) => { selected = fields; return chain; },
+    lean: async () => [],
+    then: (resolve, reject) => Promise.resolve([]).then(resolve, reject),
+  };
+  stub(Video, 'find', () => chain);
+  stub(Playlist, 'find', () => q([]));
+
+  const student = makeUser(['CanAccessVideos'], { role: 'student', is_teacher: false });
+  const res = mockRes();
+  await videosController().listVideos({ userId: String(student._id), user: student, query: {} }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(selected, STUDENT_LECTURE_FIELDS);
 });
 
 // --- videosController: ownership rule removed (canManageVideo deleted) ---

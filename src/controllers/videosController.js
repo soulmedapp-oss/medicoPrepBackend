@@ -2,6 +2,7 @@ const Video = require('../models/Video');
 const User = require('../models/User');
 const Playlist = require('../models/Playlist');
 const { isLecturePlayable } = require('../utils/playlistAccess');
+const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
@@ -62,13 +63,6 @@ function attachActorNames(videos, userMap) {
     updated_by_name: nameFor(video.updated_by),
     updated_by_at: video.updated_by_at || null,
   }));
-}
-
-function canAccessVideo(video, planName) {
-  if (video.is_free) return true;
-  const allowed = Array.isArray(video.allowed_plans) ? video.allowed_plans : [];
-  if (allowed.length === 0) return true;
-  return allowed.includes(planName);
 }
 
 // How long an upload claim (processing_status === 'uploading' with no
@@ -173,17 +167,19 @@ function playbackResponse(video) {
 
 // Task 5 — pure: the playback entitlement decision, extracted so it is
 // testable without a database and so the handler below can call the exact
-// function pinned by tests (Review Focus #1). Mirrors loadVideoForUser's
-// output shape ({ error } or { error, status: 403 }) so getPlayback's
-// existing "no video -> res.status(status || 404)" handling needs no change.
+// function pinned by tests (Review Focus #1). Its output shape
+// ({ error } or { error, status }) is what every handler behind this gate
+// expects, so the "no video -> res.status(status || 404)" handling in
+// getPlayback/getVideoSummary/chatAboutVideo needs no per-handler change.
 //
 // Staff (CanViewVideos) bypass is unchanged from today: they may preview any
 // active lecture regardless of playlists. Everyone else needs the lecture to
 // be active AND playable through at least one published, active playlist
-// they're entitled to (isLecturePlayable) — replacing canAccessVideo /
-// is_published for this path only. A lecture in no playlist therefore falls
-// through to the same clean "Upgrade required" 403 an unentitled lecture
-// gets today — never a thrown error, never a token.
+// they're entitled to (isLecturePlayable) — which is now the only
+// entitlement rule in the file; the lecture's own is_published/allowed_plans
+// decide nothing. A lecture in no playlist therefore falls through to the
+// same clean "Upgrade required" 403 an unentitled lecture gets today — never
+// a thrown error, never a token.
 function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
   if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
   if (lecture.is_active === false) {
@@ -199,27 +195,19 @@ function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
 }
 
 function createVideosController() {
-  async function loadVideoForUser(user, videoId) {
-    const video = await Video.findById(videoId).lean();
-    if (!video) return { error: 'Video not found' };
-    if (!can(user, 'CanViewVideos')) {
-      if (!video.is_published || video.is_active === false) {
-        return { error: 'Video not found' };
-      }
-      const planName = user?.subscription_plan || 'free';
-      if (!canAccessVideo(video, planName)) {
-        return { error: 'Upgrade required', status: 403 };
-      }
-    }
-    return { video };
-  }
-
-  // Task 5: GET /videos/:id/playback's gate, separate from loadVideoForUser
-  // above (which still backs ai-summary/ai-chat, unchanged). Candidate
-  // playlists are loaded with exactly one query — never one query per
-  // playlist — and only for non-staff callers, since the staff bypass never
-  // needs them. canAccessVideo/is_published stay unused here but otherwise
-  // untouched, so this path is revertible until Task 8 retires them.
+  // The ONE per-lecture gate (spec §5): playback, ai-summary and ai-chat all
+  // come through here. Candidate playlists are loaded with exactly one query
+  // — never one query per playlist — and only for non-staff callers, since
+  // the staff bypass never needs them.
+  //
+  // Final fix wave, B1: the AI endpoints used to run a separate, per-video
+  // gate (loadVideoForUser -> canAccessVideo, reading the lecture's own
+  // is_published/allowed_plans). Two gates for one question is one gate too
+  // many, and the per-video one was about to become "everyone" the moment
+  // Task 8 drops those fields — which would have silently shipped "any
+  // student may use the AI tutor on any lecture". Both now resolve through
+  // resolvePlaybackAccess, so a lecture is answerable exactly when it is
+  // playable, and there is a single place left to get this wrong.
   async function loadVideoForPlayback(user, videoId) {
     const video = await Video.findById(videoId).lean();
     if (!video) return { error: 'Video not found' };
@@ -250,7 +238,12 @@ function createVideosController() {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
-        filter.is_published = true;
+        // Final fix wave, B1: is_published is deliberately NOT part of the
+        // student filter any more. The playlist is the single entitlement
+        // gate (spec §5) — a lecture is visible iff it is active AND a
+        // published, accessible playlist carries it — and keeping the old
+        // per-video is_published predicate here would make this list
+        // disagree with /videos/:id/playback about the very same lecture.
         filter.is_active = { $ne: false };
       }
 
@@ -275,7 +268,14 @@ function createVideosController() {
         filter.teacher_email = teacher_email;
       }
 
-      const videos = await Video.find(filter).sort({ created_date: -1 }).lean();
+      // The staff branch keeps the whole document (Video Management needs
+      // every field); the student branch is projected down to the shared
+      // allowlist — see studentProjection.js — so no list read can leak a
+      // bunny id, a transcript or staff provenance.
+      const videos =
+        all === 'true'
+          ? await Video.find(filter).sort({ created_date: -1 }).lean()
+          : await Video.find(filter).select(STUDENT_LECTURE_FIELDS).sort({ created_date: -1 }).lean();
       if (all === 'true') {
         const userIds = new Set();
         videos.forEach((video) => {
@@ -289,8 +289,23 @@ function createVideosController() {
         return res.json({ videos: attachActorNames(videos, userMap) });
       }
 
+      // Same gate as resolvePlaybackAccess, list-shaped: the staff bypass is
+      // the identical can(req.user, 'CanViewVideos') check, and everyone else
+      // keeps only lectures a published, active, accessible playlist carries.
+      // The candidate playlists are loaded with ONE query for the whole page
+      // — never one per lecture.
+      const isStaff = can(req.user, 'CanViewVideos');
+      if (isStaff) {
+        return res.json({ videos });
+      }
       const planName = req.user?.subscription_plan || 'free';
-      const visible = videos.filter((video) => canAccessVideo(video, planName));
+      const playlists = await Playlist.find({
+        is_published: true,
+        is_active: { $ne: false },
+      })
+        .select('items allowed_plans is_free is_published is_active')
+        .lean();
+      const visible = videos.filter((video) => isLecturePlayable(video, playlists, planName));
       return res.json({ videos: visible });
     } catch (err) {
       console.error(err);
@@ -488,7 +503,7 @@ function createVideosController() {
       if (!value) {
         return res.status(400).json({ error: 'Tutor service is not configured' });
       }
-      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
+      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) {
         return res.status(status || 404).json({ error });
       }
@@ -700,7 +715,7 @@ function createVideosController() {
       if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
         return res.status(400).json({ error: `message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less` });
       }
-      const { video, error, status } = await loadVideoForUser(req.user, req.params.id);
+      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) {
         return res.status(status || 404).json({ error });
       }
