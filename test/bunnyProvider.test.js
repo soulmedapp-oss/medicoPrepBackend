@@ -280,6 +280,72 @@ test('ensureCollection: caches by name so a second call for the same subject mak
   }
 });
 
+// Regression coverage for the cache-poisoning bug: a 2xx response with a
+// matching list item that lacks a usable guid must not be cached as a hit —
+// it must fall through to creation, and only the created (truthy) guid gets
+// cached.
+test('ensureCollection: a matching list item with no guid falls through to create, and the created guid is returned and cached', async () => {
+  const previousFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (!options || options.method !== 'POST') {
+      // Matches by name, but the guid is missing — must not be treated as found.
+      return { ok: true, json: async () => [{ name: 'Genetics-NoGuid' }] };
+    }
+    return { ok: true, json: async () => ({ guid: 'genetics-created-guid', name: 'Genetics-NoGuid' }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const guid = await ensureCollection('Genetics-NoGuid');
+      assert.equal(guid, 'genetics-created-guid');
+      assert.equal(calls.length, 2, 'a list call followed by a create call');
+      assert.equal(calls[1].options.method, 'POST');
+
+      // Second call must be served from cache (the created guid), not retried.
+      const second = await ensureCollection('Genetics-NoGuid');
+      assert.equal(second, 'genetics-created-guid');
+      assert.equal(calls.length, 2, 'the cached truthy guid must not trigger another fetch');
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// This is the exact regression the fix exists to prevent: before the fix,
+// `collectionGuidCache.set(name, created.guid)` with created.guid === undefined
+// still passed `.has(name) === true`, so every later call short-circuited on
+// the poisoned cache entry and returned undefined forever, without retrying.
+test('ensureCollection: a created body with no guid returns null, and a second call retries instead of using a poisoned cache', async () => {
+  const previousFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async (url, options) => {
+    callCount += 1;
+    if (!options || options.method !== 'POST') {
+      return { ok: true, json: async () => [] };
+    }
+    // 2xx but the body lacks a guid — e.g. an empty object.
+    return { ok: true, json: async () => ({}) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const first = await ensureCollection('Oncology-NoGuidOnCreate');
+      assert.equal(first, null);
+      const callsAfterFirst = callCount;
+      assert.ok(callsAfterFirst >= 2, 'first call should have listed then attempted create');
+
+      const second = await ensureCollection('Oncology-NoGuidOnCreate');
+      assert.equal(second, null);
+      assert.ok(
+        callCount > callsAfterFirst,
+        'a second call must retry against Bunny, not short-circuit on a poisoned cache entry'
+      );
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
 test('createUpload: omits collectionId entirely when no subject is given', async () => {
   const previousFetch = global.fetch;
   let captured;

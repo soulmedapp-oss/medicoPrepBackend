@@ -112,7 +112,7 @@ async function ensureCollection(name) {
     if (!listResponse.ok) throw new Error(`Bunny list collections failed (${listResponse.status})`);
     const listed = await listResponse.json();
     const items = Array.isArray(listed) ? listed : listed.items || [];
-    const existing = items.find((item) => item && item.name === name);
+    const existing = items.find((item) => item && item.name === name && item.guid);
     if (existing) {
       collectionGuidCache.set(name, existing.guid);
       return existing.guid;
@@ -126,6 +126,7 @@ async function ensureCollection(name) {
     });
     if (!createResponse.ok) throw new Error(`Bunny create collection failed (${createResponse.status})`);
     const created = await createResponse.json();
+    if (!created.guid) throw new Error('Bunny create collection returned no guid');
     collectionGuidCache.set(name, created.guid);
     return created.guid;
   } catch (err) {
