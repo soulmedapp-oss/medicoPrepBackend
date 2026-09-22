@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { planPlaylistsFromVideos } = require('../src/utils/playlistMigration');
+const { planPlaylistsFromVideos, classifyLogInsertError } = require('../src/utils/playlistMigration');
 
 test('an empty input yields no playlists and no unmigrated rows, without throwing', () => {
   assert.deepEqual(planPlaylistsFromVideos([]), { playlists: [], unmigrated: [] });
@@ -137,4 +137,23 @@ test('a created playlist carries the expected publication and activation default
   ]);
   assert.equal(out.playlists[0].is_published, true);
   assert.equal(out.playlists[0].is_active, true);
+});
+
+// Fix round 2: classifyLogInsertError decides whether a failed
+// PlaylistMigration.create during --execute is a genuine duplicate-key
+// race (safe to treat as "someone else already migrated this subject") or
+// something else that must never be treated as benign.
+test('classifyLogInsertError treats a MongoDB duplicate-key error (code 11000) as a duplicate', () => {
+  assert.equal(classifyLogInsertError({ code: 11000 }), 'duplicate');
+});
+
+test('classifyLogInsertError treats any other error as "other", never assumed benign', () => {
+  assert.equal(classifyLogInsertError(new Error('network blip')), 'other');
+  assert.equal(classifyLogInsertError({ code: 121 }), 'other');
+  assert.equal(classifyLogInsertError({ code: '11000' }), 'other', 'a string code is not the real error');
+});
+
+test('classifyLogInsertError treats a missing or malformed error as "other" rather than throwing', () => {
+  assert.equal(classifyLogInsertError(undefined), 'other');
+  assert.equal(classifyLogInsertError(null), 'other');
 });

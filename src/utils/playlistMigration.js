@@ -87,4 +87,17 @@ function planPlaylistsFromVideos(videos) {
   return { playlists, unmigrated };
 }
 
-module.exports = { planPlaylistsFromVideos };
+// Pure: classifies an error thrown while inserting a PlaylistMigration row
+// during --execute (fix round 2), so the imperative cleanup logic in the
+// script can branch on a plain string instead of a raw MongoDB error shape.
+// Extracted so this one judgement — "is this a genuine duplicate-key race
+// on subject_id, or something else that must NOT be treated as benign" — is
+// unit-testable without a database. A MongoDB duplicate-key error carries
+// `code === 11000`; anything else (a validation error, a network blip, a
+// missing/malformed error object) is 'other' and must propagate rather than
+// be silently swallowed as if it were an expected race.
+function classifyLogInsertError(err) {
+  return err && err.code === 11000 ? 'duplicate' : 'other';
+}
+
+module.exports = { planPlaylistsFromVideos, classifyLogInsertError };

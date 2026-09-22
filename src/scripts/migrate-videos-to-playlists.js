@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const Video = require('../models/Video');
 const Playlist = require('../models/Playlist');
 const PlaylistMigration = require('../models/PlaylistMigration');
-const { planPlaylistsFromVideos } = require('../utils/playlistMigration');
+const { planPlaylistsFromVideos, classifyLogInsertError } = require('../utils/playlistMigration');
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 
@@ -24,11 +24,26 @@ dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 // concurrency guard (a second, near-simultaneous --execute racing on the
 // same subject loses the unique-insert and its orphan Playlist is deleted
 // — see the catch block below), and a per-subject loop means a mid-run
-// failure has a precise, describable boundary: every subject up to the
+// failure has a precise, describable boundary: every subject before the
 // failure has both its Playlist AND its PlaylistMigration row committed;
-// the subject that failed, and every one after it in this run, are
-// completely untouched. A re-run is safe and will only attempt the
-// untouched ones — nothing needs manual repair.
+// the failing subject has its just-created Playlist removed again (or, if
+// that removal itself fails, the orphan's id is printed so an operator can
+// remove it by hand — see fix round 2 below); every subject after it in
+// this run is completely untouched. A re-run is therefore safe.
+//
+// Fix round 2: the cleanup on a failed PlaylistMigration.create is
+// unconditional, not gated on error code. An earlier version only deleted
+// the orphan Playlist when the log insert failed with a duplicate-key
+// error (11000); any OTHER failure — a network blip, a validation error —
+// left a committed Playlist with no log row, which a re-run's
+// loadMigratedSubjectIds() (reading only the log) would not recognise as
+// migrated, reintroducing Critical 1's duplicate-creation outcome through
+// a different trigger. Now the delete always runs first; only afterwards
+// does the code branch on classifyLogInsertError(err) to decide whether to
+// log-and-continue (a genuine concurrent-run race) or rethrow (everything
+// else). If the delete itself fails, both the original error and the
+// delete error are logged with the orphan's id before the original error
+// is rethrown — a cleanup failure must never mask the real one.
 //
 // This also means --execute is monotonic, matching
 // backfill-video-subject-ids.js's own convention: it writes every playlist
@@ -128,17 +143,39 @@ async function migrateVideosToPlaylists() {
         await PlaylistMigration.create({ subject_id: subjectId, playlist_id: created._id });
         createdCount += 1;
       } catch (err) {
-        if (err && err.code === 11000) {
-          // A concurrent run logged this subject_id first. The Playlist we
-          // just inserted is an orphan the migration log doesn't know
-          // about — remove it rather than leaving an unlogged duplicate.
+        // Cleanup is unconditional: whatever the log insert failed with,
+        // the Playlist just created above is now an orphan (a Playlist
+        // with no PlaylistMigration row), and MUST be removed before this
+        // subject is decided one way or the other — see fix round 2.
+        try {
           // eslint-disable-next-line no-await-in-loop
           await Playlist.deleteOne({ _id: created._id });
+        } catch (cleanupErr) {
+          // The orphan could not be removed automatically. Do not let this
+          // mask the original error — log both, with enough to find the
+          // row by hand, then rethrow the original.
+          // eslint-disable-next-line no-console
+          console.error(
+            `  Could not remove orphan playlist ${created._id} (subject ${subjectId}) after a migration-log write failure. Remove it by hand.`
+          );
+          // eslint-disable-next-line no-console
+          console.error('  Original error:', err);
+          // eslint-disable-next-line no-console
+          console.error('  Cleanup error:', cleanupErr);
+          throw err;
+        }
+
+        if (classifyLogInsertError(err) === 'duplicate') {
+          // A concurrent run logged this subject_id first; the orphan
+          // Playlist above has already been removed.
           // eslint-disable-next-line no-console
           console.log(
             `  Skipped subject ${subjectId}: a concurrent run already migrated it (removed orphan playlist ${created._id}).`
           );
         } else {
+          // Anything else (validation error, network blip, ...) must not
+          // be treated as a benign race. The orphan is already cleaned up;
+          // propagate so the operator sees the real failure.
           throw err;
         }
       }
