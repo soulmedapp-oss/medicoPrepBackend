@@ -53,3 +53,11 @@ test('an unknown status code is ignored', () => {
 test('encoding progress moves an uploading video to processing', () => {
   assert.equal(nextProcessingStatus('uploading', 2), 'processing');
 });
+
+// Fix round 1, Finding 1: ready/failed are terminal. A duplicate/late Failed
+// webhook must not demote a ready video (revoking student access mid-lecture),
+// and a late Finished webhook must not resurrect a failed encode as playable.
+test('terminal states never transition again, in either direction', () => {
+  assert.equal(nextProcessingStatus('ready', 5), null);
+  assert.equal(nextProcessingStatus('failed', 3), null);
+});

@@ -953,17 +953,33 @@ app.post('/webhooks/bunny/video-status', publicRoute, async (req, res) => {
   if (!video) return res.status(200).json({ ok: true });
 
   const next = nextProcessingStatus(video.processing_status, status);
+  let dirty = false;
   if (next) {
     video.processing_status = next;
-    if (next === 'ready') {
-      const { duration_seconds: duration } = await getStatus(guid);
-      video.duration_seconds = duration;
-    }
-    await video.save();
+    dirty = true;
   }
   if (Number(status) === 9) {
     video.transcript_status = 'ready';
+    dirty = true;
+  }
+  // Persist the status transition on its own first. Bunny already told us
+  // encoding finished, so that fact must not be lost - a duration lookup
+  // failure below must never leave a ready video stuck pre-ready forever.
+  if (dirty) {
     await video.save();
+  }
+  if (next === 'ready') {
+    // Best-effort metadata only: getStatus can throw (bad key, network error,
+    // video deleted upstream, its own timeout). The ready transition above is
+    // already saved, so a failure here just skips the duration and logs -
+    // it must not hold the webhook response hostage or roll back readiness.
+    try {
+      const { duration_seconds: duration } = await getStatus(guid);
+      video.duration_seconds = duration;
+      await video.save();
+    } catch (err) {
+      console.error('Bunny getStatus failed while fetching video duration:', err);
+    }
   }
   return res.json({ ok: true });
 });
