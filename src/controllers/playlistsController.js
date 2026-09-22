@@ -1,8 +1,19 @@
 const Playlist = require('../models/Playlist');
 const Video = require('../models/Video');
 const { isValidTextLength } = require('../utils/validation');
+const { isValidObjectId } = require('../utils/security');
 const { canAccessPlaylist, visibleItems } = require('../utils/playlistAccess');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
+
+// Fields the student detail read (getPlaylist) is allowed to expose about a
+// lecture. Deliberately excludes every bunny_* field (internal Bunny
+// identifiers — the playback token continues to come only from
+// /videos/:id/playback, never this route), every *_by field (staff-only
+// provenance), and transcript_text (large, and not needed to browse/open a
+// playlist).
+const STUDENT_LECTURE_FIELDS =
+  'title description teacher_name teacher_email subtopic provider video_url processing_status duration_seconds thumbnail_url card_thumbnail_url is_active subject subject_id';
 
 // Allowlist: created_by/updated_by/items can never be set through req.body —
 // created_by is set only from req.userId on create, updated_by/updated_by_at
@@ -104,12 +115,40 @@ function normaliseItems(rawItems) {
 // expressed here; it is applied in code via canAccessPlaylist after the
 // query, because "empty allowed_plans" and "is_free" both mean "everyone"
 // and encoding that as a query predicate is easy to get subtly wrong.
+//
+// Fix round 1, Important/Minor 2: subject_ids is ObjectId-typed, so handing
+// an arbitrary query-string value straight to Mongo throws a CastError at
+// query time (an unhandled 500) rather than a clean empty result. A
+// malformed subject_id must filter to NOTHING — { _id: null } — never throw
+// and never silently drop the filter and show every playlist; same
+// fail-closed shape as subjectResolution.js's buildSubjectFilter.
 function browseFilter(subjectId) {
   const filter = { is_published: true, is_active: { $ne: false } };
   if (subjectId) {
+    if (!isValidObjectId(String(subjectId))) return { _id: null };
     filter.subject_ids = subjectId;
   }
   return filter;
+}
+
+// Pure: does this PATCH body, against the playlist's current stored
+// is_active, require CanDeactivateVideos? Delegates the actual
+// change-detection (a fail-closed comparison — see updatePermissions.js) to
+// the exact same missingUpdatePermissions videosController's updateVideo
+// uses, so the two can never disagree about what counts as "changing
+// is_active". Only the deactivate-specific outcome is surfaced here — unlike
+// updateVideo, a plain content edit is NOT additionally required to hold
+// CanEditVideos: playlists' PATCH route marker
+// (authorize.any('CanAddVideos','CanEditVideos')) is deliberately left
+// unchanged, so either permission still admits a non-is_active edit; only
+// the is_active-specific gate needed the videos-parity fix (Fix round 1,
+// Important 1).
+function requiresDeactivatePermission(user, updates, existing) {
+  const missing = missingUpdatePermissions(user, updates, existing, {
+    edit: 'CanEditVideos',
+    deactivate: 'CanDeactivateVideos',
+  });
+  return Boolean(missing && missing.includes('CanDeactivateVideos'));
 }
 
 // Task 6 — pure: projects playlists already known to contain a lecture (via
@@ -171,6 +210,14 @@ function createPlaylistsController() {
         return res.status(404).json({ error: 'Playlist not found' });
       }
 
+      // Fix round 1, Important 1: a role can hold CanEditVideos without
+      // CanDeactivateVideos, exactly as for videos, so a body that flips
+      // is_active must be refused unless the caller holds CanDeactivateVideos
+      // — same status/shape as updateVideo's own check.
+      if (requiresDeactivatePermission(req.user, updates, existing)) {
+        return res.status(403).json({ error: 'Permission denied', required: ['CanDeactivateVideos'] });
+      }
+
       // updated_by/updated_by_at are written as a pair, only here — matches
       // updateVideo's convention: a human hit this endpoint.
       updates.updated_by = req.userId;
@@ -222,16 +269,22 @@ function createPlaylistsController() {
         return res.status(400).json({ error: 'lecture_ids is required' });
       }
       const ids = rawIds.map((id) => String(id)).filter(Boolean);
+      // Fix round 1, Minor 1: a malformed id would otherwise reach
+      // Video.find({_id:{$in}}) and throw a Mongoose CastError -> a generic
+      // 500. Filter it out here and report it the same way a real-but-absent
+      // id is reported, rather than letting it crash the request.
+      const malformedIds = ids.filter((id) => !isValidObjectId(id));
+      const wellFormedIds = ids.filter((id) => isValidObjectId(id));
 
       const playlist = await Playlist.findById(req.params.id);
       if (!playlist) {
         return res.status(404).json({ error: 'Playlist not found' });
       }
 
-      const foundVideos = await Video.find({ _id: { $in: ids } }).select('_id').lean();
+      const foundVideos = await Video.find({ _id: { $in: wellFormedIds } }).select('_id').lean();
       const foundSet = new Set(foundVideos.map((video) => String(video._id)));
-      const notFound = ids.filter((id) => !foundSet.has(id));
-      const toAdd = ids.filter((id) => foundSet.has(id));
+      const notFound = [...malformedIds, ...wellFormedIds.filter((id) => !foundSet.has(id))];
+      const toAdd = wellFormedIds.filter((id) => foundSet.has(id));
 
       const currentItems = playlist.items.map((item) => ({ lecture_id: String(item.lecture_id) }));
       const currentIdSet = new Set(currentItems.map((item) => item.lecture_id));
@@ -259,7 +312,24 @@ function createPlaylistsController() {
   async function replacePlaylistItems(req, res) {
     try {
       const { items } = req.body || {};
-      const normalised = normaliseItems(items);
+      const candidateItems = Array.isArray(items) ? items : [];
+      // Fix round 1, Minor 1: same treatment as addPlaylistItems — a
+      // malformed lecture_id would otherwise reach playlist.save() (items.
+      // lecture_id is ObjectId-typed) and throw a CastError -> a generic
+      // 500. Only well-formed ids reach normaliseItems; the rest are
+      // reported as skipped, same shape as the add-items route. A missing/
+      // non-string lecture_id is left for normaliseItems' own malformed-entry
+      // handling, unchanged from Task 3.
+      const malformedIds = [];
+      const wellFormedItems = candidateItems.filter((item) => {
+        const lectureId = item && typeof item === 'object' ? item.lecture_id : undefined;
+        if (typeof lectureId === 'string' && lectureId && !isValidObjectId(lectureId)) {
+          malformedIds.push(lectureId);
+          return false;
+        }
+        return true;
+      });
+      const normalised = normaliseItems(wellFormedItems);
 
       const playlist = await Playlist.findById(req.params.id);
       if (!playlist) {
@@ -270,7 +340,7 @@ function createPlaylistsController() {
       playlist.updated_by_at = new Date();
       await playlist.save();
 
-      return res.json({ playlist: playlist.toObject() });
+      return res.json({ playlist: playlist.toObject(), skipped: { not_found: malformedIds } });
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to reorder playlist items' });
@@ -315,8 +385,13 @@ function createPlaylistsController() {
       }
 
       const lectureIds = (playlist.items || []).map((item) => item.lecture_id);
+      // Fix round 1, Important 2: no projection meant students received the
+      // full lecture document — bunny_video_id/bunny_library_id (internal
+      // Bunny identifiers), created_by/updated_by (staff provenance) and
+      // transcript_text (large, unneeded here). Explicit allowlist instead;
+      // the playback token still comes only from /videos/:id/playback.
       const lectures = lectureIds.length
-        ? await Video.find({ _id: { $in: lectureIds } }).lean()
+        ? await Video.find({ _id: { $in: lectureIds } }).select(STUDENT_LECTURE_FIELDS).lean()
         : [];
       const lecturesById = new Map(lectures.map((lecture) => [String(lecture._id), lecture]));
       const visibleLectures = visibleItems(playlist, lecturesById);
@@ -371,4 +446,5 @@ module.exports = {
   normaliseItems,
   browseFilter,
   playlistsForLecture,
+  requiresDeactivatePermission,
 };

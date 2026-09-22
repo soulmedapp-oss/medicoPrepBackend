@@ -22,7 +22,10 @@ function createPlaylistsRoutes({ authMiddleware }) {
   router.get('/playlists', authMiddleware, authorize.any('CanViewVideos', 'CanAddVideos'), controller.listPlaylists);
   router.post('/playlists', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.createPlaylist);
   router.patch('/playlists/:id', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.updatePlaylist);
-  router.delete('/playlists/:id', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.deletePlaylist);
+  // Fix round 1, Important 1: parity with videos' DELETE /videos/:id, which
+  // requires CanDeactivateVideos alone — a role can hold CanAddVideos/
+  // CanEditVideos without also holding CanDeactivateVideos.
+  router.delete('/playlists/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deletePlaylist);
   router.post('/playlists/:id/items', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.addPlaylistItems);
   router.patch('/playlists/:id/items', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), controller.replacePlaylistItems);
 

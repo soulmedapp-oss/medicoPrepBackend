@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPlaylistPayload, normaliseItems, browseFilter, playlistsForLecture } = require('../src/controllers/playlistsController');
+const {
+  buildPlaylistPayload,
+  normaliseItems,
+  browseFilter,
+  playlistsForLecture,
+  requiresDeactivatePermission,
+} = require('../src/controllers/playlistsController');
+
+const user = (...perms) => ({ effective_permissions: perms });
 
 test('payload keeps only the fields a client may set', () => {
   const out = buildPlaylistPayload({ name: 'X', description: 'd', subject_ids: ['s1'], allowed_plans: ['gold'], is_free: true, is_published: true, created_by: 'HACK', items: [] });
@@ -39,11 +47,22 @@ test('browse filter always constrains to published and active', () => {
 });
 
 test('a subject filter narrows by subject_ids', () => {
-  assert.deepEqual(browseFilter('s1').subject_ids, 's1');
+  const validId = '507f1f77bcf86cd799439011';
+  assert.deepEqual(browseFilter(validId).subject_ids, validId);
 });
 
 test('no subject filter leaves subject_ids unconstrained', () => {
   assert.ok(!('subject_ids' in browseFilter(null)));
+});
+
+// Fix round 1, Minor 2: subject_ids is ObjectId-typed — an unresolvable/
+// malformed subject_id must filter to NOTHING, never throw a CastError at
+// query time and never silently drop the filter (which would show every
+// playlist). Same fail-closed contract as subjectResolution.js's
+// buildSubjectFilter.
+test('a malformed subject_id filters to nothing rather than throwing', () => {
+  assert.deepEqual(browseFilter('not-an-object-id'), { _id: null });
+  assert.deepEqual(browseFilter('s1'), { _id: null });
 });
 
 // Task 6 — "Also in". Review Focus #3: a playlist the student cannot access
@@ -77,4 +96,49 @@ test('playlistsForLecture projects only _id and name, nothing else', () => {
 test('playlistsForLecture handles an empty or missing list without throwing', () => {
   assert.deepEqual(playlistsForLecture([], 'free'), []);
   assert.deepEqual(playlistsForLecture(undefined, 'free'), []);
+});
+
+// Fix round 1, Important 1 — permission parity with videos. updatePlaylist's
+// own PATCH-vs-CanDeactivateVideos decision, exercised directly with plain
+// objects (missingUpdatePermissions is already pure — no req/res needed —
+// see test/rbacUpdatePermissions.test.js for its own exhaustive coverage of
+// the fail-closed comparison this delegates to).
+test('requiresDeactivatePermission: editing other fields never needs CanDeactivateVideos', () => {
+  assert.equal(
+    requiresDeactivatePermission(user('CanEditVideos'), { name: 'x' }, { is_active: true }),
+    false
+  );
+  assert.equal(
+    requiresDeactivatePermission(user(), { name: 'x' }, { is_active: true }),
+    false
+  );
+});
+
+test('requiresDeactivatePermission: flipping is_active needs CanDeactivateVideos, in both directions', () => {
+  assert.equal(
+    requiresDeactivatePermission(user('CanEditVideos'), { is_active: false }, { is_active: true }),
+    true
+  );
+  assert.equal(
+    requiresDeactivatePermission(user('CanEditVideos'), { is_active: true }, { is_active: false }),
+    true
+  );
+  assert.equal(
+    requiresDeactivatePermission(user('CanDeactivateVideos'), { is_active: false }, { is_active: true }),
+    false
+  );
+});
+
+test('requiresDeactivatePermission: a strict-boolean echo of the stored value needs nothing extra', () => {
+  assert.equal(
+    requiresDeactivatePermission(user('CanEditVideos'), { name: 'x', is_active: true }, { is_active: true }),
+    false
+  );
+});
+
+test('requiresDeactivatePermission: a non-strict-boolean is_active still fails closed', () => {
+  assert.equal(
+    requiresDeactivatePermission(user('CanEditVideos'), { is_active: 'false' }, { is_active: true }),
+    true
+  );
 });
