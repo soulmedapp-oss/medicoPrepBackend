@@ -295,7 +295,7 @@ function createVideosController() {
       if (!video) {
         return res.status(status || 404).json({ error });
       }
-      const answer = await requestVideoChat(message.trim(), video);
+      const answer = await requestVideoChat(message.trim(), video, req.body?.history);
       return res.json({ answer });
     } catch (err) {
       console.error(err);

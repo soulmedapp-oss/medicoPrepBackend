@@ -198,17 +198,50 @@ const VIDEO_CHAT_SYSTEM_PROMPT = [
   'Answer concisely in 3-6 sentences.',
 ].join(' ');
 
-async function requestVideoChat(message, video) {
-  const openai = await getOpenAiClient();
+const MAX_CHAT_HISTORY_TURNS = 6;
+
+// Client-supplied history is untrusted: only user/assistant turns survive, so a
+// caller cannot inject a system message, and the total is capped so a long
+// conversation plus a 60k-char transcript cannot blow the context budget.
+function buildChatHistory(history) {
+  if (!Array.isArray(history)) return [];
+  const clean = history
+    .filter((entry) => entry && typeof entry === 'object')
+    .filter((entry) => entry.role === 'user' || entry.role === 'assistant')
+    .map((entry) => ({ role: entry.role, content: String(entry.text || '').trim() }))
+    .filter((entry) => entry.content.length > 0)
+    .slice(-MAX_CHAT_HISTORY_TURNS);
+
+  let budget = MAX_CHAT_CONTEXT_CHARS;
+  const kept = [];
+  for (let i = clean.length - 1; i >= 0; i -= 1) {
+    const entry = clean[i];
+    if (entry.content.length > budget) break;
+    budget -= entry.content.length;
+    kept.unshift(entry);
+  }
+  return kept;
+}
+
+// Pure and network-free so it can be unit tested directly: builds the exact
+// messages array requestVideoChat sends to the model.
+function buildVideoChatMessages(video, message, history) {
   const context = buildVideoContext(video);
+  return [
+    { role: 'system', content: VIDEO_CHAT_SYSTEM_PROMPT },
+    { role: 'user', content: context },
+    ...buildChatHistory(history),
+    { role: 'user', content: truncateText(message, MAX_CHAT_MESSAGE_LENGTH) },
+  ];
+}
+
+async function requestVideoChat(message, video, history = []) {
+  const openai = await getOpenAiClient();
   const response = await openai.chat.completions.create({
     model: videoModel,
     temperature: 0.2,
     max_tokens: Math.min(videoChatMaxTokens, 800),
-    messages: [
-      { role: 'system', content: VIDEO_CHAT_SYSTEM_PROMPT },
-      { role: 'user', content: [context, truncateText(message, MAX_CHAT_MESSAGE_LENGTH)].filter(Boolean).join('\n\n') },
-    ],
+    messages: buildVideoChatMessages(video, message, history),
   });
   return response.choices?.[0]?.message?.content?.trim() || '';
 }
@@ -384,4 +417,6 @@ module.exports = {
   requestClassSummary,
   requestClassChat,
   VIDEO_CHAT_SYSTEM_PROMPT,
+  buildChatHistory,
+  buildVideoChatMessages,
 };
