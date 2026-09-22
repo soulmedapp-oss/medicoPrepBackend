@@ -1,4 +1,5 @@
 const Video = require('../models/Video');
+const bunnyProvider = require('../services/video/bunnyProvider');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
@@ -278,6 +279,29 @@ function createVideosController() {
     }
   }
 
+  async function createUploadUrl(req, res) {
+    try {
+      const video = await Video.findById(req.params.id);
+      if (!video) return res.status(404).json({ error: 'Video not found' });
+      if (video.provider !== 'bunny') {
+        return res.status(400).json({ error: 'Not a hosted lecture' });
+      }
+      const { videoId, libraryId } = video.bunny_video_id
+        ? { videoId: video.bunny_video_id, libraryId: video.bunny_library_id }
+        : await bunnyProvider.createUpload({ title: video.title });
+
+      video.bunny_video_id = videoId;
+      video.bunny_library_id = libraryId;
+      video.processing_status = 'uploading';
+      await video.save();
+
+      return res.json(bunnyProvider.createUploadCredentials({ libraryId, videoId }));
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to start upload' });
+    }
+  }
+
   async function chatAboutVideo(req, res) {
     try {
       const { value } = await getOpenAiKey();
@@ -310,6 +334,7 @@ function createVideosController() {
     deleteVideo,
     getVideoSummary,
     chatAboutVideo,
+    createUploadUrl,
   };
 }
 

@@ -34,6 +34,31 @@ function buildUploadSignature({ libraryId, apiKey, expires, videoId }) {
   return sha256Hex(`${libraryId}${apiKey}${expires}${videoId}`);
 }
 
+const TUS_ENDPOINT = 'https://video.bunnycdn.com/tusupload';
+const UPLOAD_WINDOW_SECONDS = 24 * 60 * 60;
+
+// Pure: takes its keys as arguments so tests can pass fakes without touching
+// env or the network. The signature is derived from apiKey, but apiKey itself
+// never appears in the returned payload — that's what ships to the browser.
+function buildUploadPayload({ libraryId, apiKey, videoId, now = Math.floor(Date.now() / 1000) }) {
+  const expires = now + UPLOAD_WINDOW_SECONDS;
+  return {
+    tus_endpoint: TUS_ENDPOINT,
+    library_id: libraryId,
+    video_id: videoId,
+    expires,
+    signature: buildUploadSignature({ libraryId, apiKey, expires, videoId }),
+  };
+}
+
+// Thin wrapper: reads the raw apiKey out of module-private config() and hands
+// buildUploadPayload just what it needs. This is the only sanctioned way for
+// a caller (the controller) to get upload credentials — it never sees apiKey.
+function createUploadCredentials({ libraryId, videoId }) {
+  const { apiKey } = config();
+  return buildUploadPayload({ libraryId, apiKey, videoId });
+}
+
 // TTL must outlast the lecture itself: a student who pauses a 3-hour revision
 // video would otherwise have playback die partway through.
 function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
@@ -57,7 +82,38 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
   };
 }
 
+async function createUpload({ title }) {
+  const { libraryId, apiKey } = config();
+  const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos`, {
+    method: 'POST',
+    headers: { AccessKey: apiKey, 'content-type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) throw new Error(`Bunny create video failed (${response.status})`);
+  const created = await response.json();
+  return { videoId: created.guid, libraryId };
+}
+
+async function getStatus(videoId) {
+  const { libraryId, apiKey } = config();
+  const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${videoId}`, {
+    headers: { AccessKey: apiKey },
+  });
+  if (!response.ok) throw new Error(`Bunny get video failed (${response.status})`);
+  const video = await response.json();
+  return { status: video.status, duration_seconds: video.length || 0 };
+}
+
 // `config` stays module-private: it returns raw secrets (BUNNY_STREAM_API_KEY,
 // BUNNY_STREAM_TOKEN_KEY). Exporting it would let a single
-// `res.json(bunnyProvider.config())` downstream leak both.
-module.exports = { buildPlaybackToken, buildUploadSignature, getPlaybackToken };
+// `res.json(bunnyProvider.config())` downstream leak both. Callers that need
+// upload credentials go through createUploadCredentials instead.
+module.exports = {
+  buildPlaybackToken,
+  buildUploadSignature,
+  getPlaybackToken,
+  buildUploadPayload,
+  createUploadCredentials,
+  createUpload,
+  getStatus,
+};

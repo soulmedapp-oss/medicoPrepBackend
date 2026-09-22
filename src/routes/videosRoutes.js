@@ -18,6 +18,12 @@ function createVideosRoutes({ authMiddleware }) {
 
   router.get('/videos', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.listVideos);
   router.post('/videos', authMiddleware, authorize('CanAddVideos'), controller.createVideo);
+  router.post(
+    '/videos/:id/upload-url',
+    authMiddleware,
+    authorize.any('CanAddVideos', 'CanEditVideos'),
+    controller.createUploadUrl
+  );
   router.patch('/videos/:id', authMiddleware, authorize.any('CanEditVideos', 'CanDeactivateVideos'), controller.updateVideo);
   router.delete('/videos/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deleteVideo);
   router.get('/videos/:id/ai-summary', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getVideoSummary);

@@ -76,3 +76,17 @@ test('getPlaybackToken throws when bunny_video_id is missing or empty', () => {
   assert.throws(() => getPlaybackToken({ duration_seconds: 60 }, { now: 1800000000 }));
   assert.throws(() => getPlaybackToken(undefined, { now: 1800000000 }));
 });
+
+const { buildUploadPayload } = require('../src/services/video/bunnyProvider');
+
+test('upload payload carries a signature but never the api key', () => {
+  const payload = buildUploadPayload({
+    libraryId: '12', apiKey: 'SECRET-API-KEY', videoId: 'GUID', now: 1800000000,
+  });
+  const serialised = JSON.stringify(payload);
+  assert.ok(!serialised.includes('SECRET-API-KEY'), 'api key must not reach the client');
+  assert.equal(payload.video_id, 'GUID');
+  assert.equal(payload.library_id, '12');
+  assert.ok(payload.expires > 1800000000, 'signature must have a future expiry');
+  assert.match(payload.signature, /^[0-9a-f]{64}$/);
+});
