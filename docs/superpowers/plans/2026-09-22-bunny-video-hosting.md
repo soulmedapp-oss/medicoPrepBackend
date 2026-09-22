@@ -430,9 +430,29 @@ const {
   getPlaybackToken,
 } = require('../src/services/video/bunnyProvider');
 
-test('playback token is sha256(tokenKey + videoId + expires)', () => {
-  const expected = crypto.createHash('sha256').update('KEY' + 'GUID' + '1800000000').digest('hex');
-  assert.equal(buildPlaybackToken({ tokenKey: 'KEY', videoId: 'GUID', expires: 1800000000 }), expected);
+// Formula verified against the live library — see the spec's
+// "Verified against the live library" table. Do not substitute the embed-view
+// token (sha256 hex of key+guid+expires); that protects Bunny's iframe player,
+// not the HLS playlist and segments we serve ourselves.
+test('playback token is a base64url HS256 directory token over the signed message', () => {
+  const dir = '/GUID/';
+  const expires = 1800000000;
+  const expected = 'HS256-' + crypto
+    .createHmac('sha256', 'KEY')
+    .update(`${dir}${expires}token_path=${dir}`)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  assert.equal(buildPlaybackToken({ tokenKey: 'KEY', videoId: 'GUID', expires }), expected);
+});
+
+test('playback token is base64url — no +, / or = survive', () => {
+  // Any of those three characters breaks the token as a query parameter.
+  for (let i = 0; i < 50; i += 1) {
+    const token = buildPlaybackToken({ tokenKey: `k${i}`, videoId: `v${i}`, expires: 1800000000 + i });
+    assert.match(token, /^HS256-[A-Za-z0-9_-]+$/, `token ${i} is not base64url: ${token}`);
+  }
 });
 
 test('upload signature is sha256(libraryId + apiKey + expires + videoId)', () => {
@@ -456,7 +476,7 @@ test('playback token TTL covers a long lecture', () => {
 
 test('playback token result never leaks the signing key', () => {
   const result = getPlaybackToken({ bunny_video_id: 'GUID', duration_seconds: 60 }, { now: 1800000000 });
-  assert.deepEqual(Object.keys(result).sort(), ['expires_at', 'hls_url', 'token']);
+  assert.deepEqual(Object.keys(result).sort(), ['expires_at', 'hls_url', 'token', 'token_path']);
 });
 ```
 
@@ -486,8 +506,20 @@ function config() {
 
 const sha256Hex = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
+const base64Url = (buf) =>
+  buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+// Bunny CDN token authentication (V2), directory-scoped.
+//
+// HLS fetches one playlist then many segments. A token signed for the exact
+// playlist path authorises only that file, so segment requests 403 and playback
+// dies a few seconds in. Signing token_path=/<guid>/ covers every file beneath
+// it — verified against the live library, along with the fact that token_path
+// must appear INSIDE the signed message as well as on the URL.
 function buildPlaybackToken({ tokenKey, videoId, expires }) {
-  return sha256Hex(`${tokenKey}${videoId}${expires}`);
+  const tokenPath = `/${videoId}/`;
+  const message = `${tokenPath}${expires}token_path=${tokenPath}`;
+  return `HS256-${base64Url(crypto.createHmac('sha256', tokenKey).update(message).digest())}`;
 }
 
 function buildUploadSignature({ libraryId, apiKey, expires, videoId }) {
@@ -504,6 +536,9 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
   return {
     hls_url: `https://${cdnHostname}/${videoId}/playlist.m3u8`,
     token: buildPlaybackToken({ tokenKey, videoId, expires }),
+    // The player must send token_path on every request, URL-encoded, or the
+    // directory token is not matched and segments 403.
+    token_path: `/${videoId}/`,
     expires_at: expires,
   };
 }
@@ -1233,7 +1268,10 @@ Add below that effect. Safari plays HLS natively, so hls.js is only attached whe
   useEffect(() => {
     const el = videoRef.current;
     if (!el || playback?.provider !== 'bunny') return undefined;
-    const src = `${playback.hls_url}?token=${playback.token}&expires=${playback.expires_at}`;
+    // token_path must ride along URL-encoded, or Bunny will not match the
+    // directory token and every .ts segment 403s a few seconds into playback.
+    const src = `${playback.hls_url}?token=${playback.token}&expires=${playback.expires_at}`
+      + `&token_path=${encodeURIComponent(playback.token_path)}`;
     if (el.canPlayType('application/vnd.apple.mpegurl')) {
       el.src = src;
       return undefined;

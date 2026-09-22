@@ -157,9 +157,65 @@ threshold.
 1. `loadVideoForUser(req.user, req.params.id)` — the existing check: published,
    active, and `canAccessVideo` against the user's plan. Unchanged.
 2. `provider === 'youtube'` → return the stored `video_url`.
-3. `provider === 'bunny'` → `expires = now + TTL`, token =
-   `SHA256_HEX(token_security_key + video_id + expires)`; return
-   `{ hls_url, token, expires_at }`.
+3. `provider === 'bunny'` → `expires = now + TTL`, mint a **CDN token** (below) and
+   return `{ hls_url, token, expires_at, token_path }`.
+
+### Token form — CDN token authentication, not the embed token
+
+Bunny has two token systems and they are not interchangeable:
+
+- **Embed view token** — `SHA256_HEX(token_key + video_id + expires)`. Protects Bunny's
+  own iframe player page. We are not using that player, so this is not the one.
+- **CDN token authentication** — operates at the pull zone and is what actually guards
+  the `.m3u8` playlist *and* its `.ts` segments. This is the one we need.
+
+```
+token = "HS256-" + flags + Base64URL(HMAC-SHA256(key, signature_path + expires + user_ip + signing_data))
+```
+
+- `flags` — `"1-"` when an IP is signed, otherwise empty. We do not sign IPs (students
+  roam between mobile and wifi mid-lecture), so `flags` is empty and `user_ip` is omitted.
+- `signature_path` — the URL path, **or `token_path` when set**.
+- `signing_data` — remaining query parameters, alphabetically sorted, `key=value` joined
+  by `&`, excluding `token` and `expires`.
+- Base64URL — standard Base64, then `+`→`-`, `/`→`_`, strip `=` padding.
+
+**A directory token is mandatory here.** HLS playback fetches one playlist and then many
+segment files. Signing only the playlist URL means segment requests carry no valid token
+and playback dies after the first few seconds. So sign `token_path=/<bunny_video_id>/`,
+which authorises every file beneath it with a single token.
+
+Query parameters appended to the playback URL: `token`, `expires`, and URL-encoded
+`token_path`.
+
+### Verified against the live library (2026-09-22)
+
+Probed against `vz-a462aa8d-016.b-cdn.net` before any code was written. With token auth
+on, an unsigned request 403s and a correctly signed request for a missing file 404s, so
+the formula could be settled without uploading anything.
+
+| Probe | Result | Conclusion |
+| --- | --- | --- |
+| No token | 403 | Token auth is enforced. |
+| `HS256-` + b64url(HMAC(key, `dir + expires + "token_path=" + dir`)) | **404** | **This is the formula.** |
+| Same, but `token_path` omitted from the signed message | 403 | `token_path` **must** be inside the signed message — this resolves the docs' ambiguity. |
+| Signing the exact file path, no `token_path` | 404 | Valid, but authorises that one file only — useless for HLS. |
+| V1 basic (`b64url(SHA256(key + path + expires))`) with a directory | 403 | V1 does not support directory scope. |
+| Directory token → sibling file under it | 404 | One token covers the whole video directory. |
+| Directory token → nested `.ts` segment | 404 | Segments are covered; playback will not die mid-lecture. |
+| Expired `expires` | 403 | Expiry enforced server-side. |
+| One byte changed in the token | 403 | Signature genuinely verified. |
+| Video A's token used on video B's path | 403 | Per-video isolation holds. |
+
+Two facts this establishes that the documentation does not state:
+
+- The Stream library's **"Token authentication key"** (Security → General) **is** the CDN
+  pull zone signing key. `BUNNY_STREAM_API_KEY`, `BUNNY_STREAM_READONLY_API_KEY` and
+  `BUNNY_STREAM_TOKEN_KEY` are three distinct values; the token key is the 36-char one.
+- **"Block direct url file access"** rejects any request without a `Referer` header,
+  independently of the token. Browsers send one, so playback is unaffected — but any
+  server-side fetch of a playback URL (health checks, tests) must set `Referer`, or it
+  will 403 and look like a token bug.
 
 TTL 4 hours: longer than any lecture plus pauses, short enough that a shared link
 is dead before it spreads. **The token is returned only by this endpoint and must
