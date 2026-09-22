@@ -5,6 +5,9 @@ const videoSchema = new mongoose.Schema(
     title: { type: String, required: true },
     description: { type: String, default: '' },
     subject: { type: String, required: true },
+    // Real reference to Subject. `subject` (the string) remains until the
+    // backfill has run and been verified; Task 5 drops it.
+    subject_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', index: true },
     teacher_name: { type: String, required: true },
     teacher_email: { type: String },
     subtopic: { type: String, default: '' },
