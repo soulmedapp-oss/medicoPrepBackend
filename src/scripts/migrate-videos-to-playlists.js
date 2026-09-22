@@ -171,6 +171,7 @@ async function migrateVideosToPlaylists() {
     grant.lectures.forEach((lecture) => {
       const gains = [];
       if (lecture.gains_plans.length) gains.push(`now also on plan(s) ${lecture.gains_plans.join(', ')}`);
+      if (lecture.gains_open) gains.push('now open to every plan');
       if (lecture.gains_free) gains.push('now free to everyone');
       // eslint-disable-next-line no-console
       console.log(`    ${lecture._id}  ${gains.join('; ')}`);

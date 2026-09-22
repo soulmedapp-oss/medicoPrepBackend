@@ -34,15 +34,26 @@ test('plans are UNIONED across member videos, never intersected', () => {
   assert.deepEqual(out.playlists[0].allowed_plans.sort(), ['gold', 'silver']);
 });
 
-// Fix round 1, Minor 5: allowed_plans: null must contribute nothing to the
-// union, never be read as "all plans".
-test('a member with allowed_plans: null contributes no plans to the union', () => {
+// Final review: the per-video gate read an EMPTY or missing allowed_plans as
+// "every plan", so such a member must never be narrowed by its neighbours —
+// one open member makes the whole playlist open ([]), which canAccessPlaylist
+// reads the same way. (Supersedes fix round 1, Minor 5, which pinned the
+// narrowing outcome.)
+test('a member with allowed_plans: null was open to every plan, so the playlist stays open', () => {
   const out = planPlaylistsFromVideos([
     { _id: 'a', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: null, order: 0 },
     { _id: 'b', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 1 },
   ]);
   assert.equal(out.playlists.length, 1);
-  assert.deepEqual(out.playlists[0].allowed_plans, ['gold']);
+  assert.deepEqual(out.playlists[0].allowed_plans, []);
+});
+
+test('a member with allowed_plans: [] keeps the playlist open rather than being narrowed to gold', () => {
+  const out = planPlaylistsFromVideos([
+    { _id: 'open', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: [], order: 0 },
+    { _id: 'gold', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 1 },
+  ]);
+  assert.deepEqual(out.playlists[0].allowed_plans, []);
 });
 
 // Fix round 1, Minor 6: the same plan on two members must appear once.
@@ -195,7 +206,9 @@ test('a member whose own plans were narrower than the union is listed as a grant
   assert.equal(out.grants.length, 1);
   assert.equal(out.grants[0].name, 'ENT');
   assert.equal(out.grants[0].subject_id, 's1');
-  assert.deepEqual(out.grants[0].lectures, [{ _id: 'a', gains_plans: ['silver'], gains_free: false }]);
+  assert.deepEqual(out.grants[0].lectures, [
+    { _id: 'a', gains_plans: ['silver'], gains_free: false, gains_open: false },
+  ]);
 });
 
 test('members with identical plans grant nothing, so the dry run reports no grants at all', () => {
@@ -214,7 +227,9 @@ test('one free member makes the playlist free, and every non-free member is list
   ]);
   assert.equal(out.playlists[0].is_free, true);
   assert.equal(out.grants.length, 1);
-  assert.deepEqual(out.grants[0].lectures, [{ _id: 'paid-one', gains_plans: [], gains_free: true }]);
+  assert.deepEqual(out.grants[0].lectures, [
+    { _id: 'paid-one', gains_plans: [], gains_free: true, gains_open: false },
+  ]);
 });
 
 // A member with an EMPTY allowed_plans was already reachable on every plan
@@ -222,10 +237,13 @@ test('one free member makes the playlist free, and every non-free member is list
 // so the union cannot grant it anything -- it can only narrow it, which is
 // a different report and not what --execute's operator is being warned
 // about here.
-test('a member that was already open to every plan is not reported as gaining plans', () => {
+test('an open member gains nothing, and the restricted member beside it is reported as gaining every plan', () => {
   const out = planPlaylistsFromVideos([
     { _id: 'open', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: [], order: 0 },
     { _id: 'gold', subject_id: 's1', subject: 'ENT', is_published: true, allowed_plans: ['gold'], order: 1 },
   ]);
-  assert.deepEqual(out.grants, []);
+  assert.equal(out.grants.length, 1);
+  assert.deepEqual(out.grants[0].lectures, [
+    { _id: 'gold', gains_plans: [], gains_free: false, gains_open: true },
+  ]);
 });

@@ -99,10 +99,12 @@ database. Both scripts refuse to run without exactly one of `--dry-run` /
 
 ## What the migration grants
 
-Each playlist takes the **union** of its member lectures' `allowed_plans`, and
-becomes **free if any single member was free**. Both rules only ever widen
-access — deliberately, so the migration can never take away something a
-student already had. The consequence is that it can *give* access:
+Each playlist takes the **union** of its member lectures' `allowed_plans`
+(and is **open to every plan** if any member's list was empty, because the old
+per-video gate read an empty list as "everyone"), and becomes **free if any
+single member was free**. All three rules only ever widen access —
+deliberately, so the migration never takes away something a student already
+had. The consequence is that it can *give* access:
 
 - a lecture that was gold-only, grouped with a silver lecture, becomes
   reachable on **both** plans;

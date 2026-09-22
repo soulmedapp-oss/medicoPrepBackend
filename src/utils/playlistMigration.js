@@ -63,8 +63,17 @@ function planPlaylistsFromVideos(videos) {
     const plans = new Set();
     // Rule 4: any free member makes the whole playlist free.
     let isFree = false;
+    // Rule 3, refined (final review): the per-video gate this migration
+    // replaces (canAccessVideo) read an EMPTY or missing allowed_plans as
+    // "every plan". A union that ignored that would NARROW such a member to
+    // whatever plans its neighbours carried — the one thing rule 3 promises
+    // never happens. So one open member makes the whole playlist open:
+    // canAccessPlaylist reads [] the same way.
+    let isOpen = false;
     members.forEach((video) => {
-      (Array.isArray(video.allowed_plans) ? video.allowed_plans : []).forEach((plan) => plans.add(plan));
+      const own = Array.isArray(video.allowed_plans) ? video.allowed_plans : [];
+      if (own.length === 0) isOpen = true;
+      own.forEach((plan) => plans.add(plan));
       if (video.is_free) isFree = true;
     });
 
@@ -82,24 +91,30 @@ function planPlaylistsFromVideos(videos) {
       })
       .map((video, index) => ({ lecture_id: video._id, order: index }));
 
-    const allowedPlans = [...plans];
+    const allowedPlans = isOpen ? [] : [...plans];
 
     // Fix round 3, Rec 2: rules 3 and 4 only ever WIDEN access, which means
     // --execute can hand a student a lecture they could not reach the day
     // before. Work out exactly which lectures that is, so the dry run can
     // say so before anyone types --execute. A member whose own
-    // allowed_plans list was EMPTY was already reachable on every plan
-    // (canAccessPlaylist, and the per-video gate before it, both read an
-    // empty list as "everyone"), so it cannot gain plans here — the union
-    // can only narrow it, which is a different question and not the one
-    // this warning answers.
+    // allowed_plans list was EMPTY was already reachable on every plan and
+    // cannot gain anything; a plan-restricted member grouped with such an
+    // open member gains EVERY plan (gains_open), because the playlist is
+    // then open — see isOpen above.
     const grantedLectures = [];
     members.forEach((video) => {
       const own = Array.isArray(video.allowed_plans) ? video.allowed_plans : [];
-      const gainsPlans = !isFree && own.length ? allowedPlans.filter((plan) => !own.includes(plan)) : [];
+      const gainsOpen = !isFree && isOpen && own.length > 0;
+      const gainsPlans =
+        !isFree && !isOpen && own.length ? allowedPlans.filter((plan) => !own.includes(plan)) : [];
       const gainsFree = isFree && video.is_free !== true;
-      if (gainsPlans.length || gainsFree) {
-        grantedLectures.push({ _id: video._id, gains_plans: gainsPlans, gains_free: gainsFree });
+      if (gainsPlans.length || gainsFree || gainsOpen) {
+        grantedLectures.push({
+          _id: video._id,
+          gains_plans: gainsPlans,
+          gains_free: gainsFree,
+          gains_open: gainsOpen,
+        });
       }
     });
     if (grantedLectures.length) {
