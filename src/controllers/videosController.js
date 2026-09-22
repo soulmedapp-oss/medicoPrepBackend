@@ -330,6 +330,13 @@ function createVideosController() {
         // see decideUploadClaim above for the equivalent pure decision logic.
         // (updated_date is bumped by mongoose automatically on this query —
         // the Video schema's timestamps option covers findOneAndUpdate.)
+        //
+        // previousStatus is what the row was in before *this* claim — not
+        // necessarily 'ready': a retry of a previously-failed upload, or a
+        // video the encoding webhook already marked 'failed', starts from
+        // whatever it was. If createUpload fails below, we release the claim
+        // back to exactly this value rather than assuming a default.
+        const previousStatus = video.processing_status;
         const staleCutoff = new Date(Date.now() - STALE_CLAIM_MS);
         const claimed = await Video.findOneAndUpdate(
           {
@@ -357,7 +364,33 @@ function createVideosController() {
           videoId = current.bunny_video_id;
           libraryId = current.bunny_library_id;
         } else {
-          const created = await bunnyProvider.createUpload({ title: claimed.title });
+          let created;
+          try {
+            created = await bunnyProvider.createUpload({ title: claimed.title });
+          } catch (createErr) {
+            // Nothing was created upstream yet, so there's nothing to
+            // orphan — unlike the save() failure below, where a real Bunny
+            // video already exists. Release the claim so an ordinary,
+            // recoverable failure (a Bunny 500, a timeout) doesn't lock the
+            // admin out for the rest of STALE_CLAIM_MS; that window exists
+            // to recover from a crashed process, not this case, where we're
+            // still running and can clean up after ourselves.
+            try {
+              await Video.updateOne(
+                { _id: claimed._id },
+                { $set: { processing_status: previousStatus } }
+              );
+            } catch (releaseErr) {
+              // The release failing is how a row ends up stuck at
+              // 'uploading' in the first place. Log it, but let the real
+              // error (createErr) surface below rather than masking it.
+              console.error('Failed to release upload claim after createUpload error', {
+                video_id: String(claimed._id),
+                error: releaseErr,
+              });
+            }
+            throw createErr;
+          }
           videoId = created.videoId;
           libraryId = created.libraryId;
 
