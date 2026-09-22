@@ -20,4 +20,11 @@ function resolveSubjectIds(videos, subjects) {
   return { updates, unresolved };
 }
 
-module.exports = { resolveSubjectIds };
+// The canonical name is stored alongside the id until the string column is
+// dropped, so a rollback needs no data repair.
+function subjectWriteFields(subject) {
+  if (!subject || !subject._id) return {};
+  return { subject_id: subject._id, subject: subject.name };
+}
+
+module.exports = { resolveSubjectIds, subjectWriteFields };

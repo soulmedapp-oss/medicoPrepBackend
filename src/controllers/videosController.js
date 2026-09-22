@@ -4,7 +4,8 @@ const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
 const { isValidTextLength } = require('../utils/validation');
-const { validateSubjectIfConfigured } = require('../utils/subjects');
+const { resolveSubjectForWrite } = require('../utils/subjects');
+const { subjectWriteFields } = require('../utils/subjectResolution');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
 const { can } = require('../rbac/can');
@@ -274,11 +275,17 @@ function createVideosController() {
         : [];
       const isFreePlan = allowedPlans.includes('free');
 
-      const subjectName = await validateSubjectIfConfigured(data.subject);
+      // subject_id is never taken from the client — it is set only from the
+      // server-resolved subject below. subject (the display name) is kept in
+      // step with it until the string column is dropped (Task 5), so a
+      // rollback needs no data repair.
+      const subjectName = String(data.subject || '').trim();
+      const resolvedSubject = await resolveSubjectForWrite(data.subject);
       const video = await Video.create({
         title: data.title,
         description: data.description || '',
         subject: subjectName,
+        ...subjectWriteFields(resolvedSubject),
         teacher_name: data.teacher_name,
         teacher_email: data.teacher_email || '',
         subtopic: data.subtopic || '',
@@ -316,7 +323,13 @@ function createVideosController() {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
       if (updates.subject) {
-        updates.subject = await validateSubjectIfConfigured(updates.subject);
+        // Same rule as createVideo: subject_id always comes from the
+        // server-resolved subject, never from req.body — subject_id is
+        // deliberately absent from UPDATABLE_VIDEO_FIELDS so a client can
+        // never write an arbitrary id directly.
+        const resolvedSubject = await resolveSubjectForWrite(updates.subject);
+        updates.subject = String(updates.subject).trim();
+        Object.assign(updates, subjectWriteFields(resolvedSubject));
       }
       if (updates.teacher_name !== undefined && !isValidTextLength(String(updates.teacher_name), 2, 120)) {
         return res.status(400).json({ error: 'teacher_name is required' });

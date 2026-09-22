@@ -41,3 +41,18 @@ test('reports a video with no subject string rather than throwing', () => {
   assert.deepEqual(out.updates, []);
   assert.deepEqual(out.unresolved, [{ _id: 'v0', subject: '' }]);
 });
+
+const { subjectWriteFields } = require('../src/utils/subjectResolution');
+
+test('a resolved subject writes both the id and the canonical name', () => {
+  assert.deepEqual(
+    subjectWriteFields({ _id: 's1', name: 'ENT' }),
+    { subject_id: 's1', subject: 'ENT' }
+  );
+});
+
+// Review Focus #4: an unresolved subject must not be written at all.
+test('an unresolved subject yields no write fields', () => {
+  assert.deepEqual(subjectWriteFields(null), {});
+  assert.deepEqual(subjectWriteFields(undefined), {});
+});
