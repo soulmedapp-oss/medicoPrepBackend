@@ -543,7 +543,10 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
   };
 }
 
-module.exports = { config, buildPlaybackToken, buildUploadSignature, getPlaybackToken };
+// `config` is deliberately NOT exported: it returns the raw Bunny API key and
+// token-signing key, and a single `res.json(bunnyProvider.config())` anywhere
+// downstream would leak both. Callers get derived values only.
+module.exports = { buildPlaybackToken, buildUploadSignature, getPlaybackToken };
 ```
 
 Create `src/services/video/index.js`:
@@ -764,7 +767,20 @@ async function getStatus(videoId) {
 }
 ```
 
-Export `buildUploadPayload`, `createUpload`, `getStatus`.
+Add a thin wrapper so controllers never need the raw keys. `buildUploadPayload`
+stays pure (it *accepts* keys, so tests can pass fakes); this reads them:
+
+```js
+// Controllers must not be able to reach the raw keys, so `config` stays
+// module-private and this wrapper is the only way to mint upload credentials.
+function createUploadCredentials({ libraryId, videoId }) {
+  const { apiKey } = config();
+  return buildUploadPayload({ libraryId, apiKey, videoId });
+}
+```
+
+Export `buildUploadPayload`, `createUploadCredentials`, `createUpload`, `getStatus`.
+Do **not** export `config`.
 
 In `src/controllers/videosController.js`:
 
@@ -786,8 +802,7 @@ In `src/controllers/videosController.js`:
       video.processing_status = 'uploading';
       await video.save();
 
-      const { apiKey } = bunny.config();
-      return res.json(bunny.buildUploadPayload({ libraryId, apiKey, videoId }));
+      return res.json(bunny.createUploadCredentials({ libraryId, videoId }));
     } catch (err) {
       console.error(err);
       return res.status(500).json({ error: 'Failed to start upload' });
