@@ -1265,11 +1265,15 @@ In `Videos.jsx`, alongside the existing summary effect:
   const [playbackError, setPlaybackError] = useState('');
 
   useEffect(() => {
-    if (!selectedVideo?.id) {
-      setPlayback(null);
-      setPlaybackError('');
-      return;
-    }
+    // Clear on EVERY id change, not just when the selection empties. The
+    // hls.js effect below is keyed on `playback`, so leaving the previous
+    // video's payload in place while the new fetch is in flight keeps the old
+    // Hls instance attached to the same <video> node — the previous lecture
+    // keeps playing under the new lecture's title, and any progress sync in
+    // that window writes the old video's currentTime against the new id.
+    setPlayback(null);
+    setPlaybackError('');
+    if (!selectedVideo?.id) return undefined;
     let cancelled = false;
     videosClient
       .getPlayback(selectedVideo.id)
