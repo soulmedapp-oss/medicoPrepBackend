@@ -41,17 +41,38 @@ test('upload signature is sha256(libraryId + apiKey + expires + videoId)', () =>
 });
 
 // Review Focus #4: a 3-hour lecture watched with pauses must not outlive its token.
-test('playback token TTL covers a long lecture', () => {
+// Default TTL (4h = 14400s) dominates here: duration + 900 = 11700 < 14400, so
+// this pins the ttl-dominant branch of Math.max(ttl, duration + 900) exactly —
+// not just "greater than or equal", which an equality regression would still pass.
+test('playback token TTL: default ttl dominates a 3-hour lecture', () => {
   const now = 1800000000;
   const video = { bunny_video_id: 'GUID', duration_seconds: 3 * 60 * 60 };
   const result = getPlaybackToken(video, { now });
-  assert.ok(
-    result.expires_at - now >= video.duration_seconds,
-    'token must outlive the video it unlocks'
-  );
+  assert.equal(result.expires_at, now + 4 * 60 * 60);
 });
 
-test('playback token result never leaks the signing key', () => {
+// A 5-hour lecture pushes duration + 900 (18900) past the default ttl (14400),
+// so this pins the OTHER branch of Math.max — the one the 3-hour case above
+// never exercises. Together the two cases pin both arms exactly, so silently
+// dropping the +900 safety buffer (i.e. regressing to expires = now + duration)
+// would fail this test even though it still satisfies a ">=" check.
+test('playback token TTL: long lecture duration dominates the default ttl', () => {
+  const now = 1800000000;
+  const video = { bunny_video_id: 'GUID', duration_seconds: 5 * 60 * 60 };
+  const result = getPlaybackToken(video, { now });
+  assert.equal(result.expires_at, now + video.duration_seconds + 900);
+});
+
+test('getPlaybackToken returns exactly hls_url, token, token_path and expires_at', () => {
   const result = getPlaybackToken({ bunny_video_id: 'GUID', duration_seconds: 60 }, { now: 1800000000 });
   assert.deepEqual(Object.keys(result).sort(), ['expires_at', 'hls_url', 'token', 'token_path']);
+});
+
+// A bunny row mid-upload can have bunny_video_id === '' (the model default).
+// Without a guard this silently builds a token over "//" and a URL with a
+// double slash — no exception, no log, just a 403/404 in a student's player.
+test('getPlaybackToken throws when bunny_video_id is missing or empty', () => {
+  assert.throws(() => getPlaybackToken({ bunny_video_id: '', duration_seconds: 60 }, { now: 1800000000 }));
+  assert.throws(() => getPlaybackToken({ duration_seconds: 60 }, { now: 1800000000 }));
+  assert.throws(() => getPlaybackToken(undefined, { now: 1800000000 }));
 });

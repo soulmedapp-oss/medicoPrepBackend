@@ -37,6 +37,12 @@ function buildUploadSignature({ libraryId, apiKey, expires, videoId }) {
 // TTL must outlast the lecture itself: a student who pauses a 3-hour revision
 // video would otherwise have playback die partway through.
 function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
+  if (!video || !video.bunny_video_id) {
+    // A bunny-provider row mid-upload can have bunny_video_id === ''. Signing a
+    // token over "//" fails silently downstream (a 403/404 in the player) with
+    // no server-side attribution, so fail loudly here instead.
+    throw new Error('getPlaybackToken requires a video with a bunny_video_id');
+  }
   const { tokenKey, cdnHostname, ttl } = config();
   const videoId = video.bunny_video_id;
   const duration = Number(video.duration_seconds) || 0;
@@ -51,4 +57,7 @@ function getPlaybackToken(video, { now = Math.floor(Date.now() / 1000) } = {}) {
   };
 }
 
-module.exports = { config, buildPlaybackToken, buildUploadSignature, getPlaybackToken };
+// `config` stays module-private: it returns raw secrets (BUNNY_STREAM_API_KEY,
+// BUNNY_STREAM_TOKEN_KEY). Exporting it would let a single
+// `res.json(bunnyProvider.config())` downstream leak both.
+module.exports = { buildPlaybackToken, buildUploadSignature, getPlaybackToken };
