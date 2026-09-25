@@ -7,6 +7,7 @@ const User = require('../models/User');
 const { sendEmail } = require('../services/emailService');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
 const { capLimit } = require('../utils/security');
+const { reportError } = require('../lib/errorReporter.js');
 const {
   createOrder,
   verifyPaymentSignature,
@@ -127,7 +128,7 @@ async function applyPostPaymentUpdates(payment) {
     await redeemCouponForPayment(claimed);
   } catch (err) {
     // The subscription is already active; a coupon bookkeeping failure must not undo it.
-    console.error('Coupon redemption failed for payment', String(claimed._id), err);
+    reportError(null, err, 'Coupon redemption failed for payment', { payment_id: String(claimed._id) });
   }
 
   return subscription;
@@ -292,11 +293,7 @@ function createPaymentsController() {
       const errorObj = err instanceof Error
         ? err
         : new Error(typeof err === 'object' ? JSON.stringify(err, Object.getOwnPropertyNames(err || {})) : String(err));
-      console.error(
-        `Payment order failed [${req.correlationId}]`,
-        razorpayDetails ? JSON.stringify(razorpayDetails) : '',
-        errorObj
-      );
+      reportError(req, errorObj, 'Payment order failed', { razorpay: razorpayDetails || undefined });
       return res.status(500).json({
         error: 'Failed to create payment order',
         correlationId: req.correlationId,
@@ -367,13 +364,13 @@ function createPaymentsController() {
             text: `Your payment for ${payment.plan} plan was successful.`,
           });
         } catch (err) {
-          console.error('Failed to send payment email:', err);
+          reportError(req, err, 'Failed to send payment email');
         }
       }
 
       return res.json({ ok: true, subscription });
     } catch (err) {
-      console.error('Payment verification failed', err);
+      reportError(req, err, 'Payment verification failed');
       return res.status(500).json({ error: 'Failed to verify payment', correlationId: req.correlationId });
     }
   }
@@ -387,7 +384,7 @@ function createPaymentsController() {
         .lean();
       return res.json({ payments });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load payments' });
     }
   }
@@ -406,7 +403,7 @@ function createPaymentsController() {
       await payment.save();
       return res.json({ ok: true, payment: payment.toObject() });
     } catch (err) {
-      console.error('Failed to cancel payment', err);
+      reportError(req, err, 'Failed to cancel payment');
       return res.status(500).json({ error: 'Failed to cancel payment' });
     }
   }
@@ -421,7 +418,7 @@ function createPaymentsController() {
         .lean();
       return res.json({ payments });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load payments' });
     }
   }
@@ -496,7 +493,7 @@ function createPaymentsController() {
       }
       return res.json({ ok: true });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Webhook failed' });
     }
   }

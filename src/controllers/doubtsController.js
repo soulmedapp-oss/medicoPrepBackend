@@ -4,6 +4,7 @@ const { isValidEmail, isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { capLimit, isValidObjectId } = require('../utils/security');
 const { can } = require('../rbac/can');
+const { reportError } = require('../lib/errorReporter.js');
 
 // Fields that only a CanAnswerDoubts holder may set on PATCH /doubts/:id —
 // answering and status/assignment changes (spec 5.3).
@@ -43,7 +44,7 @@ function createDoubtsController({ createNotification }) {
       const doubts = await Doubt.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ doubts });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load doubts' });
     }
   }
@@ -154,7 +155,7 @@ function createDoubtsController({ createNotification }) {
 
       return res.status(201).json({ doubt });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create doubt' });
     }
   }
@@ -274,7 +275,7 @@ function createDoubtsController({ createNotification }) {
 
       return res.json({ doubt: doubt.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update doubt' });
     }
   }

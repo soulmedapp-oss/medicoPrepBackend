@@ -1,4 +1,8 @@
 const multer = require('multer');
+const { reportError } = require('../lib/errorReporter');
+
+// What a student reads when the server, not the request, is at fault.
+const GENERIC_SERVER_ERROR = 'Something went wrong on our side. Please try again.';
 
 const CORS_ERROR_CODE = 'CORS_NOT_ALLOWED';
 
@@ -11,7 +15,7 @@ function createCorsError() {
 
 /** Maps an error to { status, message } without leaking internals. */
 function mapError(err) {
-  if (!err) return { status: 500, message: 'Internal server error' };
+  if (!err) return { status: 500, message: GENERIC_SERVER_ERROR };
   if (err instanceof multer.MulterError || err.name === 'MulterError') {
     if (err.code === 'LIMIT_FILE_SIZE') return { status: 413, message: 'File is too large' };
     return { status: 400, message: 'Invalid upload' };
@@ -30,7 +34,7 @@ function mapError(err) {
   if (Number.isInteger(status) && status >= 400 && status < 500) {
     return { status, message: 'Bad request' };
   }
-  return { status: 500, message: 'Internal server error' };
+  return { status: 500, message: GENERIC_SERVER_ERROR };
 }
 
 // Final Express error handler (must keep 4 args).
@@ -38,10 +42,13 @@ function mapError(err) {
 function errorHandler(err, req, res, next) {
   const { status, message } = mapError(err);
   if (status >= 500) {
-    res.locals.logErrorMessage = err && err.message;
-    res.locals.logErrorStack = err && err.stack;
+    // Unexpected: full report (log line with stack + error tracker). The
+    // client only ever sees the generic message and the correlation id.
+    reportError(req, err, 'unhandled request error');
   } else if (err && err.message) {
-    res.locals.logErrorMessage = err.message;
+    // Expected client-side fault (bad JSON, oversize upload, CORS): one
+    // warn line on the request log, no stack, nothing shipped.
+    res.locals.errorMessage = err.message;
   }
   if (res.headersSent) {
     return next(err);
@@ -51,4 +58,4 @@ function errorHandler(err, req, res, next) {
   return res.status(status).json(body);
 }
 
-module.exports = { errorHandler, mapError, createCorsError, CORS_ERROR_CODE };
+module.exports = { errorHandler, mapError, createCorsError, CORS_ERROR_CODE, GENERIC_SERVER_ERROR };

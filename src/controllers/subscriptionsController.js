@@ -6,6 +6,7 @@ const { can } = require('../rbac/can');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createSubscriptionsController({
   createNotification,
@@ -25,7 +26,7 @@ function createSubscriptionsController({
       setPlansCache('public', plans);
       return res.json({ plans });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load plans' });
     }
   }
@@ -42,7 +43,7 @@ function createSubscriptionsController({
       setPlansCache('all', plans);
       return res.json({ plans });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load plans' });
     }
   }
@@ -61,7 +62,7 @@ function createSubscriptionsController({
       clearPlansCache();
       return res.status(201).json({ plan });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create plan' });
     }
   }
@@ -87,7 +88,7 @@ function createSubscriptionsController({
       clearPlansCache();
       return res.json({ plan });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update plan' });
     }
   }
@@ -104,7 +105,7 @@ function createSubscriptionsController({
       clearPlansCache();
       return res.json({ ok: true, plan: plan.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate plan' });
     }
   }
@@ -133,7 +134,7 @@ function createSubscriptionsController({
 
       return res.json({ subscriptions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load subscriptions' });
     }
   }
@@ -187,7 +188,7 @@ function createSubscriptionsController({
 
       return res.status(201).json({ subscription });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create subscription' });
     }
   }
@@ -220,7 +221,7 @@ function createSubscriptionsController({
 
       return res.json({ subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update subscription' });
     }
   }
@@ -237,7 +238,7 @@ function createSubscriptionsController({
       await recordDeactivated(req, { resource: 'subscription', targetId: subscription._id, targetLabel: subscription.user_email || subscription.plan });
       return res.json({ ok: true, subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate subscription' });
     }
   }
@@ -270,7 +271,7 @@ function createSubscriptionsController({
 
       return res.json({ subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to extend subscription' });
     }
   }

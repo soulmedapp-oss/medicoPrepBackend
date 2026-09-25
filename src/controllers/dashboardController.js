@@ -6,6 +6,7 @@ const Test = require('../models/Test');
 const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const { reportError } = require('../lib/errorReporter.js');
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -220,7 +221,7 @@ function createDashboardController() {
         },
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load admin dashboard' });
     }
   }
@@ -421,7 +422,7 @@ function createDashboardController() {
         micro_win: microWin,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load student dashboard' });
     }
   }

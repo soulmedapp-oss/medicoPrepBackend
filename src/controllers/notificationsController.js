@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification');
 const { capLimit } = require('../utils/security');
 const { isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createNotificationsController({ createNotification }) {
   async function listNotifications(req, res) {
@@ -33,7 +34,7 @@ function createNotificationsController({ createNotification }) {
 
       return res.json({ notifications });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load notifications' });
     }
   }
@@ -59,7 +60,7 @@ function createNotificationsController({ createNotification }) {
       });
       return res.status(201).json({ notification });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create notification' });
     }
   }
@@ -83,7 +84,7 @@ function createNotificationsController({ createNotification }) {
       await notification.save();
       return res.json({ notification: notification.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update notification' });
     }
   }

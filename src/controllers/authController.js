@@ -10,6 +10,7 @@ const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/vali
 const { enqueueJob } = require('../utils/inMemoryQueue');
 const { normalizeTokenVersion } = require('../utils/security');
 const { loadPermissions } = require('../rbac/loadPermissions');
+const { reportError } = require('../lib/errorReporter.js');
 
 const {
   GOOGLE_CLIENT_ID,
@@ -260,7 +261,7 @@ async function register(req, res) {
       message: 'Verification email has been sent.',
     });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Registration failed' });
   }
 }
@@ -298,7 +299,7 @@ async function login(req, res) {
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Login failed' });
   }
 }
@@ -348,7 +349,7 @@ async function verifyEmail(req, res) {
     }
     return res.json({ ok: true, message });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to verify email' });
   }
 }
@@ -397,7 +398,7 @@ async function resendVerification(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to resend verification email' });
   }
 }
@@ -428,7 +429,7 @@ async function forgotPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to send password reset email' });
   }
 }
@@ -467,7 +468,7 @@ async function resetPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to reset password' });
   }
 }
@@ -495,7 +496,7 @@ async function validateResetToken(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to validate reset link' });
   }
 }
@@ -511,7 +512,7 @@ async function getMe(req, res) {
     await attachEffectivePermissions(payload);
     return res.json({ user: payload });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to load user' });
   }
 }
@@ -572,7 +573,7 @@ async function updateMe(req, res) {
 
     return res.json({ user: sanitizeUser(user) });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to update user' });
   }
 }
@@ -646,7 +647,7 @@ async function googleAuth(req, res) {
     return res.json({ user: responsePayload, token });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Login failed' });
   }
 }

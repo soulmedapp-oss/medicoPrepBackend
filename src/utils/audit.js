@@ -1,4 +1,5 @@
 const AuditLog = require('../models/AuditLog');
+const { logger } = require('../lib/logger');
 
 // Addendum C: redact by PATTERN, not an exact key list, so it also catches
 // this codebase's real secret-shaped keys (passwordHash, openai_api_key,
@@ -61,7 +62,7 @@ async function recordAudit(req, entry) {
       after: redact(entry.after ?? null),
     });
   } catch (err) {
-    console.error('Failed to write audit log entry', err?.message);
+    logger.error({ err }, 'Failed to write audit log entry');
   }
 }
 

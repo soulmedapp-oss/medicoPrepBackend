@@ -15,6 +15,8 @@ const { can } = require('../rbac/can');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
+const { logger } = require('../lib/logger');
 
 const UPDATABLE_VIDEO_FIELDS = [
   'title',
@@ -128,22 +130,22 @@ function playbackResponse(video) {
     return { status: 200, body: { provider: 'youtube', video_url: video.video_url } };
   }
   if (!video.bunny_video_id) {
-    // With no webhook reconciliation in place, this console.warn is the only
+    // With no webhook reconciliation in place, this warn line is the only
     // server-side signal that distinguishes "nothing has been uploaded yet /
     // the upload never made it" from the ready-but-not-yet-encoded case below
     // — both return the identical client-facing 409 so we never leak upload
     // state to the browser.
-    console.warn('playbackResponse: bunny video has no bunny_video_id yet', { video_id: String(video._id) });
+    logger.warn({ video_id: String(video._id) }, 'playbackResponse: bunny video has no bunny_video_id yet');
     return {
       status: 409,
       body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
     };
   }
   if (video.processing_status !== 'ready') {
-    console.warn('playbackResponse: bunny video not ready', {
-      video_id: String(video._id),
-      processing_status: video.processing_status,
-    });
+    logger.warn(
+      { video_id: String(video._id), processing_status: video.processing_status },
+      'playbackResponse: bunny video not ready'
+    );
     return {
       status: 409,
       body: { error: 'This lecture is still being processed. Try again in a few minutes.' },
@@ -308,7 +310,7 @@ function createVideosController() {
       const visible = videos.filter((video) => isLecturePlayable(video, playlists, planName));
       return res.json({ videos: visible });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load videos' });
     }
   }
@@ -386,7 +388,7 @@ function createVideosController() {
 
       return res.status(201).json({ video });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create video' });
     }
   }
@@ -475,7 +477,7 @@ function createVideosController() {
       await recordActiveStateChange(req, { resource: 'video', before: existing, after: video, targetLabel: video.title });
       return res.json({ video });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update video' });
     }
   }
@@ -492,7 +494,7 @@ function createVideosController() {
       await recordDeactivated(req, { resource: 'video', targetId: video._id, targetLabel: video.title });
       return res.json({ ok: true, video: video.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate video' });
     }
   }
@@ -510,7 +512,7 @@ function createVideosController() {
       const summary = await requestVideoSummary(video);
       return res.json({ summary });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate summary' });
     }
   }
@@ -600,10 +602,9 @@ function createVideosController() {
             // STALE_CLAIM_MS; that window exists to recover from a crashed
             // process, not this case, where we're still running and can
             // clean up after ourselves.
-            console.error('Bunny createUpload failed — video may or may not have been created upstream', {
+            reportError(req, createErr, 'Bunny createUpload failed — video may or may not have been created upstream', {
               video_id: String(claimed._id),
               title: claimed.title,
-              error: createErr,
             });
             try {
               await Video.updateOne(
@@ -614,9 +615,8 @@ function createVideosController() {
               // The release failing is how a row ends up stuck at
               // 'uploading' in the first place. Log it, but let the real
               // error (createErr) surface below rather than masking it.
-              console.error('Failed to release upload claim after createUpload error', {
+              reportError(req, releaseErr, 'Failed to release upload claim after createUpload error', {
                 video_id: String(claimed._id),
-                error: releaseErr,
               });
             }
             throw createErr;
@@ -633,11 +633,10 @@ function createVideosController() {
             // up pointing at it. We can't recover it here, but we can make it
             // findable: log every id needed to reconcile it by hand instead of
             // losing it silently.
-            console.error('Bunny upload created but not persisted — orphaned Bunny video', {
+            reportError(req, saveErr, 'Bunny upload created but not persisted — orphaned Bunny video', {
               video_id: String(claimed._id),
               bunny_video_id: videoId,
               bunny_library_id: libraryId,
-              error: saveErr,
             });
             return res.status(500).json({ error: 'Failed to start upload' });
           }
@@ -646,7 +645,7 @@ function createVideosController() {
 
       return res.json(bunnyProvider.createUploadCredentials({ libraryId, videoId }));
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to start upload' });
     }
   }
@@ -669,21 +668,23 @@ function createVideosController() {
       try {
         bunnyStatus = await bunnyProvider.getStatus(video.bunny_video_id);
       } catch (err) {
-        console.error('Bunny getStatus failed during refresh-status', {
+        reportError(req, err, 'Bunny getStatus failed during refresh-status', {
           video_id: String(video._id),
           bunny_video_id: video.bunny_video_id,
-          error: err,
         });
         return res.status(502).json({ error: 'Unable to reach Bunny to refresh status' });
       }
 
       const next = await applyBunnyStatusTransition(video, bunnyStatus.status);
-      console.info('Bunny status refreshed', {
-        video_id: String(video._id),
-        bunny_status: bunnyStatus.status,
-        encode_progress: bunnyStatus.encode_progress,
-        transition: next || 'none',
-      });
+      (req.log || logger).info(
+        {
+          video_id: String(video._id),
+          bunny_status: bunnyStatus.status,
+          encode_progress: bunnyStatus.encode_progress,
+          transition: next || 'none',
+        },
+        'Bunny status refreshed'
+      );
       if (next === 'ready') {
         // Already have duration_seconds from the same getStatus call above —
         // unlike the webhook, no second Bunny call is needed here.
@@ -697,7 +698,7 @@ function createVideosController() {
         duration_seconds: video.duration_seconds,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to refresh status' });
     }
   }
@@ -722,7 +723,7 @@ function createVideosController() {
       const answer = await requestVideoChat(message.trim(), video, req.body?.history);
       return res.json({ answer });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate response' });
     }
   }
@@ -734,7 +735,7 @@ function createVideosController() {
       const result = playbackResponse(video);
       return res.status(result.status).json(result.body);
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to start playback' });
     }
   }

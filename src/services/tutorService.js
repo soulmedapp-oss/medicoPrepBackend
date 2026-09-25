@@ -13,6 +13,7 @@ const {
   VIDEO_AI_CHAT_MAX_TOKENS = '600',
 } = process.env;
 const { getOpenAiKey } = require('./settingsService');
+const { reportError } = require('../lib/errorReporter.js');
 const {
   truncateText,
   MAX_TRANSCRIPT_CHARS,
@@ -311,7 +312,7 @@ async function processTutorSession(sessionId) {
     await session.save();
   } catch (err) {
     // Keep a detailed log for debugging while exposing only a generic message to users
-    console.error('Tutor session processing failed', err);
+    reportError(null, err, 'Tutor session processing failed');
     session.status = 'failed';
     session.error_message = 'AI tutor is unavailable right now. Please try again later.';
     await session.save();

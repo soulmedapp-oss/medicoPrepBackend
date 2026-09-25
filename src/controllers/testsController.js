@@ -12,6 +12,7 @@ const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
 const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { truncateText } = require('../utils/security');
+const { reportError } = require('../lib/errorReporter.js');
 
 // Fix round 1, Minor 2: question_text is validated up to 4000 chars but
 // target_label has no maxlength — truncate before it ever reaches recordAudit.
@@ -215,7 +216,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         .lean();
       return res.json({ tests });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load tests' });
     }
   }
@@ -240,7 +241,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       return res.json({ test });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load test' });
     }
   }
@@ -298,7 +299,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       return res.status(201).json({ test });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create test' });
     }
   }
@@ -356,7 +357,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       return res.json({ test });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update test' });
     }
   }
@@ -376,7 +377,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       await recordDeactivated(req, { resource: 'test', targetId: test._id, targetLabel: test.title });
       return res.json({ ok: true, test: test.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate test' });
     }
   }
@@ -405,7 +406,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const canSeeAnswerKey = can(req.user, 'CanViewQuestions');
       return res.json({ questions: canSeeAnswerKey ? questions : questions.map(stripAnswerKey) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load questions' });
     }
   }
@@ -453,7 +454,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       await updateTestQuestionCount(req.params.id);
       return res.status(201).json({ question });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create question' });
     }
   }
@@ -554,7 +555,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         errors,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to import questions' });
     }
   }
@@ -577,7 +578,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       await updateTestQuestionCount(test._id);
       return res.json({ assigned: ids.length });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to assign questions' });
     }
   }
@@ -600,7 +601,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       await updateTestQuestionCount(test._id);
       return res.json({ unassigned: ids.length });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to unassign questions' });
     }
   }
@@ -629,7 +630,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ questions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load question bank' });
     }
   }
@@ -647,7 +648,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const questions = await Question.find(filter).sort({ created_date: -1 }).limit(max).lean();
       return res.json({ questions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load questions' });
     }
   }
@@ -691,7 +692,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       });
       return res.status(201).json({ question });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create question' });
     }
   }
@@ -801,7 +802,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         errors,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to import questions' });
     }
   }
@@ -843,7 +844,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const canSeeAnswerKeyBank = can(req.user, 'CanViewQuestions');
       return res.json({ question: canSeeAnswerKeyBank ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update question' });
     }
   }
@@ -861,7 +862,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const canSeeAnswerKeyBank = can(req.user, 'CanViewQuestions');
       return res.json({ ok: true, question: canSeeAnswerKeyBank ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate question' });
     }
   }
@@ -909,7 +910,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const canSeeAnswerKeyQ = can(req.user, 'CanViewQuestions');
       return res.json({ question: canSeeAnswerKeyQ ? existing.toObject() : stripAnswerKey(existing.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update question' });
     }
   }
@@ -931,7 +932,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const canSeeAnswerKeyQ = can(req.user, 'CanViewQuestions');
       return res.json({ ok: true, question: canSeeAnswerKeyQ ? question.toObject() : stripAnswerKey(question.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate question' });
     }
   }
@@ -976,7 +977,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       return res.json({ deactivated: existing.length });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate questions' });
     }
   }
@@ -1022,7 +1023,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       return res.json({ activated: existing.length });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to activate questions' });
     }
   }
@@ -1072,7 +1073,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       return res.json({ attempts });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load attempts' });
     }
   }
@@ -1177,7 +1178,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       return res.json({ stats });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load test stats' });
     }
   }
@@ -1208,7 +1209,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       return res.status(201).json({ attempt });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create attempt' });
     }
   }
@@ -1242,7 +1243,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         await step();
       } catch (err) {
         // The attempt is already saved; a failed side effect must not fail the request.
-        console.error('Attempt completion side effect failed:', err);
+        reportError(null, err, 'Attempt completion side effect failed');
       }
     }
   }
@@ -1334,7 +1335,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       await runCompletionSideEffects(saved);
       return res.json({ attempt: saved, questions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update attempt' });
     }
   }
@@ -1366,7 +1367,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const questions = ids.map((id) => byId.get(String(id))).filter(Boolean);
       return res.json({ attempt, questions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load attempt review' });
     }
   }

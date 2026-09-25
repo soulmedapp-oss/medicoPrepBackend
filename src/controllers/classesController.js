@@ -10,6 +10,7 @@ const { can } = require('../rbac/can');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 // Fields staff may change via PATCH /classes/:id. Zoom URLs, recording files and
 // passcodes are server-managed (Zoom API / webhook) and never client-writable.
@@ -187,7 +188,7 @@ function createClassesController({ createNotification }) {
       }
       return res.json({ classes: visibleClasses });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load classes' });
     }
   }
@@ -299,7 +300,7 @@ function createClassesController({ createNotification }) {
             ],
           });
         } catch (err) {
-          console.error('Failed to send class invite:', err);
+          reportError(req, err, 'Failed to send class invite');
         }
       }
 
@@ -313,7 +314,7 @@ function createClassesController({ createNotification }) {
       }
       return res.status(201).json({ liveClass });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create class' });
     }
   }
@@ -396,7 +397,7 @@ function createClassesController({ createNotification }) {
       }
       return res.json({ liveClass });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update class' });
     }
   }
@@ -413,7 +414,7 @@ function createClassesController({ createNotification }) {
       await recordDeactivated(req, { resource: 'class', targetId: liveClass._id, targetLabel: liveClass.title });
       return res.json({ ok: true, liveClass: liveClass.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate class' });
     }
   }
@@ -428,7 +429,7 @@ function createClassesController({ createNotification }) {
 
       return res.json({ notes });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load notes' });
     }
   }
@@ -475,7 +476,7 @@ function createClassesController({ createNotification }) {
       }
       return res.json(payload);
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load recording' });
     }
   }
@@ -509,7 +510,7 @@ function createClassesController({ createNotification }) {
       }
       return res.json({ url });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load join link' });
     }
   }
@@ -538,7 +539,7 @@ function createClassesController({ createNotification }) {
       const summary = await requestClassSummary(liveClass);
       return res.json({ summary });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate summary' });
     }
   }
@@ -574,7 +575,7 @@ function createClassesController({ createNotification }) {
       const answer = await requestClassChat(message.trim(), liveClass);
       return res.json({ answer });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate response' });
     }
   }
@@ -598,7 +599,7 @@ function createClassesController({ createNotification }) {
 
       return res.status(201).json({ note });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create note' });
     }
   }
@@ -617,7 +618,7 @@ function createClassesController({ createNotification }) {
       await note.save();
       return res.json({ ok: true });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to delete note' });
     }
   }

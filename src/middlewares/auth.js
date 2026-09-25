@@ -29,6 +29,11 @@ async function authMiddleware(req, res, next) {
     user.role_names = roleNames;
     user.effective_permissions = permissions;
     req.user = user;
+    // Every later log line for this request carries who made it. Id and
+    // plan only — email is PII and is one lookup away when needed.
+    if (req.log) {
+      req.log = req.log.child({ userId: String(user._id), plan: user.subscription_plan });
+    }
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });

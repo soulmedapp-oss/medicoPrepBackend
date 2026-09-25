@@ -1,4 +1,5 @@
 const LiveClass = require('../models/LiveClass');
+const { reportError } = require('../lib/errorReporter.js');
 const {
   verifyZoomWebhookSignature,
   buildZoomValidationResponse,
@@ -89,7 +90,7 @@ async function handleZoomWebhook(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error('Zoom webhook error:', err);
+    reportError(req, err, 'Zoom webhook error');
     return res.status(500).json({ error: 'Webhook processing failed' });
   }
 }

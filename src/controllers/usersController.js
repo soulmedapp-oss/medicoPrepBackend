@@ -12,6 +12,7 @@ const { checkUserRolesChange, checkUserDeactivation } = require('../rbac/lockout
 const { missingForRoleGrant } = require('../rbac/escalation');
 const { countActiveAdmins } = require('../rbac/countActiveAdmins');
 const { recordAudit } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 const ESCALATION_ERROR = 'You cannot grant permissions you do not hold.';
 
@@ -98,7 +99,7 @@ function createUsersController() {
       const users = records.map(canManageUsers ? sanitizeUser : sanitizePublicUser);
       return res.json({ users });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load users' });
     }
   }
@@ -158,7 +159,7 @@ function createUsersController() {
       await recordAudit(req, { action: 'user.created', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email, after: { email: user.email, full_name: user.full_name, roles: user.roles } });
       return res.status(201).json({ user: sanitizeUser(user) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create user' });
     }
   }
@@ -206,7 +207,7 @@ function createUsersController() {
       sanitized.effective_permissions = permissions;
       return res.json({ user: sanitized });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to set user roles' });
     }
   }
@@ -361,7 +362,7 @@ function createUsersController() {
 
       return res.json({ user: sanitizeUser(user) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update user' });
     }
   }
@@ -387,7 +388,7 @@ function createUsersController() {
       await recordAudit(req, { action: 'user.deactivated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email });
       return res.json({ ok: true, user: sanitizeUser(user) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate user' });
     }
   }

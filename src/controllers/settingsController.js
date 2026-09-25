@@ -2,6 +2,7 @@ const { isValidTextLength } = require('../utils/validation');
 const { getOpenAiKey, setSettingValue, clearSetting } = require('../services/settingsService');
 const { maskSecret } = require('../utils/security');
 const { recordAudit } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createSettingsController() {
   async function getOpenAiKeySetting(req, res) {
@@ -45,7 +46,7 @@ function createSettingsController() {
       await recordAudit(req, { action: 'settings.openai_key_changed', target_type: 'settings', target_label: 'openai_api_key', after: { configured: true } });
       return res.json({ ok: true });
     } catch (err) {
-      console.error('Failed to update OpenAI key setting', err);
+      reportError(req, err, 'Failed to update OpenAI key setting');
       return res.status(500).json({ error: 'Failed to update settings' });
     }
   }

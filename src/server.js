@@ -1,6 +1,13 @@
 require('dotenv').config();
 
+const { logger } = require('./lib/logger');
+const errorReporter = require('./lib/errorReporter');
+
+errorReporter.init();
+const { reportError } = errorReporter;
+
 const express = require('express');
+const pinoHttp = require('pino-http');
 const http = require('http');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
@@ -148,7 +155,7 @@ async function sendSupportEmail({ subject, text }) {
       text,
     });
   } catch (err) {
-    console.error('Failed to send support email:', err);
+    reportError(null, err, 'failed to send support email');
   }
 }
 
@@ -202,6 +209,54 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// One JSON line per request (method, url, status, duration, correlationId,
+// userId once auth has run). Bodies and Authorization headers are never
+// logged. The correlation id is honoured from X-Correlation-Id /
+// X-Request-Id when a caller sends one, minted otherwise, and echoed back so
+// a student can read it to you from an error toast.
+app.use(
+  pinoHttp({
+    logger,
+    genReqId: (req) =>
+      req.headers['x-correlation-id'] ||
+      req.headers['x-request-id'] ||
+      (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')),
+    customLogLevel: (req, res, err) => {
+      if (err || res.statusCode >= 500) return 'error';
+      if (res.statusCode >= 400) return 'warn';
+      return 'info';
+    },
+    customSuccessMessage: (req, res) => `${req.method} ${req.originalUrl || req.url} ${res.statusCode}`,
+    customErrorMessage: (req, res) => `${req.method} ${req.originalUrl || req.url} ${res.statusCode}`,
+    quietReqLogger: true,
+    customAttributeKeys: { reqId: 'correlationId' },
+    customProps: (req, res) => ({
+      userId: req.userId ? String(req.userId) : undefined,
+      plan: req.user?.subscription_plan,
+      errorMessage: res.locals.errorMessage,
+    }),
+    serializers: {
+      req: (req) => ({ method: req.method, url: req.url }),
+      res: (res) => ({ statusCode: res.statusCode }),
+    },
+    autoLogging: { ignore: (req) => req.url === '/health' },
+  })
+);
+app.use((req, res, next) => {
+  req.correlationId = req.id;
+  res.setHeader('X-Correlation-Id', req.id);
+  // Keep the API's own error string on the request log line without ever
+  // logging the body.
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body.error === 'string' && !res.locals.errorMessage) {
+      res.locals.errorMessage = body.error;
+    }
+    return originalJson(body);
+  };
+  next();
+});
 app.options(/.*/, publicRoute, cors(corsOptions));
 app.post('/webhooks/zoom', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
 const paymentsController = createPaymentsController();
@@ -229,47 +284,6 @@ if (apiDocsEnabled) {
   const swaggerDocument = require('./docs/swagger');
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 }
-
-app.use((req, res, next) => {
-  const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
-  const correlationId = headerId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
-  req.correlationId = correlationId;
-  res.setHeader('X-Correlation-Id', correlationId);
-
-  const originalJson = res.json.bind(res);
-  res.json = (body) => {
-    if (body && typeof body.error === 'string' && !res.locals.errorMessage) {
-      res.locals.errorMessage = body.error;
-    }
-    return originalJson(body);
-  };
-
-  res.on('finish', () => {
-    if (res.statusCode < 400) return;
-    const level = res.statusCode >= 500 ? 'error' : 'warn';
-    const userName =
-      req.user?.email ||
-      req.user?.full_name ||
-      req.body?.email ||
-      req.query?.email ||
-      'unknown';
-    const logErrorMessage =
-      res.locals.logErrorMessage ||
-      res.locals.errorMessage ||
-      `HTTP ${res.statusCode} ${req.method} ${req.originalUrl}`;
-    const logErrorStack = res.locals.logErrorStack;
-
-    logMessage(level, {
-      userName,
-      correlationId,
-      errorMessage: logErrorMessage,
-      statusCode: res.statusCode,
-      errorStack: logErrorStack,
-    });
-  });
-
-  next();
-});
 
 function resolveUploadsDir() {
   const configured = process.env.UPLOADS_DIR;
@@ -408,10 +422,6 @@ const {
   MONGODB_URI,
   PORT,
   JWT_SECRET,
-  LOG_DIR,
-  LOG_FILE_PREFIX,
-  LOG_ENV_NAME,
-  LOG_APP_NAME,
 } = process.env;
 
 function requireEnv(name, value) {
@@ -423,173 +433,25 @@ function requireEnv(name, value) {
 requireEnv('MONGODB_URI', MONGODB_URI);
 requireEnv('JWT_SECRET', JWT_SECRET);
 
-const logAppName = LOG_APP_NAME || 'SOULMED';
-const logEnvName = (LOG_ENV_NAME || process.env.NODE_ENV || 'DEV').toUpperCase();
-let logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
-const logFilePrefix = LOG_FILE_PREFIX || `${logAppName}_LOG`;
-const maxLogFileSize = 5 * 1024 * 1024;
-const LOG_LEVELS = {
-  info: 1,
-  warn: 2,
-  error: 3,
-};
-const devEnvs = new Set(['DEV', 'LOCAL', 'DEVELOPMENT']);
-const isDevEnv = devEnvs.has(logEnvName);
-const consoleLevelName = String(
-  process.env.LOG_CONSOLE_LEVEL || (isDevEnv ? 'info' : 'error')
-).toLowerCase();
-const fileLevelName = String(process.env.LOG_FILE_LEVEL || 'info').toLowerCase();
-const consoleLevel = LOG_LEVELS[consoleLevelName] || LOG_LEVELS.info;
-const fileLevel = LOG_LEVELS[fileLevelName] || LOG_LEVELS.info;
-
-function ensureLogDir() {
-  try {
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
-    }
-    return true;
-  } catch (err) {
-    const fallback = path.join(os.tmpdir(), 'logs');
-    try {
-      if (!fs.existsSync(fallback)) {
-        fs.mkdirSync(fallback, { recursive: true });
-      }
-      logDir = fallback;
-      return true;
-    } catch (fallbackErr) {
-      return false;
-    }
-  }
-}
-
-function getLogFilePath() {
-  if (!ensureLogDir()) return null;
-  const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const base = `${logFilePrefix}_${dateStamp}_${logEnvName}`;
-  const files = fs.readdirSync(logDir).filter((name) =>
-    name.startsWith(base) && name.endsWith('.log')
-  );
-
-  const indices = files.map((name) => {
-    const match = name.match(/_(\d{3})\.log$/);
-    return match ? Number(match[1]) : 1;
-  });
-
-  let index = indices.length ? Math.max(...indices) : 1;
-  let fileName = `${base}_${String(index).padStart(3, '0')}.log`;
-  let filePath = path.join(logDir, fileName);
-
-  if (fs.existsSync(filePath)) {
-    const size = fs.statSync(filePath).size;
-    if (size >= maxLogFileSize) {
-      index += 1;
-      fileName = `${base}_${String(index).padStart(3, '0')}.log`;
-      filePath = path.join(logDir, fileName);
-    }
-  }
-
-  return filePath;
-}
-
-function redactSensitive(value) {
-  if (!value) return value;
-  return String(value).replace(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
-    '[redacted-email]'
-  );
-}
-
-function formatLogEntry(
-  { logType, userName, correlationId, errorMessage, statusCode, errorStack },
-  redact
-) {
-  const safeUser = redact ? '[redacted]' : (userName || 'unknown');
-  const safeMessage = redact ? redactSensitive(errorMessage) : (errorMessage || '-');
-  const safeStack = redact ? undefined : errorStack;
-  return [
-    '------------------',
-    `APP Name: ${logAppName}`,
-    `Log Type: ${logType}`,
-    `Environment: ${logEnvName}`,
-    `Date Time: ${new Date().toISOString()}`,
-    `User Name: ${safeUser}`,
-    `Status Code: ${statusCode || '-'}`,
-    `Correlationid: ${correlationId || 'unknown'}`,
-    `Error Message: ${safeMessage}`,
-    safeStack ? `Stack Trace: ${safeStack}` : '',
-    '',
-  ].join('\n');
-}
-
-function writeLogEntry(entry) {
-  const payload = formatLogEntry(entry, false);
-
-  try {
-    const filePath = getLogFilePath();
-    if (!filePath) return;
-    fs.appendFileSync(filePath, `${payload}\n`, 'utf8');
-  } catch (err) {
-    try {
-      process.stderr.write(`Failed to write log file: ${err.message || err}\n`);
-    } catch (innerErr) {
-      // ignore logging failures
-    }
-  }
-}
-
-function writeConsoleEntry(entry, level) {
-  const payload = formatLogEntry(entry, !isDevEnv);
-  const stream = level === 'error' ? process.stderr : process.stdout;
-  stream.write(`${payload}\n`);
-}
-
-function logMessage(level, { userName, correlationId, errorMessage, statusCode, errorStack }) {
-  const logType = level.charAt(0).toUpperCase() + level.slice(1);
-  const entry = { logType, userName, correlationId, errorMessage, statusCode, errorStack };
-  const levelValue = LOG_LEVELS[level] || LOG_LEVELS.info;
-  if (runningOnLambda) {
-    // Lambda: no sync filesystem work per request; stdout/stderr go to CloudWatch.
-    if (levelValue >= Math.min(consoleLevel, fileLevel)) {
-      writeConsoleEntry(entry, level);
-    }
-    return;
-  }
-  if (levelValue >= fileLevel) {
-    writeLogEntry(entry);
-  }
-  if (levelValue >= consoleLevel) {
-    writeConsoleEntry(entry, level);
-  }
-}
-
-console.error = (...args) => {
-  const errorArg = args.find((arg) => arg instanceof Error);
-  const message = args
-    .map((arg) => (arg instanceof Error ? (arg.stack || arg.message) : String(arg)))
-    .join(' ');
-  logMessage('error', { errorMessage: message, errorStack: errorArg?.stack });
-};
-
-// Every controller's own try/catch already reaches the logger above via
-// console.error. This catches what doesn't: an error thrown outside any
-// try/catch (a fire-and-forget async task, a WebSocket handler, a timer),
-// which would otherwise only hit Node's default stderr and never reach the
-// log file. Both route through the same console.error, so they're subject
-// to the same file + console + CloudWatch handling as everything else.
+// Every controller's own try/catch reports through reportError. This catches
+// what doesn't: an error thrown outside any try/catch (a fire-and-forget
+// async task, a WebSocket handler, a timer), which would otherwise only hit
+// Node's default stderr and never reach the logs or the error tracker. On
+// exit, flush so a report is not lost with the process.
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+  reportError(null, err, 'uncaught exception');
   // Node's own guidance: the process is in an undefined state afterwards
   // and should exit, letting the process manager (nodemon locally, PM2/
   // systemd in prod) restart it cleanly. Not safe inside a single Lambda
   // invocation — that would tear down the execution environment for
   // unrelated concurrent invocations — so Lambda logs and keeps running.
   if (!runningOnLambda) {
-    setTimeout(() => process.exit(1), 100);
+    errorReporter.flush(1500).finally(() => process.exit(1));
   }
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled promise rejection:', reason instanceof Error ? reason : new Error(String(reason)));
+  reportError(null, reason instanceof Error ? reason : new Error(String(reason)), 'unhandled promise rejection');
 });
 
 const wsClients = new Set();
@@ -678,7 +540,7 @@ async function connectDb() {
   await ensureDefaultSubscriptionPlans();
   await ensureDefaultRoles();
   // eslint-disable-next-line no-console
-  console.log('MongoDB connected');
+  logger.info('MongoDB connected');
 }
 
 async function ensureDefaultSubscriptionPlans() {
@@ -942,7 +804,7 @@ async function handleUpload(res, file, kind) {
     const url = await storeUpload(file, validated);
     return res.json({ url });
   } catch (err) {
-    console.error('Upload failed:', err);
+    reportError(null, err, 'upload failed');
     return res.status(500).json({ error: 'Upload failed' });
   }
 }
@@ -981,7 +843,7 @@ app.post('/webhooks/bunny/video-status', publicRoute, async (req, res) => {
       video.duration_seconds = duration;
       await video.save();
     } catch (err) {
-      console.error('Bunny getStatus failed while fetching video duration:', err);
+      reportError(req, err, 'bunny getStatus failed while fetching video duration');
     }
   }
   return res.json({ ok: true });
@@ -1005,6 +867,13 @@ app.post('/uploads/recordings', authMiddleware, authorize.any('CanAddClasses', '
 
 app.post('/uploads/videos', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), videoUpload.single('file'), (req, res) =>
   handleUpload(res, req.file, 'video')
+);
+
+// The playlist's own thumbnail image — distinct from /uploads/videos above,
+// which is the video FILE upload path (videoUpload, 'video' validation).
+// Same permission gate as writing a playlist (playlistsRoutes.js).
+app.post('/uploads/playlists', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
 );
 
 app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), transcriptUpload.single('file'), async (req, res) => {
@@ -1057,15 +926,13 @@ async function startLocalServer() {
   initRealtime(server);
   await connectDb();
   server.listen(port, process.env.HOST || undefined, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Server listening on http://localhost:${port}`);
+    logger.info({ port }, `Server listening on http://localhost:${port}`);
   });
 }
 
 if (!runningOnVercel && require.main === module) {
   startLocalServer().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error('Failed to start server:', err);
+    reportError(null, err, 'failed to start server');
     process.exit(1);
   });
 }
@@ -1089,7 +956,7 @@ module.exports = async (req, res) => {
     try {
       await ensureDbConnected();
     } catch (err) {
-      console.error('DB connection failed:', err);
+      reportError(null, err, 'DB connection failed');
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Service unavailable' }));

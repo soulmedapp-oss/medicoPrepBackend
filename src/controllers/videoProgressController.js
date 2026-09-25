@@ -1,4 +1,5 @@
 const VideoProgress = require('../models/VideoProgress');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createVideoProgressController() {
   async function listProgress(req, res) {
@@ -17,7 +18,7 @@ function createVideoProgressController() {
       const entries = await VideoProgress.find(filter).lean();
       return res.json({ progress: entries });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load video progress' });
     }
   }
@@ -48,7 +49,7 @@ function createVideoProgressController() {
 
       return res.json({ progress: entry });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update video progress' });
     }
   }

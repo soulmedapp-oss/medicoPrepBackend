@@ -2,6 +2,7 @@ const TeacherRequest = require('../models/TeacherRequest');
 const { capLimit } = require('../utils/security');
 const { can } = require('../rbac/can');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createTeacherRequestsController({ createNotification }) {
   async function listTeacherRequests(req, res) {
@@ -29,7 +30,7 @@ function createTeacherRequestsController({ createNotification }) {
 
       return res.json({ requests });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load teacher requests' });
     }
   }
@@ -88,7 +89,7 @@ function createTeacherRequestsController({ createNotification }) {
 
       return res.status(201).json({ request });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create teacher request' });
     }
   }
@@ -138,7 +139,7 @@ function createTeacherRequestsController({ createNotification }) {
 
       return res.json({ request: request.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update teacher request' });
     }
   }

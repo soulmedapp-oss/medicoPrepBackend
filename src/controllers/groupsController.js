@@ -4,6 +4,7 @@ const GroupResource = require('../models/GroupResource');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { isHttpUrl } = require('../utils/security');
+const { reportError } = require('../lib/errorReporter.js');
 
 function serializeGroup(group) {
   const value = group?.toObject ? group.toObject() : group;
@@ -32,7 +33,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
         .lean();
       return res.json({ groups: groups.map(serializeGroup) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load groups' });
     }
   }
@@ -116,7 +117,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.status(201).json({ group: serializeGroup(group) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create group' });
     }
   }
@@ -172,7 +173,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.json({ group: serializeGroup(group) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to add group member' });
     }
   }
@@ -195,7 +196,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.json({ resources: resources.map(serializeResource) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load resources' });
     }
   }
@@ -258,7 +259,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.status(201).json({ resource: serializeResource(resource) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to add resource' });
     }
   }
@@ -295,7 +296,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.json({ resource: serializeResource(resource) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update like' });
     }
   }
@@ -354,7 +355,7 @@ function createGroupsController({ createNotification, hasAcceptedConnection, isS
 
       return res.json({ resource: serializeResource(resource) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to add comment' });
     }
   }

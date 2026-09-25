@@ -4,6 +4,7 @@ const AuditLog = require('../models/AuditLog');
 // (see that function's own comment) — behaviour-equivalent on this mongoose
 // version, one fewer thing to keep in sync.
 const { isValidObjectId } = require('../utils/security');
+const { reportError } = require('../lib/errorReporter.js');
 
 // Only used as an integer with a fallback when the query value is missing or
 // non-numeric (addendum E: "non-numeric values fall back to the defaults").
@@ -64,7 +65,7 @@ function createAuditLogController() {
 
       return res.json({ entries, total, page, limit });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load audit log' });
     }
   }

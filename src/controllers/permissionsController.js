@@ -2,6 +2,7 @@ const Permission = require('../models/Permission');
 const Role = require('../models/Role');
 const { PERMISSIONS } = require('../rbac/permissions');
 const { normalizeRoleName } = require('../rbac/resolvePermissions');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createPermissionsController() {
   async function listPermissions(req, res) {
@@ -33,7 +34,7 @@ function createPermissionsController() {
 
       return res.json({ permissions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load permissions' });
     }
   }

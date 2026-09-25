@@ -1,3 +1,4 @@
+const { reportError } = require('../lib/errorReporter.js');
 const queue = [];
 let isProcessing = false;
 
@@ -16,7 +17,7 @@ function processQueue() {
       .catch((err) => {
         try {
           // eslint-disable-next-line no-console
-          console.error('Background job failed:', err);
+          reportError(null, err, 'Background job failed');
         } catch (innerErr) {
           // ignore logging failures
         }

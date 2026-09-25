@@ -4,6 +4,7 @@ const SubscriptionPlan = require('../models/SubscriptionPlan');
 const { isValidTextLength } = require('../utils/validation');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 function percentDiscount(amount, percent) {
   const discount = Math.round((amount * percent) / 100);
@@ -65,7 +66,7 @@ function createCouponsController() {
         final_amount: finalAmount,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to validate coupon' });
     }
   }
@@ -75,7 +76,7 @@ function createCouponsController() {
       const coupons = await Coupon.find({}).sort({ created_date: -1 }).lean();
       return res.json({ coupons });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load coupons' });
     }
   }
@@ -101,7 +102,7 @@ function createCouponsController() {
       });
       return res.status(201).json({ coupon });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create coupon' });
     }
   }
@@ -136,7 +137,7 @@ function createCouponsController() {
       await recordActiveStateChange(req, { resource: 'coupon', before: existing, after: coupon, targetLabel: coupon.code });
       return res.json({ coupon });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update coupon' });
     }
   }
@@ -152,7 +153,7 @@ function createCouponsController() {
       await recordDeactivated(req, { resource: 'coupon', targetId: coupon._id, targetLabel: coupon.code });
       return res.json({ ok: true, coupon: coupon.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate coupon' });
     }
   }

@@ -7,6 +7,7 @@ const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { checkRoleRename, checkRoleDeactivation, isSystemRole } = require('../rbac/lockout');
 const { missingForRolePermissions } = require('../rbac/escalation');
 const { normalizeRoleName } = require('../rbac/resolvePermissions');
+const { reportError } = require('../lib/errorReporter.js');
 
 const ESCALATION_ERROR = 'You cannot grant permissions you do not hold.';
 
@@ -34,7 +35,7 @@ function createRolesController() {
       const withCounts = roles.map((role, i) => ({ ...role, user_count: counts[i] }));
       return res.json({ roles: withCounts });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load roles' });
     }
   }
@@ -72,7 +73,7 @@ function createRolesController() {
       await recordAudit(req, { action: 'role.created', target_type: 'role', target_id: role._id, target_label: role.name, after: { name: role.name, permissions: role.permissions } });
       return res.status(201).json({ role });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       if (err.code === 11000) {
         return res.status(409).json({ error: 'Role already exists' });
       }
@@ -244,7 +245,7 @@ function createRolesController() {
 
       return res.json({ role });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update role' });
     }
   }
@@ -272,7 +273,7 @@ function createRolesController() {
       await recordAudit(req, { action: 'role.deactivated', target_type: 'role', target_id: role._id, target_label: role.name });
       return res.json({ ok: true });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to delete role' });
     }
   }

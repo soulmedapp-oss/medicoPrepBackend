@@ -10,6 +10,7 @@ const { can } = require('../rbac/can');
 // constant while videosController's student list had no projection at all.
 // Both now share this one definition, so the two student reads cannot drift.
 const { STUDENT_LECTURE_FIELDS, studentPlaylistView } = require('../utils/studentProjection');
+const { reportError } = require('../lib/errorReporter.js');
 
 // Allowlist: created_by/updated_by/items can never be set through req.body —
 // created_by is set only from req.userId on create, updated_by/updated_by_at
@@ -206,7 +207,7 @@ function createPlaylistsController() {
       const playlists = await Playlist.find({}).sort({ created_date: -1 }).lean();
       return res.json({ playlists });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlists' });
     }
   }
@@ -230,7 +231,7 @@ function createPlaylistsController() {
       });
       return res.status(201).json({ playlist });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create playlist' });
     }
   }
@@ -291,7 +292,7 @@ function createPlaylistsController() {
       await recordActiveStateChange(req, { resource: 'playlist', before: existing, after: playlist, targetLabel: playlist.name });
       return res.json({ playlist });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update playlist' });
     }
   }
@@ -310,7 +311,7 @@ function createPlaylistsController() {
       await recordDeactivated(req, { resource: 'playlist', targetId: playlist._id, targetLabel: playlist.name });
       return res.json({ ok: true, playlist: playlist.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate playlist' });
     }
   }
@@ -358,7 +359,7 @@ function createPlaylistsController() {
         skipped: { not_found: notFound, already_present: alreadyPresent },
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to add playlist items' });
     }
   }
@@ -399,7 +400,7 @@ function createPlaylistsController() {
 
       return res.json({ playlist: playlist.toObject(), skipped: { not_found: malformedIds } });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to reorder playlist items' });
     }
   }
@@ -443,7 +444,7 @@ function createPlaylistsController() {
 
       return res.json({ playlists: withCounts });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlists' });
     }
   }
@@ -486,7 +487,7 @@ function createPlaylistsController() {
       // already filtered and ordered.
       return res.json({ playlist: studentPlaylistView(playlist), lectures: visibleLectures });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlist' });
     }
   }
@@ -510,7 +511,7 @@ function createPlaylistsController() {
       const planName = req.user?.subscription_plan || 'free';
       return res.json({ playlists: playlistsForLecture(playlists, planName) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlists' });
     }
   }

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const multer = require('multer');
 const express = require('express');
-const { errorHandler, mapError, createCorsError } = require('../src/middlewares/errorHandler');
+const { errorHandler, mapError, createCorsError, GENERIC_SERVER_ERROR } = require('../src/middlewares/errorHandler');
 const { validateObjectIdParams } = require('../src/middlewares/validateObjectId');
 const { createRateLimiter, resetMemoryStore, userOrIpKey } = require('../src/middlewares/rateLimit');
 
@@ -31,7 +31,7 @@ test('mapError: fileFilter / CORS / JSON parse / generic', () => {
   assert.strictEqual(mapError(createCorsError()).status, 403);
   assert.strictEqual(mapError(Object.assign(new Error('x'), { type: 'entity.parse.failed', status: 400 })).status, 400);
   assert.strictEqual(mapError(Object.assign(new Error('x'), { type: 'entity.too.large', status: 413 })).status, 413);
-  assert.deepStrictEqual(mapError(new Error('secret db detail')), { status: 500, message: 'Internal server error' });
+  assert.deepStrictEqual(mapError(new Error('secret db detail')), { status: 500, message: GENERIC_SERVER_ERROR });
 });
 
 test('errorHandler never leaks message or stack on 500', () => {
@@ -39,7 +39,8 @@ test('errorHandler never leaks message or stack on 500', () => {
   const err = new Error('mongo://user:pass@host exploded');
   errorHandler(err, { correlationId: 'c1' }, res, () => {});
   assert.strictEqual(res.statusCode, 500);
-  assert.deepStrictEqual(res.body, { error: 'Internal server error', correlationId: 'c1' });
+  assert.deepStrictEqual(res.body, { error: GENERIC_SERVER_ERROR, correlationId: 'c1' });
+  assert.match(GENERIC_SERVER_ERROR, /try again/i);
   assert.ok(!JSON.stringify(res.body).includes('mongo'));
 });
 

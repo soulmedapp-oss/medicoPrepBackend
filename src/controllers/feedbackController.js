@@ -2,6 +2,7 @@ const Feedback = require('../models/Feedback');
 const { capLimit } = require('../utils/security');
 const { can } = require('../rbac/can');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createFeedbackController({ createNotification, sendSupportEmail, broadcastFeedback }) {
   async function listFeedback(req, res) {
@@ -26,7 +27,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
         .lean();
       return res.json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load feedback' });
     }
   }
@@ -93,7 +94,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.status(201).json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create feedback' });
     }
   }
@@ -162,7 +163,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.status(201).json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create feedback' });
     }
   }
@@ -212,7 +213,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.json({ feedback: feedback.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update feedback' });
     }
   }

@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { reportError } = require('../../lib/errorReporter');
 
 const DEFAULT_TTL_SECONDS = 4 * 60 * 60;
 
@@ -130,7 +131,7 @@ async function ensureCollection(name) {
     collectionGuidCache.set(name, created.guid);
     return created.guid;
   } catch (err) {
-    console.error('ensureCollection failed — uploading without a collection', { name, error: err });
+    reportError(null, err, 'ensureCollection failed — uploading without a collection', { name });
     return null;
   }
 }

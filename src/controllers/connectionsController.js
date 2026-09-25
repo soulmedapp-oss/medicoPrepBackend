@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const ConnectionRequest = require('../models/ConnectionRequest');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function serializeConnectionRequest(request) {
   return {
@@ -36,7 +37,7 @@ function createConnectionsController({ createNotification, isStudentUser }) {
         .lean();
       return res.json({ requests: requests.map(serializeConnectionRequest) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load connection requests' });
     }
   }
@@ -94,7 +95,7 @@ function createConnectionsController({ createNotification, isStudentUser }) {
 
       return res.status(201).json({ request: serializeConnectionRequest(request.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create connection request' });
     }
   }
@@ -127,7 +128,7 @@ function createConnectionsController({ createNotification, isStudentUser }) {
 
       return res.json({ request: serializeConnectionRequest(request.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update connection request' });
     }
   }
@@ -150,7 +151,7 @@ function createConnectionsController({ createNotification, isStudentUser }) {
 
       return res.json({ connections });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load connections' });
     }
   }
@@ -186,7 +187,7 @@ function createConnectionsController({ createNotification, isStudentUser }) {
 
       return res.json({ students });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load students' });
     }
   }
