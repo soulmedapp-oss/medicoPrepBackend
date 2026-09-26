@@ -16,6 +16,7 @@ const playlistSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
     description: { type: String, default: '' },
+    thumbnail_url: { type: String, default: '' },
     // Optional browse tags; a playlist may legitimately span subjects.
     subject_ids: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }], default: [] },
     allowed_plans: { type: [String], default: [] },   // empty = all plans

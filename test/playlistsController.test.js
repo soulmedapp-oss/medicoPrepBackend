@@ -188,7 +188,7 @@ test('studentPlaylistView keeps exactly the six student fields and drops the res
   });
   assert.deepEqual(
     Object.keys(view).sort(),
-    ['_id', 'allowed_plans', 'description', 'is_free', 'name', 'subject_ids']
+    ['_id', 'allowed_plans', 'description', 'is_free', 'name', 'subject_ids', 'thumbnail_url']
   );
 });
 
@@ -197,7 +197,7 @@ test('studentPlaylistView carries lecture_count through when the browse read sup
   assert.equal(view.lecture_count, 4);
   assert.deepEqual(
     Object.keys(view).sort(),
-    ['_id', 'allowed_plans', 'description', 'is_free', 'lecture_count', 'name', 'subject_ids']
+    ['_id', 'allowed_plans', 'description', 'is_free', 'lecture_count', 'name', 'subject_ids', 'thumbnail_url']
   );
 });
 

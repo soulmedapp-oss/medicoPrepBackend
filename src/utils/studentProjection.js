@@ -21,7 +21,7 @@
 const STUDENT_LECTURE_FIELDS =
   'title description teacher_name teacher_email subtopic provider video_url processing_status duration_seconds thumbnail_url card_thumbnail_url is_active subject subject_id';
 
-// The six fields — and only these — a student may see about a playlist,
+// The seven fields — and only these — a student may see about a playlist,
 // plus whatever `extra` the caller legitimately computed (today only
 // `lecture_count`, from the browse read). Built key by key rather than by
 // deleting from a spread of the stored document, so a field added to the
@@ -35,13 +35,15 @@ const STUDENT_LECTURE_FIELDS =
 // is_published/is_active/created_date/updated_date curation state.
 // allowed_plans and is_free stay: they are what the client renders as
 // "included in your plan" / "free", and the student is the subject of that
-// decision, not a third party.
+// decision, not a third party. thumbnail_url is a plain display field, the
+// same class as name/description — nothing about who curated it or when.
 function studentPlaylistView(playlist, extra) {
   if (!playlist) return null;
   const view = {
     _id: playlist._id,
     name: playlist.name,
     description: playlist.description,
+    thumbnail_url: playlist.thumbnail_url || '',
     subject_ids: playlist.subject_ids,
     allowed_plans: playlist.allowed_plans,
     is_free: playlist.is_free,

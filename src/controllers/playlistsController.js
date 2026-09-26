@@ -26,6 +26,7 @@ const PLAYLIST_ALLOWED_FIELDS = [
   'subject_ids',
   'allowed_plans',
   'is_free',
+  'thumbnail_url',
   'is_published',
   'is_active',
 ];
