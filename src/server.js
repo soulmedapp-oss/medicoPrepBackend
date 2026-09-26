@@ -540,7 +540,7 @@ async function connectDb() {
   await ensureDefaultSubscriptionPlans();
   await ensureDefaultRoles();
   // eslint-disable-next-line no-console
-  logger.info('MongoDB connected');
+  logger.info({ db: mongoose.connection.name, host: mongoose.connection.host }, `MongoDB connected (db: ${mongoose.connection.name})`);
 }
 
 async function ensureDefaultSubscriptionPlans() {
