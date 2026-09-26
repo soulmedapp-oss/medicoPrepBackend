@@ -115,26 +115,47 @@ function isTestLiveForStudent(test, now = new Date()) {
   return true;
 }
 
-function loadBulkRecords(file) {
-  const ext = path.extname(file.originalname || '').toLowerCase();
-  if (ext === '.xlsx' || ext === '.xls') {
-    let xlsx;
-    try {
-      // Optional dependency: only needed for Excel uploads.
-      // eslint-disable-next-line global-require
-      xlsx = require('xlsx');
-    } catch (err) {
-      throw new Error('Excel uploads require the "xlsx" package. Please upload CSV instead.');
-    }
-    const workbook = xlsx.read(file.buffer, { type: 'buffer', cellDates: false });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return [];
-    const sheet = workbook.Sheets[sheetName];
-    return xlsx.utils.sheet_to_json(sheet, {
-      defval: '',
-      raw: false,
-      blankrows: false,
+// Header row -> object per data row, every value as display text ('' when
+// empty), blank rows skipped — the same shape csv-parse produces below, so
+// the import code after this point does not care which format arrived.
+// exceljs replaced the unmaintained `xlsx` package (unfixed prototype-
+// pollution / ReDoS advisories); it reads .xlsx only, so the legacy binary
+// .xls format is refused with a clear message instead of a parse error.
+async function loadExcelRecords(buffer) {
+  // eslint-disable-next-line global-require
+  const ExcelJS = require('exceljs');
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) return [];
+  const headers = [];
+  sheet.getRow(1).eachCell({ includeEmpty: true }, (cell, col) => {
+    headers[col] = String(cell.text ?? '').trim();
+  });
+  const records = [];
+  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const record = {};
+    let hasValue = false;
+    headers.forEach((header, col) => {
+      if (!header) return;
+      const cell = row.getCell(col);
+      const text = cell && cell.text != null ? String(cell.text).trim() : '';
+      if (text) hasValue = true;
+      record[header] = text;
     });
+    if (hasValue) records.push(record);
+  });
+  return records;
+}
+
+async function loadBulkRecords(file) {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  if (ext === '.xls') {
+    throw new Error('Legacy .xls files are not supported. Save the sheet as .xlsx or .csv and upload again.');
+  }
+  if (ext === '.xlsx') {
+    return loadExcelRecords(file.buffer);
   }
 
   const content = file.buffer.toString('utf8');
@@ -470,7 +491,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(400).json({ error: 'CSV or Excel file is required' });
       }
 
-      const records = loadBulkRecords(file);
+      const records = await loadBulkRecords(file);
 
       const actor = getActor(req);
       const created = [];
@@ -704,7 +725,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(400).json({ error: 'CSV or Excel file is required' });
       }
 
-      const records = loadBulkRecords(file);
+      const records = await loadBulkRecords(file);
 
       const actor = getActor(req);
       const created = [];
