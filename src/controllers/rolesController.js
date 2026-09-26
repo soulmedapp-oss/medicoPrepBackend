@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { recordAudit } = require('../utils/audit');
 const { isKnownPermission } = require('../rbac/permissions');
+const { mapLegacyPermissions } = require('../rbac/legacyMap');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { checkRoleRename, checkRoleDeactivation, isSystemRole } = require('../rbac/lockout');
 const { missingForRolePermissions } = require('../rbac/escalation');
@@ -11,8 +12,16 @@ const { reportError } = require('../lib/errorReporter.js');
 
 const ESCALATION_ERROR = 'You cannot grant permissions you do not hold.';
 
+// Legacy strings (view_dashboard, manage_questions, …) from before the RBAC
+// rework are translated to catalogue codes here, so a role that was never
+// migrated can still be saved from the Roles page — saving it IS the
+// migration for that role. Genuinely unknown codes still fail validation.
 function normalizePermissionsInput(value) {
-  return Array.isArray(value) ? value.map((p) => String(p).trim()).filter(Boolean) : [];
+  const cleaned = Array.isArray(value) ? value.map((p) => String(p).trim()).filter(Boolean) : [];
+  // mapLegacyPermissions keeps catalogue codes, translates legacy ones and
+  // drops anything else — re-attach the "anything else" so it is reported.
+  const trulyUnknown = cleaned.filter((code) => !isKnownPermission(code) && mapLegacyPermissions([code]).length === 0);
+  return Array.from(new Set([...mapLegacyPermissions(cleaned), ...trulyUnknown]));
 }
 
 // Every role that is still assigned to at least one active user, whether via
@@ -32,7 +41,9 @@ function createRolesController() {
       // both count) instead of an aggregate that only looked at `roles`, or
       // a legacy `role`-only holder shows as 0 here but still blocks delete.
       const counts = await Promise.all(roles.map((role) => countActiveUsersForRole(role.name)));
-      const withCounts = roles.map((role, i) => ({ ...role, user_count: counts[i] }));
+      // Legacy strings are shown as the catalogue codes they map to, so the
+      // Roles page ticks match what the role actually grants after migration.
+      const withCounts = roles.map((role, i) => ({ ...role, permissions: mapLegacyPermissions(role.permissions || []), user_count: counts[i] }));
       return res.json({ roles: withCounts });
     } catch (err) {
       reportError(req, err);

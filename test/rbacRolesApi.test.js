@@ -82,6 +82,37 @@ test('createRole: unknown permission code is rejected with a 400 naming it', asy
   assert.equal(created, false, 'nothing must be written on a refusal');
 });
 
+// Roles that predate the RBAC rework still hold legacy strings such as
+// view_dashboard / manage_questions. Saving such a role from the Roles page
+// used to fail with "Unknown permission code(s)"; the API now translates
+// legacy strings through the same map the migration uses, while a genuinely
+// unknown code is still refused.
+test('createRole: legacy permission strings are translated to catalogue codes instead of being rejected', async () => {
+  const res = mockRes();
+  let saved;
+  stub(Role, 'findOne', () => q(null));
+  stub(Role, 'create', async (doc) => { saved = doc; return { ...doc, toObject: () => doc }; });
+  await rolesController().createRole({
+    user: admin(),
+    body: { name: 'legacy-viewer', permissions: ['view_dashboard', 'view_tests', 'CanViewTests'] },
+  }, res);
+  assert.equal(res.statusCode, 201, JSON.stringify(res.body));
+  assert.deepEqual([...saved.permissions].sort(), ['CanAccessDashboard', 'CanAccessTests', 'CanViewTests']);
+});
+
+test('createRole: a legacy string mixed with a truly unknown code still reports the unknown one', async () => {
+  const res = mockRes();
+  let created = false;
+  stub(Role, 'create', async () => { created = true; return {}; });
+  await rolesController().createRole({
+    user: admin(),
+    body: { name: 'mixed', permissions: ['view_dashboard', 'nope'] },
+  }, res);
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'Unknown permission code(s): nope' });
+  assert.equal(created, false);
+});
+
 // Fix round 1, Finding 6: the 2..40 length check must run on the TRIMMED
 // value — `" a "` is 3 characters untrimmed but a 1-character name once
 // trimmed, and that is what actually gets stored.
