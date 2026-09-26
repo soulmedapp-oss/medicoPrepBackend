@@ -11,6 +11,7 @@ const { enqueueJob } = require('../utils/inMemoryQueue');
 const { normalizeTokenVersion } = require('../utils/security');
 const { loadPermissions } = require('../rbac/loadPermissions');
 const { reportError } = require('../lib/errorReporter.js');
+const session = require('../auth/session');
 
 const {
   GOOGLE_CLIENT_ID,
@@ -57,11 +58,76 @@ function ensureEmailConfigured() {
 }
 
 function signToken(user) {
-  return jwt.sign(
-    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version) },
-    JWT_SECRET,
-    { expiresIn: tokenExpiry }
-  );
+  return session.signAccessToken(user, normalizeTokenVersion);
+}
+
+// Starts a browser session: short-lived access JWT + rotating refresh token
+// + CSRF token, all as cookies (src/auth/session.js). The access token is
+// ALSO returned in the body for non-browser clients; the web app ignores it
+// and never stores it.
+async function issueSession(req, res, user) {
+  const accessToken = signToken(user);
+  const refreshToken = session.randomToken();
+  const csrfToken = session.randomToken(16);
+  const current = await User.findById(user._id || user.id).select('refresh_tokens').lean();
+  const next = session.addRefreshToken(current?.refresh_tokens, session.hashToken(refreshToken));
+  await User.updateOne({ _id: user._id || user.id }, { $set: { refresh_tokens: next } });
+  session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
+  return accessToken;
+}
+
+// POST /auth/refresh — trades a valid refresh cookie for a new access cookie
+// and a NEW refresh cookie (rotation). An unknown or expired refresh token
+// ends the session: cookies cleared, 401.
+async function refreshSession(req, res) {
+  try {
+    const presented = req.cookies?.[session.COOKIE.refresh];
+    if (!presented) {
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    const presentedHash = session.hashToken(presented);
+    const user = await User.findOne({ 'refresh_tokens.hash': presentedHash }).select('+refresh_tokens');
+    if (!user || user.is_active === false) {
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    const refreshToken = session.randomToken();
+    const rotated = session.rotateRefreshToken(user.refresh_tokens, presentedHash, session.hashToken(refreshToken));
+    if (!rotated.ok) {
+      await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
+    const accessToken = signToken(user);
+    const csrfToken = session.randomToken(16);
+    session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
+    return res.json({ ok: true, expires_in: Math.floor(session.accessTtlMs() / 1000) });
+  } catch (err) {
+    reportError(req, err);
+    return res.status(500).json({ error: 'Failed to refresh session' });
+  }
+}
+
+// POST /auth/logout — forgets this browser's refresh token and clears the
+// cookies. Idempotent: works with or without a live session.
+async function logout(req, res) {
+  try {
+    const presented = req.cookies?.[session.COOKIE.refresh];
+    if (presented) {
+      await User.updateOne(
+        { 'refresh_tokens.hash': session.hashToken(presented) },
+        { $pull: { refresh_tokens: { hash: session.hashToken(presented) } } }
+      );
+    }
+    session.clearSessionCookies(req, res);
+    return res.json({ ok: true });
+  } catch (err) {
+    reportError(req, err);
+    session.clearSessionCookies(req, res);
+    return res.json({ ok: true });
+  }
 }
 
 async function attachEffectivePermissions(payload) {
@@ -294,7 +360,7 @@ async function login(req, res) {
     }
 
     const updatedUser = await expireSubscriptionIfNeeded(user);
-    const token = signToken(user);
+    const token = await issueSession(req, res, user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
@@ -464,6 +530,7 @@ async function resetPassword(req, res) {
     user.password_reset_requested_at = undefined;
     // Revoke every JWT issued before this reset.
     user.token_version = normalizeTokenVersion(user.token_version) + 1;
+    user.refresh_tokens = []; // and every browser's refresh cookie with them
     await user.save();
 
     return res.json({ ok: true });
@@ -646,7 +713,7 @@ async function googleAuth(req, res) {
       });
     }
 
-    const token = signToken(user);
+    const token = await issueSession(req, res, user);
     const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: responsePayload, token });
@@ -658,6 +725,8 @@ async function googleAuth(req, res) {
 }
 
 module.exports = {
+  refreshSession,
+  logout,
   register,
   login,
   verifyEmail,

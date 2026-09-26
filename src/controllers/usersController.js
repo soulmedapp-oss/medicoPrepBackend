@@ -322,6 +322,7 @@ function createUsersController() {
       if (payload.passwordHash) {
         // Admin password change revokes the user's existing sessions.
         updateOps.$inc = { token_version: 1 };
+        updateOps.$set.refresh_tokens = [];
       }
       const user = await User.findByIdAndUpdate(
         req.params.id,

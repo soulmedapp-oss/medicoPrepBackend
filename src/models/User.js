@@ -45,6 +45,14 @@ const userSchema = new mongoose.Schema(
     is_active: { type: Boolean, default: true },
     // Bumped on password reset/change; JWTs carry it as `tv` so older tokens are rejected.
     token_version: { type: Number, default: 0 },
+    // Cookie sessions (src/auth/session.js): one entry per signed-in browser,
+    // hash of the opaque refresh token only — the raw value lives in the
+    // HttpOnly cookie. Rotated on every refresh; cleared on password change.
+    refresh_tokens: {
+      type: [{ hash: { type: String, required: true }, created_at: { type: Date }, expires_at: { type: Date } }],
+      default: [],
+      select: false,
+    },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

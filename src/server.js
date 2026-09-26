@@ -8,6 +8,10 @@ const { reportError } = errorReporter;
 
 const express = require('express');
 const pinoHttp = require('pino-http');
+const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const { csrfProtection } = require('./middlewares/csrf');
+const { COOKIE } = require('./auth/session');
 const http = require('http');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
@@ -210,6 +214,15 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+// API-only security headers. The SPA's own CSP lives with the SPA (Vercel
+// headers); these cover JSON responses, uploads and swagger.
+app.use(helmet({
+  contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'none'"], formAction: ["'none'"] } },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // /uploads images are embedded by the SPA on another origin in dev
+  referrerPolicy: { policy: 'no-referrer' },
+  hsts: isProduction ? { maxAge: 15552000, includeSubDomains: true } : false,
+}));
+app.use(cookieParser());
 
 // One JSON line per request (method, url, status, duration, correlationId,
 // userId once auth has run). Bodies and Authorization headers are never
@@ -279,6 +292,10 @@ app.use(
 // over 20,000 characters anywhere in a JSON body, except the few that are
 // legitimately long (a lecture transcript, rich-text question explanations).
 app.use(bodyLimits({ overrides: { transcript_text: 200000, explanation: 50000, question_text: 50000 } }));
+// Cookie sessions need CSRF protection on every state-changing request;
+// bearer-header clients and public webhooks are exempt by construction
+// (see checkCsrf). Same origin allow-list as CORS.
+app.use(csrfProtection({ allowedOrigins: Array.isArray(corsOrigins) ? corsOrigins : [] }));
 const apiDocsEnabled =
   String(process.env.ENABLE_API_DOCS || '').toLowerCase() === 'true' || !isProduction;
 if (apiDocsEnabled) {
@@ -397,7 +414,15 @@ function initRealtime(serverInstance) {
 
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const token = url.searchParams.get('token');
+      // Browsers send the session cookie on the upgrade request; the ?token=
+      // query form remains for non-browser clients.
+      const cookieHeader = String(req.headers.cookie || '');
+      const cookieToken = cookieHeader
+        .split(';')
+        .map((c) => c.trim())
+        .filter((c) => c.startsWith(`${COOKIE.access}=`))
+        .map((c) => decodeURIComponent(c.slice(COOKIE.access.length + 1)))[0];
+      const token = url.searchParams.get('token') || cookieToken;
       if (!token) {
         closeUnauthorized();
         return;

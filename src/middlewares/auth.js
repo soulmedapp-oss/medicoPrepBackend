@@ -3,12 +3,17 @@ const User = require('../models/User');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { isTokenVersionCurrent } = require('../utils/security');
 const { loadPermissions } = require('../rbac/loadPermissions');
+const { COOKIE } = require('../auth/session');
 
 const { JWT_SECRET } = process.env;
 
 async function authMiddleware(req, res, next) {
+  // Browsers authenticate with the HttpOnly session cookie; API clients may
+  // still send a bearer header. The header wins when both are present.
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = bearer || req.cookies?.[COOKIE.access] || null;
+  req.authVia = bearer ? 'header' : (token ? 'cookie' : null);
   if (!token) {
     return res.status(401).json({ error: 'Authorization required' });
   }
