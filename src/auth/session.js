@@ -4,8 +4,7 @@
 //   mp_access  — the JWT (short-lived). HttpOnly, so a script injected into
 //                the page cannot read it. Sent on every same-site request.
 //   mp_refresh — an opaque random token (long-lived), stored HASHED on the
-//                user, rotated on every use. Scoped to Path=/auth/refresh so
-//                it rides along on exactly one request type.
+//                user, rotated on every use, SameSite=Strict.
 //   mp_csrf    — a random value the frontend CAN read and must echo back in
 //                the X-CSRF-Token header on every state-changing request.
 //                A cross-site page can make the browser send the cookies but
@@ -24,7 +23,14 @@ const COOKIE = Object.freeze({
   csrf: 'mp_csrf',
 });
 const CSRF_HEADER = 'x-csrf-token';
-const REFRESH_PATH = '/auth/refresh';
+// The refresh cookie's Path. The browser matches Path against the URL IT
+// requests — and in front of this API that URL is `/api/auth/refresh`
+// (dev proxy, Vercel rewrite), not `/auth/refresh`, so a route-scoped Path
+// would silently never be sent. It defaults to `/`; HttpOnly + SameSite=
+// Strict + rotation are the protections that matter, and the token is only
+// ever honoured by the refresh route. Set REFRESH_COOKIE_PATH to narrow it
+// when the public path is known (e.g. /api/auth/refresh).
+const REFRESH_PATH = process.env.REFRESH_COOKIE_PATH || '/';
 
 const ACCESS_TTL = process.env.JWT_EXPIRES_IN || '15m';
 const REFRESH_TTL_DAYS = Number(process.env.REFRESH_TOKEN_DAYS || 7);

@@ -77,7 +77,7 @@ test('csrfProtection middleware: 403 with a reason, otherwise next()', () => {
   assert.equal(nexted, true);
 });
 
-test('session cookies: access and csrf on /, refresh path-scoped and strict, only csrf readable by scripts', () => {
+test('session cookies: refresh is strict, only csrf readable by scripts, access is the short-lived one', () => {
   const set = []; const cleared = [];
   const res = { cookie: (n, v, o) => set.push({ n, v, o }), clearCookie: (n, o) => cleared.push({ n, o }) };
   setSessionCookies({ secure: false }, res, { accessToken: 'A', refreshToken: 'R', csrfToken: 'C' });
