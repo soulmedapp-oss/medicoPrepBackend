@@ -876,6 +876,12 @@ app.post('/uploads/playlists', authMiddleware, authorize.any('CanAddVideos', 'Ca
   handleUpload(res, req.file, 'image')
 );
 
+// A lecture's own thumbnail image (Video.thumbnail_url), shown on the student
+// lecture list. Image validation, same gate as editing a lecture.
+app.post('/uploads/lecture-thumbnails', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
+);
+
 app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), transcriptUpload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) {

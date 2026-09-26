@@ -28,6 +28,8 @@ test('app-level upload routes carry the exact spec-mandated rule', () => {
   expectRule(routes, 'POST', '/uploads/recordings', 'permission', ['CanAddClasses', 'CanEditClasses']);
   expectRule(routes, 'POST', '/uploads/transcripts', 'permission', ['CanAddClasses', 'CanEditClasses']);
   expectRule(routes, 'POST', '/uploads/videos', 'permission', ['CanAddVideos', 'CanEditVideos']);
+  expectRule(routes, 'POST', '/uploads/playlists', 'permission', ['CanAddVideos', 'CanEditVideos']);
+  expectRule(routes, 'POST', '/uploads/lecture-thumbnails', 'permission', ['CanAddVideos', 'CanEditVideos']);
   expectRule(routes, 'POST', '/uploads/doubts', 'permission', ['CanAccessDoubts', 'CanAnswerDoubts']);
   expectRule(routes, 'POST', '/uploads/profile', 'self', []);
 });
