@@ -52,6 +52,7 @@ const { createPaymentsController } = require('./controllers/paymentsController')
 const { authMiddleware } = require('./middlewares/auth');
 const { getRateLimitStats } = require('./middlewares/rateLimit');
 const { errorHandler, createCorsError } = require('./middlewares/errorHandler');
+const { bodyLimits } = require('./middlewares/bodyLimits');
 const {
   createFileFilter,
   validateUploadedFile,
@@ -274,6 +275,10 @@ app.use(
     },
   })
 );
+// Safety net under the per-field checks in controllers: no string field
+// over 20,000 characters anywhere in a JSON body, except the few that are
+// legitimately long (a lecture transcript, rich-text question explanations).
+app.use(bodyLimits({ overrides: { transcript_text: 200000, explanation: 50000, question_text: 50000 } }));
 const apiDocsEnabled =
   String(process.env.ENABLE_API_DOCS || '').toLowerCase() === 'true' || !isProduction;
 if (apiDocsEnabled) {

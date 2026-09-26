@@ -564,6 +564,11 @@ async function updateMe(req, res) {
     if (updates.phone && !isValidPhone(String(updates.phone))) {
       return res.status(400).json({ error: 'Invalid phone number' });
     }
+    for (const field of ['college', 'target_exam', 'year_of_study']) {
+      if (updates[field] && !isValidTextLength(String(updates[field]), 0, 120)) {
+        return res.status(400).json({ error: `${field} must be 120 characters or less` });
+      }
+    }
 
     const user = await User.findByIdAndUpdate(
       req.userId,

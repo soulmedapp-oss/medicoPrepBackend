@@ -219,6 +219,9 @@ function createPlaylistsController() {
       if (!data.name || !isValidTextLength(String(data.name), 2, 200)) {
         return res.status(400).json({ error: 'name must be between 2 and 200 characters' });
       }
+      if (data.description && !isValidTextLength(String(data.description), 0, 2000)) {
+        return res.status(400).json({ error: 'description must be 2000 characters or less' });
+      }
       const malformedSubjectIds = invalidSubjectIds(data.subject_ids);
       if (malformedSubjectIds.length) {
         return res
@@ -245,6 +248,9 @@ function createPlaylistsController() {
       }
       if (updates.name !== undefined && !isValidTextLength(String(updates.name), 2, 200)) {
         return res.status(400).json({ error: 'name must be between 2 and 200 characters' });
+      }
+      if (updates.description && !isValidTextLength(String(updates.description), 0, 2000)) {
+        return res.status(400).json({ error: 'description must be 2000 characters or less' });
       }
       const malformedSubjectIds = invalidSubjectIds((req.body || {}).subject_ids);
       if (malformedSubjectIds.length) {

@@ -189,6 +189,9 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
       }
 
       const allowed = ['status', 'admin_response', 'responded_by'];
+      if (updates.admin_response && !isValidTextLength(String(updates.admin_response), 1, 4000)) {
+        return res.status(400).json({ error: 'admin_response must be 4000 characters or less' });
+      }
       allowed.forEach((field) => {
         if (Object.prototype.hasOwnProperty.call(updates, field)) {
           feedback[field] = updates[field];

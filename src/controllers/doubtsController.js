@@ -196,6 +196,9 @@ function createDoubtsController({ createNotification }) {
       if (updates.topic && !isValidTextLength(String(updates.topic), 2, 200)) {
         return res.status(400).json({ error: 'topic must be between 2 and 200 characters' });
       }
+      if (updates.answer && !isValidTextLength(String(updates.answer), 1, 8000)) {
+        return res.status(400).json({ error: 'answer must be 8000 characters or less' });
+      }
 
       if (updates.subject) {
         updates.subject = await validateSubjectIfConfigured(updates.subject);

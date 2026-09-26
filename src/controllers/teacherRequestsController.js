@@ -44,6 +44,9 @@ function createTeacherRequestsController({ createNotification }) {
       if (!isValidTextLength(String(data.title), 2, 200)) {
         return res.status(400).json({ error: 'title must be between 2 and 200 characters' });
       }
+      if (data.desired_outcome && !isValidTextLength(String(data.desired_outcome), 0, 2000)) {
+        return res.status(400).json({ error: 'desired_outcome must be 2000 characters or less' });
+      }
       if (!isValidTextLength(String(data.description), 10, 4000)) {
         return res.status(400).json({ error: 'description must be between 10 and 4000 characters' });
       }
@@ -124,6 +127,9 @@ function createTeacherRequestsController({ createNotification }) {
           request[field] = updates[field];
         }
       });
+      if (updates.developer_response && !isValidTextLength(String(updates.developer_response), 1, 4000)) {
+        return res.status(400).json({ error: 'developer_response must be 4000 characters or less' });
+      }
       if (updates.developer_response) {
         request.responded_at = new Date();
       }
