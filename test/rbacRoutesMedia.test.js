@@ -38,6 +38,8 @@ test('videos routes', () => {
   expectRule(routes, 'POST', '/videos/:id/refresh-status', 'permission', ['CanAddVideos', 'CanEditVideos']);
   expectRule(routes, 'PATCH', '/videos/:id', 'permission', ['CanEditVideos', 'CanDeactivateVideos']);
   expectRule(routes, 'DELETE', '/videos/:id', 'permission', ['CanDeactivateVideos']);
+  expectRule(routes, 'GET', '/videos/:id/deletion-impact', 'permission', ['CanDeleteVideos']);
+  expectRule(routes, 'DELETE', '/videos/:id/permanent', 'permission', ['CanDeleteVideos']);
 });
 
 test('video progress routes', () => {

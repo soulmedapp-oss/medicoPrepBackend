@@ -169,6 +169,24 @@ async function getStatus(videoId) {
   };
 }
 
+// Permanently removes the asset (source, every encoding, thumbnails) from
+// Bunny. Irreversible. A 404 is reported, not thrown, so a lecture whose
+// file was already removed in the Bunny dashboard can still be cleaned up
+// locally; any other failure throws and the caller must leave its own
+// records untouched.
+async function deleteVideo(videoId) {
+  if (!videoId) throw new Error('deleteVideo: bunny_video_id is required');
+  const { libraryId, apiKey } = config();
+  const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${videoId}`, {
+    method: 'DELETE',
+    headers: { AccessKey: apiKey },
+    signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
+  });
+  if (response.status === 404) return { deleted: false, missing: true };
+  if (!response.ok) throw new Error(`Bunny delete video failed (${response.status})`);
+  return { deleted: true, missing: false };
+}
+
 // `config` stays module-private: it returns raw secrets (BUNNY_STREAM_API_KEY,
 // BUNNY_STREAM_TOKEN_KEY). Exporting it would let a single
 // `res.json(bunnyProvider.config())` downstream leak both. Callers that need
@@ -182,4 +200,5 @@ module.exports = {
   createUpload,
   ensureCollection,
   getStatus,
+  deleteVideo,
 };

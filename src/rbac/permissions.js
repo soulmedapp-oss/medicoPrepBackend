@@ -37,6 +37,10 @@ const PERMISSIONS = [
   ...crud('Classes', 'live classes', ALL),
   one('Classes', 'CanHostAnyClass', 'Start any class as host', 'Receive the Zoom host link for every class, not only your own.'),
   ...crud('Videos', 'videos', ALL),
+  // The one hard delete in the system. Removes the file from Bunny and the
+  // lecture from the database; everything else in this app deactivates.
+  // Admin-only by default (legacyMap withholds it from manage_videos).
+  one('Videos', 'CanDeleteVideos', 'Permanently delete videos', 'Permanently delete a deactivated lecture from Bunny and the database. Irreversible.'),
 
   ...crud('Users', 'users', ALL),
   one('Users', 'CanAssignUserRoles', 'Assign roles to users', 'Add and remove roles on a user.'),

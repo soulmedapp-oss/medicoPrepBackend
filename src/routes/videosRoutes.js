@@ -32,6 +32,10 @@ function createVideosRoutes({ authMiddleware }) {
   );
   router.patch('/videos/:id', authMiddleware, authorize.any('CanEditVideos', 'CanDeactivateVideos'), controller.updateVideo);
   router.delete('/videos/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deleteVideo);
+  // Hard delete: its own permission (admin-only by default), and the
+  // controller additionally requires the lecture to be deactivated first.
+  router.get('/videos/:id/deletion-impact', authMiddleware, authorize('CanDeleteVideos'), controller.deletionImpact);
+  router.delete('/videos/:id/permanent', authMiddleware, authorize('CanDeleteVideos'), controller.permanentlyDeleteVideo);
   router.get('/videos/:id/ai-summary', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getVideoSummary);
   router.get(
     '/videos/:id/playback',

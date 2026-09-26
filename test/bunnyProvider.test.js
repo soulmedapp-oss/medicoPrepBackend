@@ -8,6 +8,7 @@ const {
   createUploadCredentials,
   createUpload,
   ensureCollection,
+  deleteVideo,
 } = require('../src/services/video/bunnyProvider');
 
 // Sets an env var for the duration of `fn` and restores the previous value
@@ -400,6 +401,54 @@ test('createUpload: omits collectionId when ensureCollection fails, without fail
     await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
       const result = await createUpload({ title: 'Cardiology Lecture', subject: 'Cardiology-Fails' });
       assert.equal(result.videoId, 'video-guid-2');
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// Hard delete (CanDeleteVideos). The provider only talks to Bunny; the
+// controller decides what happens to local records based on the result.
+test('deleteVideo issues a DELETE with the AccessKey header and reports success', async () => {
+  const previousFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, status: 200 };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const result = await deleteVideo('guid-1');
+      assert.equal(captured.url, 'https://video.bunnycdn.com/library/99/videos/guid-1');
+      assert.equal(captured.options.method, 'DELETE');
+      assert.equal(captured.options.headers.AccessKey, 'FAKE-KEY');
+      assert.ok(captured.options.signal instanceof AbortSignal);
+      assert.deepEqual(result, { deleted: true, missing: false });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('deleteVideo reports a 404 as missing instead of throwing, so local cleanup can proceed', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 404 });
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      assert.deepEqual(await deleteVideo('gone'), { deleted: false, missing: true });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('deleteVideo throws on any other Bunny failure and on an empty id', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 500 });
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      await assert.rejects(() => deleteVideo('guid-1'), /Bunny delete video failed \(500\)/);
+      await assert.rejects(() => deleteVideo(''), /bunny_video_id is required/);
     });
   } finally {
     global.fetch = previousFetch;

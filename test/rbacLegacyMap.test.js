@@ -38,9 +38,9 @@ test('manage_questions also maps to CanViewTests, so content writers keep GET /t
   assert.ok(DEFAULT_ROLE_PERMISSIONS.content_writer.includes('CanViewTests'));
 });
 
-test('default teacher keeps class/video management (except CanHostAnyClass); students get every CanAccess code', () => {
+test('default teacher keeps class/video management (except CanHostAnyClass and CanDeleteVideos); students get every CanAccess code', () => {
   codesForResource('Classes').concat(codesForResource('Videos'))
-    .filter((code) => code !== 'CanHostAnyClass')
+    .filter((code) => code !== 'CanHostAnyClass' && code !== 'CanDeleteVideos')
     .forEach((code) => assert.ok(DEFAULT_ROLE_PERMISSIONS.teacher.includes(code), code));
   codesForResource('StudentPages')
     .forEach((code) => assert.ok(DEFAULT_ROLE_PERMISSIONS.student.includes(code), code));
@@ -51,6 +51,13 @@ test('default teacher keeps class/video management (except CanHostAnyClass); stu
 // ownership rules" (spec section 2). CanHostAnyClass must not be handed out
 // by the manage_classes legacy shim or the default teacher role — only admins
 // (via ALL_CODES in resolvePermissions) get it by default.
+// Same pattern for the one hard delete: known, admin-only by default.
+test('CanDeleteVideos is a known permission but is withheld from manage_videos and the default teacher role', () => {
+  assert.equal(isKnownPermission('CanDeleteVideos'), true);
+  assert.equal(LEGACY_PERMISSION_MAP.manage_videos.includes('CanDeleteVideos'), false);
+  assert.equal(DEFAULT_ROLE_PERMISSIONS.teacher.includes('CanDeleteVideos'), false);
+});
+
 test('CanHostAnyClass is a known permission but is withheld from manage_classes and the default teacher role', () => {
   assert.equal(isKnownPermission('CanHostAnyClass'), true);
   assert.equal(LEGACY_PERMISSION_MAP.manage_classes.includes('CanHostAnyClass'), false);

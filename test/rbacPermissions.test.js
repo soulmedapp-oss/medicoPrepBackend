@@ -14,8 +14,11 @@ test('codes are unique', () => {
   assert.deepEqual([...PERMISSION_CODES].sort(), [...ALL_CODES].sort());
 });
 
-test('there is no CanDelete permission (all deletes are soft)', () => {
-  assert.equal(ALL_CODES.filter((c) => c.startsWith('CanDelete')).length, 0);
+// Every delete in the app is soft, with one deliberate exception: a
+// deactivated lecture may be permanently removed from Bunny and the
+// database. Any second CanDelete* code needs the same justification.
+test('CanDeleteVideos is the only hard-delete permission', () => {
+  assert.deepEqual(ALL_CODES.filter((c) => c.startsWith('CanDelete')), ['CanDeleteVideos']);
 });
 
 test('Questions has the five documented permissions', () => {

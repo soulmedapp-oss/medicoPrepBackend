@@ -11,7 +11,9 @@ const LEGACY_PERMISSION_MAP = {
   // Only admins get it by default (via ALL_CODES); an admin can grant it to
   // other roles explicitly.
   manage_classes: all('Classes').filter((code) => code !== 'CanHostAnyClass'),
-  manage_videos: all('Videos'),
+  // CanDeleteVideos (irreversible: removes the file from Bunny) is withheld
+  // from the default teacher bundle the same way CanHostAnyClass is.
+  manage_videos: all('Videos').filter((code) => code !== 'CanDeleteVideos'),
   manage_students: ['CanViewUsers', 'CanViewAllAttempts'],
   manage_doubts: all('Doubts'),
   manage_feedback: all('Feedback'),

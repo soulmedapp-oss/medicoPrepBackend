@@ -20,11 +20,13 @@ const { codesForResource } = require('../src/rbac/permissions');
 
 test('teacher role: old strings mapped, class/video/student-page access topped up', () => {
   const plan = planRoleMigration({ name: 'teacher', permissions: ['manage_tests', 'manage_questions'] });
-  // CanHostAnyClass is deliberately NOT part of the teacher defaults (spec section 2).
+  // CanHostAnyClass (spec section 2) and CanDeleteVideos (the one hard
+  // delete) are deliberately NOT part of the teacher defaults.
   ['CanEditTests', 'CanEditQuestions', 'CanViewTests', ...codesForResource('Classes').filter((c) => c !== 'CanHostAnyClass'),
-    ...codesForResource('Videos'), 'CanAccessTests', 'CanUseAiTutor', 'CanAccessTeacherRequests']
+    ...codesForResource('Videos').filter((c) => c !== 'CanDeleteVideos'), 'CanAccessTests', 'CanUseAiTutor', 'CanAccessTeacherRequests']
     .forEach((code) => assert.ok(plan.permissions.includes(code), code));
   assert.equal(plan.permissions.includes('CanHostAnyClass'), false);
+  assert.equal(plan.permissions.includes('CanDeleteVideos'), false);
   assert.equal(plan.permissions.some((c) => c.startsWith('manage_')), false);
 });
 

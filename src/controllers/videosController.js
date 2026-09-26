@@ -1,6 +1,7 @@
 const Video = require('../models/Video');
 const User = require('../models/User');
 const Playlist = require('../models/Playlist');
+const VideoProgress = require('../models/VideoProgress');
 const { isLecturePlayable } = require('../utils/playlistAccess');
 const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
@@ -14,7 +15,7 @@ const { getOpenAiKey } = require('../services/settingsService');
 const { can } = require('../rbac/can');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
-const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { recordActiveStateChange, recordDeactivated, recordAudit } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
 const { logger } = require('../lib/logger');
 
@@ -194,6 +195,12 @@ function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
     return { allowed: false, status: 403, error: 'Upgrade required' };
   }
   return { allowed: true };
+}
+
+// The state precondition for a hard delete, kept pure so it is testable and
+// so the impact preview and the delete itself cannot disagree.
+function canHardDelete(video) {
+  return Boolean(video) && video.is_active === false;
 }
 
 function createVideosController() {
@@ -499,6 +506,101 @@ function createVideosController() {
     }
   }
 
+  // Hard delete is the one irreversible action in the app, so it is gated
+  // twice: a permission of its own (CanDeleteVideos, admin-only by default)
+  // and a state precondition — the lecture must already be deactivated, so
+  // students have stopped seeing it before the file is gone for good.
+  async function deletionImpact(req, res) {
+    try {
+      const video = await Video.findById(req.params.id).lean();
+      if (!video) {
+        return res.status(404).json({ error: 'Video not found' });
+      }
+      const [playlists, progressCount] = await Promise.all([
+        Playlist.find({ 'items.lecture_id': video._id }).select('_id name is_published').lean(),
+        VideoProgress.countDocuments({ video_id: video._id }),
+      ]);
+      return res.json({
+        video: { _id: video._id, title: video.title, provider: video.provider, is_active: video.is_active },
+        can_delete: canHardDelete(video),
+        playlists: playlists.map((p) => ({ _id: p._id, name: p.name, is_published: p.is_published })),
+        progress_count: progressCount,
+      });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load deletion impact' });
+    }
+  }
+
+  // Order matters: Bunny first. If Bunny refuses, nothing local changes and
+  // the operator sees a 502; a Bunny 404 (already removed in the dashboard)
+  // lets the local cleanup proceed. Then playlists, progress, the row, and
+  // an audit entry that names what was in it — the only record left.
+  async function permanentlyDeleteVideo(req, res) {
+    try {
+      const video = await Video.findById(req.params.id).lean();
+      if (!video) {
+        return res.status(404).json({ error: 'Video not found' });
+      }
+      if (!canHardDelete(video)) {
+        return res.status(409).json({ error: 'Deactivate the lecture before deleting it permanently' });
+      }
+
+      let bunny = { deleted: false, missing: false, skipped: true };
+      if (video.provider === 'bunny' && video.bunny_video_id) {
+        try {
+          bunny = { ...(await bunnyProvider.deleteVideo(video.bunny_video_id)), skipped: false };
+        } catch (err) {
+          reportError(req, err, 'Bunny delete failed; local records untouched', {
+            video_id: String(video._id),
+            bunny_video_id: video.bunny_video_id,
+          });
+          return res.status(502).json({ error: 'Bunny refused to delete the video. Nothing was removed.' });
+        }
+      }
+
+      const playlists = await Playlist.find({ 'items.lecture_id': video._id }).select('_id name').lean();
+      const pulled = await Playlist.updateMany(
+        { 'items.lecture_id': video._id },
+        { $pull: { items: { lecture_id: video._id } }, $set: { updated_by: req.userId, updated_by_at: new Date() } }
+      );
+      const progress = await VideoProgress.deleteMany({ video_id: video._id });
+      await Video.deleteOne({ _id: video._id });
+
+      await recordAudit(req, {
+        action: 'video.deleted',
+        target_type: 'video',
+        target_id: video._id,
+        target_label: video.title,
+        before: {
+          title: video.title,
+          subject: video.subject,
+          subject_id: video.subject_id,
+          provider: video.provider,
+          video_url: video.video_url,
+          bunny_video_id: video.bunny_video_id,
+          bunny_library_id: video.bunny_library_id,
+          duration_seconds: video.duration_seconds,
+          created_by: video.created_by,
+          created_date: video.created_date,
+          playlists: playlists.map((p) => ({ _id: p._id, name: p.name })),
+          progress_rows: progress.deletedCount,
+        },
+        after: { bunny },
+      });
+
+      return res.json({
+        ok: true,
+        bunny,
+        playlists_updated: pulled.modifiedCount,
+        progress_deleted: progress.deletedCount,
+      });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to delete video' });
+    }
+  }
+
   async function getVideoSummary(req, res) {
     try {
       const { value } = await getOpenAiKey();
@@ -745,6 +847,8 @@ function createVideosController() {
     createVideo,
     updateVideo,
     deleteVideo,
+    deletionImpact,
+    permanentlyDeleteVideo,
     getVideoSummary,
     chatAboutVideo,
     createUploadUrl,
@@ -755,6 +859,7 @@ function createVideosController() {
 
 module.exports = {
   createVideosController,
+  canHardDelete,
   attachActorNames,
   decideUploadClaim,
   playbackResponse,
