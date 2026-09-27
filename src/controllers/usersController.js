@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Role = require('../models/Role');
+const DiscussionPost = require('../models/DiscussionPost');
 const { sanitizeUser, sanitizePublicUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { capLimit } = require('../utils/security');
@@ -13,7 +14,7 @@ const { missingForRoleGrant } = require('../rbac/escalation');
 const { countActiveAdmins } = require('../rbac/countActiveAdmins');
 const { recordAudit } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
-const { isDuplicateNicknameError } = require('../utils/identity');
+const { isDuplicateNicknameError, displayNameFor } = require('../utils/identity');
 
 const ESCALATION_ERROR = 'You cannot grant permissions you do not hold.';
 
@@ -234,8 +235,10 @@ function createUsersController({ createNotification } = {}) {
         'email_verified_reason',
         'is_active',
         'nickname',
+        'discussion_muted_until',
       ];
       let clearedNickname = '';
+      let clearedMuteUntil = null;
       const unsetOps = {};
 
       const payload = {};
@@ -309,6 +312,20 @@ function createUsersController({ createNotification } = {}) {
         unsetOps.nickname_lc = '';
         clearedNickname = existing.nickname || '';
       }
+      // Fix round 2, Critical 1: a mute has to be liftable by hand. This route
+      // only ever CLEARS it — the mute itself is set by the moderation rule in
+      // discussionsController, never typed in by an admin — same clear-only
+      // shape as `nickname` above, and after the permission gate for the same
+      // reason (a caller lacking CanEditUsers must get 403, not this 400).
+      if (Object.prototype.hasOwnProperty.call(payload, 'discussion_muted_until')) {
+        const value = payload.discussion_muted_until;
+        if (value !== null && value !== '') {
+          return res.status(400).json({ error: 'discussion_muted_until can only be cleared here' });
+        }
+        delete payload.discussion_muted_until;
+        unsetOps.discussion_muted_until = '';
+        clearedMuteUntil = existing.discussion_muted_until || null;
+      }
 
       // role/roles/permissions are never in `payload` (stripped above by
       // `allowedFields`) — role changes go through PUT /users/:id/roles (Task 10).
@@ -334,7 +351,10 @@ function createUsersController({ createNotification } = {}) {
         payload.email_verified_reason = undefined;
       }
 
-      const updateOps = { $set: payload };
+      // `$set: {}` is rejected by MongoDB, and a PATCH that only clears the
+      // mute writes nothing but an `$unset`.
+      const updateOps = {};
+      if (Object.keys(payload).length > 0) updateOps.$set = payload;
       if (payload.passwordHash) {
         // Admin password change revokes the user's existing sessions.
         updateOps.$inc = { token_version: 1 };
@@ -363,6 +383,17 @@ function createUsersController({ createNotification } = {}) {
       const isActiveNow = user.is_active !== false;
       if (wasActive && !isActiveNow) {
         await recordAudit(req, { action: 'user.deactivated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email });
+      } else if (clearedMuteUntil) {
+        // Fix round 2, Critical 1: lifting a mute is its own recorded decision,
+        // mutually exclusive with the generic user.updated below — same shape
+        // as the nickname clear and the is_active branches around it.
+        await recordAudit(req, {
+          action: 'user.discussion_unmuted',
+          target_type: 'user',
+          target_id: user._id,
+          target_label: user.full_name || user.email,
+          before: { discussion_muted_until: clearedMuteUntil },
+        });
       } else if (clearedNickname) {
         // Fix round 1, Important 2 (ruled): a nickname clear writes ONLY this
         // dedicated action, mutually exclusive with the generic user.updated
@@ -374,6 +405,19 @@ function createUsersController({ createNotification } = {}) {
           target_label: user.full_name || user.email,
           before: { nickname: clearedNickname },
         });
+        // Fix round 2, Important 3: the display name on every post is a
+        // SNAPSHOT, so clearing a nickname for moderation left it printed all
+        // over the threads. Roll the snapshots back to the first name — the
+        // same name a post would be written under now. Log-and-continue: the
+        // nickname itself is already cleared, so this must not fail the PATCH.
+        try {
+          await DiscussionPost.updateMany(
+            { author_id: user._id },
+            { $set: { 'author_snapshot.display_name': displayNameFor({ full_name: user.full_name }) } }
+          );
+        } catch (err) {
+          reportError(req, err);
+        }
         if (createNotification) {
           await createNotification({
             userEmail: existing.email,

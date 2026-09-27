@@ -54,9 +54,17 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
     // Public identity for discussions (spec §4). nickname_lc backs the
-    // case-insensitive uniqueness; sparse so users without one don't collide.
+    // case-insensitive uniqueness.
+    //
+    // Fix round 2, Minor: a `sparse` unique index only skips MISSING values —
+    // an explicit `null` is a value, so two users whose nickname_lc was ever
+    // written as null would collide on it. The partial filter indexes only
+    // string values instead, which is what a nickname clear leaves behind
+    // ($unset). On an existing database the old `nickname_lc_1` index must be
+    // dropped once so Mongoose can recreate it (see the Discussions section of
+    // docs/ops/2026-09-22-playlist-rollout-runbook.md).
     nickname: { type: String, default: '' },
-    nickname_lc: { type: String, index: { unique: true, sparse: true } },
+    nickname_lc: { type: String, index: { unique: true, partialFilterExpression: { nickname_lc: { $type: 'string' } } } },
     avatar_id: { type: String, default: '' },
     // Set when a moderator hides a third post within 30 days (spec §6).
     discussion_muted_until: { type: Date },

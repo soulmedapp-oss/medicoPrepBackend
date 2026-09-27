@@ -1,3 +1,5 @@
+const { containsProfanity } = require('./profanity');
+
 const RESERVED = new Set(['admin', 'teacher', 'soulmed', 'moderator', 'anonymous', 'staff', 'support']);
 const NICKNAME_PATTERN = /^[A-Za-z0-9]+( [A-Za-z0-9]+)*$/;
 const DEFAULT_AVATAR_ID = 'avatar-default';
@@ -13,6 +15,10 @@ function validateNickname(raw) {
   if (!NICKNAME_PATTERN.test(value)) return { ok: false, error: 'Use letters, numbers and single spaces only' };
   const lc = value.toLowerCase();
   if (RESERVED.has(lc)) return { ok: false, error: 'That nickname is reserved' };
+  // Fix round 2, Important 3: the post body runs through the profanity filter,
+  // so the name printed above every post must too — otherwise the filter is
+  // trivially bypassed by putting the word in the nickname instead.
+  if (containsProfanity(value)) return { ok: false, error: 'Please choose a different nickname' };
   return { ok: true, value, lc };
 }
 

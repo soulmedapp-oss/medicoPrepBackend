@@ -168,3 +168,5 @@ Roles on an existing database **are not overwritten on restart**. To enable disc
 ### Data sync
 
 No data migration is required. The `permissions` collection syncs with the backend code on the next restart, so no operator action is needed beyond the permission grants above.
+
+One index change does need an operator action on an existing database: the unique index on `users.nickname_lc` is now a partial index (it indexes string values only, so cleared nicknames cannot collide on `null`). Mongoose will not alter an index that already exists under the same name, so drop the old one once — `db.users.dropIndex('nickname_lc_1')` — and it is recreated with the new definition on the next restart.

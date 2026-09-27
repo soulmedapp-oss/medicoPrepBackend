@@ -17,6 +17,7 @@ const Coupon = require('../src/models/Coupon');
 const SubscriptionPlan = require('../src/models/SubscriptionPlan');
 const User = require('../src/models/User');
 const Role = require('../src/models/Role');
+const DiscussionPost = require('../src/models/DiscussionPost');
 const AuditLog = require('../src/models/AuditLog');
 
 const { createTestsController } = require('../src/controllers/testsController');
@@ -874,4 +875,104 @@ test('updateRole: deactivate-only user changing is_active AND another field is d
   assert.equal(res.statusCode, 403);
   assert.deepEqual(res.body, { error: 'Permission denied', required: ['CanEditRoles'] });
   assert.equal(updateCalled, false, 'the role must not be written when permission is denied');
+});
+
+// Fix round 2, Critical 1: a mute set by the discussions moderation rule has
+// to be liftable by hand. This route CLEARS it and nothing else.
+test('updateUser: clearing discussion_muted_until unsets it and writes exactly one user.discussion_unmuted row', async () => {
+  const id = oid();
+  const until = new Date(Date.now() + 5 * 86400000);
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com', discussion_muted_until: until }));
+  let ops = null;
+  stub(User, 'findByIdAndUpdate', (updateId, updateOps) => {
+    ops = updateOps;
+    return q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com', toObject() { return this; } });
+  });
+  const audits = [];
+  stub(AuditLog, 'create', async (doc) => { audits.push(doc); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { discussion_muted_until: null },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(ops.$unset, { discussion_muted_until: '' });
+  assert.equal(ops.$set, undefined, 'nothing else is written, and $set is never sent empty');
+  assert.equal(audits.length, 1, 'exactly one audit row must be written');
+  assert.equal(audits[0].action, 'user.discussion_unmuted');
+  assert.equal(audits[0].target_type, 'user');
+  assert.equal(String(audits[0].target_id), String(id));
+  assert.equal(String(audits[0].before.discussion_muted_until), String(until));
+});
+
+test('updateUser: an empty string clears the mute the same way', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com', discussion_muted_until: new Date(Date.now() + 86400000) }));
+  let ops = null;
+  stub(User, 'findByIdAndUpdate', (updateId, updateOps) => {
+    ops = updateOps;
+    return q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com', toObject() { return this; } });
+  });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { discussion_muted_until: '' },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(ops.$unset, { discussion_muted_until: '' });
+});
+
+test('updateUser: setting discussion_muted_until to a date is refused 400, nothing written', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com' }));
+  let updateCalled = false;
+  stub(User, 'findByIdAndUpdate', () => { updateCalled = true; return q({ _id: id, toObject() { return this; } }); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { discussion_muted_until: '2026-12-01T00:00:00Z' },
+  }, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, 'discussion_muted_until can only be cleared here');
+  assert.equal(updateCalled, false, 'the user must not be written');
+});
+
+test('updateUser: a caller lacking CanEditUsers who sends discussion_muted_until is refused 403, not the 400', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Muted Student', email: 'ms@x.com' }));
+  let updateCalled = false;
+  stub(User, 'findByIdAndUpdate', () => { updateCalled = true; return q({ _id: id, toObject() { return this; } }); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: { _id: oid(), effective_permissions: [] }, body: { discussion_muted_until: '2026-12-01T00:00:00Z' },
+  }, res);
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.body, { error: 'Permission denied', required: ['CanEditUsers'] });
+  assert.equal(updateCalled, false);
+});
+
+// Fix round 2, Important 3: a cleared nickname must leave the threads too —
+// the display name on a post is a snapshot taken when it was written.
+test('updateUser: clearing a nickname rewrites the author snapshot on that user\'s posts to their first name', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: 'Dr Chutiya' }));
+  stub(User, 'findByIdAndUpdate', () => q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: '', toObject() { return this; } }));
+  let snapshot = null;
+  stub(DiscussionPost, 'updateMany', async (filter, update) => { snapshot = { filter, update }; return { modifiedCount: 4 }; });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { nickname: '' },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(String(snapshot.filter.author_id), String(id));
+  assert.deepEqual(snapshot.update, { $set: { 'author_snapshot.display_name': 'Asha' } });
+});
+
+test('updateUser: a failure rewriting the post snapshots is logged and the PATCH still succeeds', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: 'Ashy' }));
+  stub(User, 'findByIdAndUpdate', () => q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: '', toObject() { return this; } }));
+  stub(DiscussionPost, 'updateMany', async () => { throw new Error('mongo is having a day'); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { nickname: '' },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body), 'the nickname is already cleared: this must not fail the request');
 });

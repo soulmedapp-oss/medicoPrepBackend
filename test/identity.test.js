@@ -48,6 +48,19 @@ test('validateNickname: trims, enforces 2-20 chars, letters/digits/single spaces
   assert.equal(validateNickname(42).ok, false);
 });
 
+// Fix round 2, Important 3: the post body is filtered, so the name printed
+// above every post must be too, or the filter is bypassed by moving the word
+// into the nickname.
+test('validateNickname: a profane nickname is refused', () => {
+  for (const word of ['Shit', 'fuck off', 'BITCH', 'Dr Chutiya']) {
+    const check = validateNickname(word);
+    assert.equal(check.ok, false, word);
+    assert.equal(check.error, 'Please choose a different nickname', word);
+  }
+  // An anatomy term is not profanity — the filter is whole-word and small.
+  assert.equal(validateNickname('Dr Cocci').ok, true);
+});
+
 test('validateNickname: reserved words are refused case-insensitively', () => {
   for (const word of ['admin', 'Teacher', 'SOULMED', 'moderator', 'Anonymous', 'staff', 'support']) {
     assert.equal(validateNickname(word).ok, false, word);
@@ -129,6 +142,20 @@ test('updateMe: an unknown avatar id is refused 400', async () => {
   assert.equal(res.statusCode, 400);
   assert.equal(res.body.error, 'Unknown avatar');
   assert.equal(updateCalled, false, 'findByIdAndUpdate must not be called for an unknown avatar id');
+});
+
+// Fix round 2, Minor: `null` from the UI means "back to the default avatar";
+// it must be stored as the '' the schema defaults to, not as a null.
+test('updateMe: avatar_id null is normalised to an empty string before validation', async () => {
+  const userId = oid();
+  let capturedOps;
+  stub(User, 'findByIdAndUpdate', (id, ops) => { capturedOps = ops; return q({ _id: id, avatar_id: ops.$set.avatar_id }); });
+
+  const res = mockRes();
+  await authController.updateMe({ userId: String(userId), body: { avatar_id: null } }, res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(capturedOps.$set.avatar_id, '');
 });
 
 // Fix round 1, Important 3: the pre-write check (User.exists) can be won by a

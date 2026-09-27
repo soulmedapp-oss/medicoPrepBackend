@@ -639,6 +639,10 @@ async function updateMe(req, res) {
         return res.status(400).json({ error: `${field} must be 120 characters or less` });
       }
     }
+    // Fix round 2, Minor: `null` is how the UI says "back to the default
+    // avatar"; normalise it to '' BEFORE validation so the stored value is the
+    // '' the schema defaults to, not a null the readers don't expect.
+    if (updates.avatar_id === null) updates.avatar_id = '';
     if (Object.prototype.hasOwnProperty.call(updates, 'avatar_id') && !isValidAvatarId(String(updates.avatar_id ?? ''))) {
       return res.status(400).json({ error: 'Unknown avatar' });
     }
