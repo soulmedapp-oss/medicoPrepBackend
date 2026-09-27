@@ -80,8 +80,7 @@ test('discussions routes', () => {
   expectRule(routes, 'POST', '/discussions/:id/upvote', 'permission', ['CanAccessDiscussions']);
   expectRule(routes, 'POST', '/discussions/:id/report', 'permission', ['CanAccessDiscussions']);
   expectRule(routes, 'PATCH', '/discussions/:id', 'permission', ['CanAccessDiscussions', 'CanModerateDiscussions']);
-  // The literal /discussions/reports must be registered before /discussions/:id,
-  // or validateObjectIdParams answers 400 "Invalid id" for "reports".
-  const paths = routes.map((r) => r.path);
-  assert.ok(paths.indexOf('/discussions/reports') < paths.indexOf('/discussions/:id'), paths.join(' '));
+  // Note: /discussions/reports is registered first as a matter of habit, but
+  // nothing shadows it — there is no GET /discussions/:id to collide with, and
+  // Express matches per method, so no ordering assertion is meaningful here.
 });

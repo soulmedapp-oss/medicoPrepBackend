@@ -1,5 +1,6 @@
 const DiscussionPost = require('../models/DiscussionPost');
 const User = require('../models/User');
+const Video = require('../models/Video');
 const { can } = require('../rbac/can');
 const { recordAudit } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
@@ -33,12 +34,31 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
   // Resolves the anchor and applies the lecture gate. Returns { lecture } or
   // { status, error }. This is deliberately the SAME gate as playback
   // (spec §6): a lecture that 404s for playback must 404 for its thread.
+  //
+  // Fix round 1, Critical 1: EVERY handler goes through here — the by-id
+  // routes resolve the anchor off the post they loaded — so a student can
+  // only upvote/report/edit inside a thread they may read.
+  //
+  // Fix round 1, ruling: a moderator bypasses playability. A role built from
+  // legacy `manage_doubts` holds CanModerateDiscussions WITHOUT CanViewVideos,
+  // so loadVideoForPlayback would run the student entitlement rule on them and
+  // 404 the very lecture they are meant to moderate. Moderation is not
+  // playback: the lecture still has to exist, it just does not have to be
+  // playable by this caller.
   async function gate(user, anchorType, anchorId) {
     if (!ANCHOR_TYPES.has(anchorType) || !isValidObjectId(String(anchorId))) return { status: 400, error: 'Invalid anchor' };
+    if (isModerator(user)) {
+      const lecture = await Video.findById(anchorId).lean();
+      if (!lecture) return { status: 404, error: 'Video not found' };
+      return { lecture };
+    }
     const { video, error, status } = await loadVideoForPlayback(user, anchorId);
     if (!video) return { status: status || 404, error: error || 'Not found' };
     return { lecture: video };
   }
+
+  // The gate for a post that is already loaded: its own anchor decides.
+  const gateForPost = (user, post) => gate(user, post.anchor?.type, String(post.anchor?.id || ''));
 
   // Shapes one post for the caller; `authors` is a Map(userId -> user) loaded
   // once per request. Staff-only fields (is_hidden, report_count) and the
@@ -91,12 +111,13 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         if (!repliesByParent.has(key)) repliesByParent.set(key, []);
         repliesByParent.get(key).push(p);
       });
-      // Top level newest first; replies pinned -> teacher -> upvotes -> oldest.
+      // Top level newest first — that is the query's sort, and `filter` keeps
+      // it, so there is no second ordering here to disagree with it. Replies
+      // are pinned -> teacher -> upvotes -> oldest (sortThread).
       // A reply whose parent is hidden is dropped with its parent for students,
       // since its parent is not in `rows` to hang it on.
       const posts = rows
         .filter((p) => !p.parent_id)
-        .sort((a, b) => new Date(b.created_date) - new Date(a.created_date))
         .map((post) => {
           const replies = sortThread(repliesByParent.get(String(post._id)) || []).map((reply) => shape(reply, ctx));
           return { ...shape(post, ctx), reply_count: replies.length, replies };
@@ -139,10 +160,23 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         if (!Number.isFinite(videoTime) || videoTime < 0) {
           return res.status(400).json({ error: 'Invalid video_time' });
         }
+        // The time chip belongs to a question about a moment in the lecture;
+        // a reply inherits its question's moment (spec §7).
+        if (parentId) {
+          return res.status(400).json({ error: 'video_time is only for a new question, not a reply' });
+        }
       }
 
       const { lecture, status, error } = await gate(req.user, anchorType, anchorId);
       if (!lecture) return res.status(status).json({ error });
+
+      // A timestamp past the end of the lecture would seek nowhere, so cap it
+      // at the known duration rather than refusing the post over a rounding
+      // overshoot from the player.
+      const duration = Number(lecture.duration_seconds);
+      if (videoTime !== null && Number.isFinite(duration) && duration > 0) {
+        videoTime = Math.min(videoTime, duration);
+      }
 
       // `parent` is the post actually replied to — the notification goes to
       // its author — while `parent_id` is re-parented to the top-level post,
@@ -150,7 +184,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       let parent = null;
       if (parentId) {
         parent = await DiscussionPost.findById(parentId).lean();
-        if (!parent || String(parent.anchor?.id) !== anchorId) {
+        if (!parent || parent.anchor?.type !== anchorType || String(parent.anchor?.id) !== anchorId) {
           return res.status(404).json({ error: 'Post not found' });
         }
         parentId = parent.parent_id ? String(parent.parent_id) : String(parent._id);
@@ -202,17 +236,22 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
     try {
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
+      const gated = await gateForPost(req.user, post);
+      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
       const userId = String(req.user._id);
       if (String(post.author_id) === userId) {
         return res.status(400).json({ error: 'You cannot upvote your own post' });
       }
       const others = (post.upvotes || []).filter((u) => String(u) !== userId);
       const upvoted = others.length === (post.upvotes || []).length; // not mine yet -> add
-      await DiscussionPost.updateOne(
-        { _id: post._id },
-        upvoted ? { $addToSet: { upvotes: req.user._id } } : { $pull: { upvotes: req.user._id } }
-      );
-      return res.json({ upvoted, upvote_count: others.length + (upvoted ? 1 : 0) });
+      // { new: true } so the count returned is the stored one, not this
+      // request's guess at it.
+      const updated = await DiscussionPost.findByIdAndUpdate(
+        post._id,
+        upvoted ? { $addToSet: { upvotes: req.user._id } } : { $pull: { upvotes: req.user._id } },
+        { new: true }
+      ).lean();
+      return res.json({ upvoted, upvote_count: (updated?.upvotes || []).length });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to record the upvote' });
@@ -227,24 +266,22 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       }
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
+      const gated = await gateForPost(req.user, post);
+      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
 
-      // Idempotent per user: a second report from the same person changes
-      // nothing and still answers 200 (spec §8).
-      const userId = String(req.user._id);
-      if ((post.reports || []).some((r) => String(r.user_id) === userId)) {
-        return res.json({ ok: true, hidden: Boolean(post.is_hidden) });
-      }
-
-      // $push and $inc in ONE update, so report_count can never drift from
-      // reports.length under concurrent reports.
-      const updated = await DiscussionPost.findByIdAndUpdate(
-        post._id,
+      // One report per user per post, and `report_count` in step with
+      // `reports.length` — both in ONE conditional update, so two concurrent
+      // reports from the same person cannot both pass a read-then-write check
+      // (fix round 1, Important 3). A null result means "already reported".
+      const updated = await DiscussionPost.findOneAndUpdate(
+        { _id: post._id, 'reports.user_id': { $ne: req.user._id } },
         { $push: { reports: { user_id: req.user._id, reason, at: new Date() } }, $inc: { report_count: 1 } },
         { new: true }
       ).lean();
+      if (!updated) return res.json({ ok: true, hidden: Boolean(post.is_hidden) });
 
-      let hidden = Boolean(updated?.is_hidden);
-      if (!hidden && shouldAutoHide(updated?.reports)) {
+      let hidden = Boolean(updated.is_hidden);
+      if (!hidden && shouldAutoHide(updated.reports)) {
         await DiscussionPost.updateOne({ _id: post._id }, { $set: { is_hidden: true, hidden_reason: 'auto_reports' } });
         hidden = true;
         await recordAudit(req, {
@@ -255,7 +292,17 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
           before: { is_hidden: false, report_count: post.report_count || 0 },
           after: { is_hidden: true, hidden_reason: 'auto_reports', report_count: updated.report_count },
         });
-        await maybeMute(req, updated.author_id);
+        const author = await User.findById(updated.author_id).select('email discussion_muted_until').lean();
+        if (author?.email) {
+          await createNotification({
+            userEmail: author.email,
+            title: 'Your post was hidden',
+            message: `Your post on ${gated.lecture.title || 'a lecture'} was hidden after reports from other students.`,
+            type: 'warning',
+            link: DISCUSSION_LINK,
+          });
+        }
+        await maybeMute(req, updated.author_id, { trigger: 'auto_reports', author });
       }
       return res.json({ ok: true, hidden });
     } catch (err) {
@@ -270,6 +317,9 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       const has = (key) => Object.prototype.hasOwnProperty.call(updates, key);
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
+      const gated = await gateForPost(req.user, post);
+      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
+      const lectureTitle = gated.lecture.title || 'a lecture';
 
       const moderator = isModerator(req.user);
       const wantsModeration = has('is_pinned') || has('is_hidden');
@@ -314,6 +364,17 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
 
       const updated = await DiscussionPost.findByIdAndUpdate(post._id, { $set: set }, { new: true }).lean();
 
+      if (pinning !== null && Boolean(post.is_pinned) !== pinning) {
+        await recordAudit(req, {
+          action: pinning ? 'discussion.pinned' : 'discussion.unpinned',
+          target_type: 'discussion_post',
+          target_id: post._id,
+          target_label: lectureTitle,
+          before: { is_pinned: Boolean(post.is_pinned) },
+          after: { is_pinned: pinning },
+        });
+      }
+
       if (hiding !== null && Boolean(post.is_hidden) !== hiding) {
         await recordAudit(req, {
           action: hiding ? 'discussion.hidden' : 'discussion.unhidden',
@@ -324,17 +385,19 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
           after: { is_hidden: hiding, hidden_reason: set.hidden_reason },
         });
         if (hiding) {
-          const author = await User.findById(post.author_id).select('email').lean();
+          // Loaded once and handed to maybeMute, which needs the same two
+          // fields (email to notify, discussion_muted_until to not re-mute).
+          const author = await User.findById(post.author_id).select('email discussion_muted_until').lean();
           if (author?.email) {
             await createNotification({
               userEmail: author.email,
               title: 'Your post was hidden',
-              message: 'A moderator hid your post in a lecture discussion. Please keep posts respectful and on topic.',
+              message: `A moderator hid your post on ${lectureTitle}: it did not meet the discussion guidelines.`,
               type: 'warning',
               link: DISCUSSION_LINK,
             });
           }
-          await maybeMute(req, post.author_id);
+          await maybeMute(req, post.author_id, { trigger: 'moderator', author });
         }
       }
 
@@ -371,8 +434,14 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
   }
 
   // Spec §6 mute rule: three hidden posts in 30 days pauses posting for 7
-  // days. Called after a hide (by a moderator or by auto-reports).
-  async function maybeMute(req, authorId) {
+  // days, and the notification is sent ONCE (fix round 1, Important 1).
+  // Called after a hide, by a moderator or by auto-reports; `author` is the
+  // already-loaded author document where the caller has one.
+  async function maybeMute(req, authorId, { trigger = 'moderator', author } = {}) {
+    const target = author || await User.findById(authorId).select('email discussion_muted_until').lean();
+    // Already paused: every later hide inside the window would otherwise
+    // extend the mute and notify again.
+    if (activeMute(target)) return;
     const hidden = await DiscussionPost.find({
       author_id: authorId,
       is_hidden: true,
@@ -380,16 +449,17 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
     }).select('created_date').lean();
     const until = nextMuteUntil(hidden.map((p) => p.created_date));
     if (!until) return;
-    const author = await User.findByIdAndUpdate(authorId, { $set: { discussion_muted_until: until } }, { new: true }).lean();
+    const muted = await User.findByIdAndUpdate(authorId, { $set: { discussion_muted_until: until } }, { new: true }).lean();
+    const email = muted?.email || target?.email;
     await recordAudit(req, {
       action: 'discussion.user_muted',
       target_type: 'user',
       target_id: authorId,
-      target_label: author?.email,
-      after: { muted_until: until },
+      target_label: email,
+      after: { muted_until: until, trigger },
     });
     await createNotification({
-      userEmail: author?.email,
+      userEmail: email,
       title: 'Posting paused',
       message: `Posting in discussions is paused until ${until.toDateString()} after several posts were hidden.`,
       type: 'warning',

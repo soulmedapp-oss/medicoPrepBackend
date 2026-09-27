@@ -16,8 +16,10 @@ function createDiscussionsRoutes({ authMiddleware, createNotification, loadVideo
     message: 'You are posting too fast. Please wait a minute.',
   });
 
-  // /discussions/reports must come BEFORE /discussions/:id — otherwise the
-  // :id param validator answers 400 "Invalid id" for the literal "reports".
+  // /discussions/reports stays first, ahead of every /discussions/:id route.
+  // Nothing shadows it today (there is no GET /discussions/:id), but the day
+  // one is added, the :id param validator would answer 400 "Invalid id" for
+  // the literal "reports" — and the shadowing would be silent.
   router.get('/discussions/reports', authMiddleware, authorize('CanModerateDiscussions'), controller.listReports);
   router.get('/discussions', authMiddleware, authorize('CanAccessDiscussions'), controller.listThread);
   router.post('/discussions', authMiddleware, authorize('CanAccessDiscussions'), postLimiter, controller.createPost);

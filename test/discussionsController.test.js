@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 
 const DiscussionPost = require('../src/models/DiscussionPost');
 const User = require('../src/models/User');
+const Video = require('../src/models/Video');
 const AuditLog = require('../src/models/AuditLog');
 const { DEFAULT_AVATAR_ID } = require('../src/utils/identity');
 const { createDiscussionsController } = require('../src/controllers/discussionsController');
@@ -50,6 +51,11 @@ test.afterEach(() => {
 });
 test.beforeEach(() => {
   stub(AuditLog, 'create', async () => {});
+  // Fix round 1: a moderator bypasses playability, so the gate resolves the
+  // lecture straight off the Video model. Defaulted here (and User.findById to
+  // "no such user", i.e. no notification) so no test can reach a real model.
+  stub(Video, 'findById', () => q(LECTURE));
+  stub(User, 'findById', () => q(null));
 });
 
 function makeUser(effective_permissions, extra) {
@@ -138,7 +144,9 @@ test('listThread: students receive snapshot identities only; moderators receive 
   };
 
   let filter;
-  let rows = [reply, top]; // deliberately not in display order
+  // The rows come back in the query's order (created_date desc); the
+  // controller relies on that sort rather than re-sorting in JS.
+  let rows = [top, reply];
   stub(DiscussionPost, 'find', (f) => { filter = f; return q(rows); });
   stub(User, 'find', () => q([author]));
 
@@ -167,7 +175,7 @@ test('listThread: students receive snapshot identities only; moderators receive 
   assert.equal(first.replies[0].identity.email, undefined);
 
   // The same thread for a moderator: hidden posts included, real identities.
-  rows = [reply, top, hidden];
+  rows = [hidden, top, reply]; // hidden is the newest top-level post
   const moderator = makeUser(['CanAccessDiscussions', 'CanModerateDiscussions']);
   const res2 = mockRes();
   await controller().listThread(reqFor(moderator, { query: { anchor_type: 'lecture', anchor_id: anchorId } }), res2);
@@ -240,6 +248,24 @@ test('createPost: 403 with the date while muted; 400 on profanity; 400 outside 2
   assert.equal(res.body.post.identity.display_name, 'DrRao');
   assert.equal(res.body.post.is_mine, true);
   assert.equal(res.body.post.can_edit, true);
+
+  // video_time belongs to a question, not a reply, and is capped at the
+  // lecture's duration when one is known.
+  res = mockRes();
+  await controller().createPost(reqFor(student, {
+    body: { anchor_type: 'lecture', anchor_id: anchorId, parent_id: String(oid()), body: 'A reply.', video_time: 12 },
+  }), res);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /only for a new question/);
+
+  created = null;
+  res = mockRes();
+  await controller({ loadVideoForPlayback: async () => ({ video: { ...LECTURE, duration_seconds: 600 } }) })
+    .createPost(reqFor(student, {
+      body: { anchor_type: 'lecture', anchor_id: anchorId, body: 'Right at the end.', video_time: 601 },
+    }), res);
+  assert.equal(res.statusCode, 201, JSON.stringify(res.body));
+  assert.equal(created.video_time, 600, 'capped at the lecture duration');
 
   // No nickname, no avatar: first name and the default avatar.
   created = null;
@@ -318,9 +344,16 @@ test('toggleUpvote: toggles on and off atomically, and refuses your own post', a
   const me = makeUser(['CanAccessDiscussions']);
   const other = oid();
   let update = null;
-  stub(DiscussionPost, 'updateOne', async (filter, u) => { update = u; return { modifiedCount: 1 }; });
+  // The count comes back from the stored document ({ new: true }), so the stub
+  // applies the operator the controller sent.
+  stub(DiscussionPost, 'findByIdAndUpdate', (id, u) => {
+    update = u;
+    const before = u.$addToSet ? [] : [me._id, other];
+    const after = u.$addToSet ? [...before, me._id] : before.filter((x) => String(x) !== String(me._id));
+    return q({ _id: id, upvotes: after });
+  });
 
-  const mine = { _id: oid(), author_id: me._id, upvotes: [] };
+  const mine = { _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, author_id: me._id, upvotes: [] };
   stub(DiscussionPost, 'findById', () => q(mine));
   let res = mockRes();
   await controller().toggleUpvote(reqFor(me, { params: { id: String(mine._id) } }), res);
@@ -328,7 +361,7 @@ test('toggleUpvote: toggles on and off atomically, and refuses your own post', a
   assert.match(res.body.error, /own post/);
   assert.equal(update, null);
 
-  const post = { _id: oid(), author_id: other, upvotes: [] };
+  const post = { _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, author_id: other, upvotes: [] };
   stub(DiscussionPost, 'findById', () => q(post));
   res = mockRes();
   await controller().toggleUpvote(reqFor(me, { params: { id: String(post._id) } }), res);
@@ -337,7 +370,7 @@ test('toggleUpvote: toggles on and off atomically, and refuses your own post', a
   assert.ok(update.$addToSet, 'an upvote is an $addToSet');
   assert.equal(String(update.$addToSet.upvotes), String(me._id));
 
-  const again = { _id: post._id, author_id: other, upvotes: [me._id, other] };
+  const again = { _id: post._id, anchor: { type: 'lecture', id: LECTURE._id }, author_id: other, upvotes: [me._id, other] };
   stub(DiscussionPost, 'findById', () => q(again));
   res = mockRes();
   await controller().toggleUpvote(reqFor(me, { params: { id: String(post._id) } }), res);
@@ -356,8 +389,10 @@ test('reportPost: one report per user; the third distinct reporter hides the pos
     _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, author_id: oid(), body: 'junk',
     reports: [r1, r2], report_count: 2, is_hidden: false, upvotes: [],
   };
+  let guard = null;
   let pushed = null;
-  stub(DiscussionPost, 'findByIdAndUpdate', (id, u) => {
+  stub(DiscussionPost, 'findOneAndUpdate', (f, u) => {
+    guard = f;
     pushed = u;
     return q({ ...post, reports: [r1, r2, { user_id: me._id, reason: 'abuse', at: new Date() }], report_count: 3 });
   });
@@ -368,26 +403,40 @@ test('reportPost: one report per user; the third distinct reporter hides the pos
   assert.equal(res.statusCode, 400);
   assert.equal(pushed, null);
 
+  // Already reported: the guard is IN the update, so Mongo matches nothing and
+  // the controller sees null — no read-then-write window.
   const seen = { ...post, reports: [r1, { user_id: me._id, reason: 'spam', at: new Date() }] };
   stub(DiscussionPost, 'findById', () => q(seen));
+  stub(DiscussionPost, 'findOneAndUpdate', (f, u) => { guard = f; pushed = u; return q(null); });
   res = mockRes();
   await controller().reportPost(reqFor(me, { params: { id: String(seen._id) }, body: { reason: 'abuse' } }), res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, { ok: true, hidden: false });
-  assert.equal(pushed, null, 'a second report from the same user writes nothing');
+  assert.deepEqual(guard['reports.user_id'], { $ne: me._id }, 'one report per user is a condition on the write');
 
   stub(DiscussionPost, 'findById', () => q(post));
+  stub(DiscussionPost, 'findOneAndUpdate', (f, u) => {
+    guard = f;
+    pushed = u;
+    return q({ ...post, reports: [r1, r2, { user_id: me._id, reason: 'abuse', at: new Date() }], report_count: 3 });
+  });
   let hide = null;
   stub(DiscussionPost, 'updateOne', async (f, u) => { hide = u; return { modifiedCount: 1 }; });
   stub(DiscussionPost, 'find', () => q([{ created_date: new Date() }]));
   let muted = null;
   stub(User, 'findByIdAndUpdate', (id, u) => { muted = u; return q({ _id: post.author_id, email: 'author@x.com' }); });
+  stub(User, 'findById', () => q({ _id: post.author_id, email: 'author@x.com' }));
   const audits = [];
   stub(AuditLog, 'create', async (doc) => { audits.push(doc); });
+  const notes = [];
   res = mockRes();
-  await controller().reportPost(reqFor(me, { params: { id: String(post._id) }, body: { reason: 'abuse' } }), res);
+  await controller({ createNotification: async (n) => { notes.push(n); } })
+    .reportPost(reqFor(me, { params: { id: String(post._id) }, body: { reason: 'abuse' } }), res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, { ok: true, hidden: true });
+  assert.equal(notes.length, 1, 'the author is told their post was hidden');
+  assert.equal(notes[0].userEmail, 'author@x.com');
+  assert.match(notes[0].message, /hidden after reports/);
   assert.ok(pushed.$push.reports, 'the report is pushed');
   assert.equal(pushed.$inc.report_count, 1, 'report_count moves in the same atomic update');
   assert.equal(hide.$set.is_hidden, true);
@@ -498,6 +547,7 @@ test('updatePost: a moderator hide that is the author third hidden post in 30 da
   const days = (until.getTime() - Date.now()) / 86400000;
   assert.ok(days > 6.9 && days < 7.1, `muted for about 7 days, got ${days}`);
   assert.deepEqual(audits.map((a) => a.action).sort(), ['discussion.hidden', 'discussion.user_muted']);
+  assert.equal(audits.find((a) => a.action === 'discussion.user_muted').after.trigger, 'moderator');
   const mute = notes.find((n) => n.title === 'Posting paused');
   assert.ok(mute, JSON.stringify(notes));
   assert.equal(mute.userEmail, 'ro@x.com');
@@ -539,4 +589,154 @@ test('listReports: only reported or hidden posts, in queue order, with moderator
   assert.equal(String(res.body.posts[0].anchor.id), String(LECTURE._id));
   assert.equal(res.body.posts[1].is_hidden, true);
   assert.equal(res.body.posts[1].hidden_reason, 'moderator');
+});
+
+// --- 11. fix round 1, Critical 1: the by-id routes are gated too ---
+
+test('the by-id routes run the same lecture gate: a caller who cannot play the lecture cannot upvote, report or edit its posts', async () => {
+  const me = makeUser(['CanAccessDiscussions']);
+  const post = {
+    _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: oid(),
+    body: 'Q', created_date: new Date(), upvotes: [], reports: [],
+  };
+  const mine = { ...post, author_id: me._id };
+  let writes = 0;
+  stub(DiscussionPost, 'findByIdAndUpdate', () => { writes += 1; return q(post); });
+  stub(DiscussionPost, 'findOneAndUpdate', () => { writes += 1; return q(post); });
+  stub(DiscussionPost, 'updateOne', async () => { writes += 1; return { modifiedCount: 1 }; });
+  stub(DiscussionPost, 'updateMany', async () => { writes += 1; return { modifiedCount: 1 }; });
+  const refused = controller({ loadVideoForPlayback: async () => ({ error: 'Video not found' }) });
+
+  stub(DiscussionPost, 'findById', () => q(post));
+  let res = mockRes();
+  await refused.toggleUpvote(reqFor(me, { params: { id: String(post._id) } }), res);
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.body.error, 'Video not found');
+
+  res = mockRes();
+  await refused.reportPost(reqFor(me, { params: { id: String(post._id) }, body: { reason: 'spam' } }), res);
+  assert.equal(res.statusCode, 404, 'three reporters on a lecture they cannot see must not be able to auto-hide a post');
+
+  stub(DiscussionPost, 'findById', () => q(mine));
+  res = mockRes();
+  await refused.updatePost(reqFor(me, { params: { id: String(mine._id) }, body: { body: 'a sneaky edit' } }), res);
+  assert.equal(res.statusCode, 404);
+
+  assert.equal(writes, 0, 'nothing is written by any of the three');
+
+  // A plan-level refusal keeps its own status here too.
+  stub(DiscussionPost, 'findById', () => q(post));
+  res = mockRes();
+  await controller({ loadVideoForPlayback: async () => ({ error: 'Upgrade your plan', status: 403 }) })
+    .toggleUpvote(reqFor(me, { params: { id: String(post._id) } }), res);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.error, 'Upgrade your plan');
+  assert.equal(writes, 0);
+});
+
+// --- 12. fix round 1 ruling: moderators bypass playability, not existence ---
+
+test('the gate lets a moderator through without CanViewVideos: playability is never consulted, the lecture only has to exist', async () => {
+  const moderator = makeUser(['CanModerateDiscussions']); // a manage_doubts role: no CanViewVideos
+  let playbackCalls = 0;
+  const c = controller({ loadVideoForPlayback: async () => { playbackCalls += 1; return { error: 'Video not found' }; } });
+  stub(DiscussionPost, 'find', () => q([]));
+  stub(User, 'find', () => q([]));
+
+  let res = mockRes();
+  await c.listThread(reqFor(moderator, { query: { anchor_type: 'lecture', anchor_id: String(LECTURE._id) } }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(playbackCalls, 0, 'moderation is not playback');
+
+  const post = {
+    _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: oid(),
+    body: 'x', created_date: new Date(), upvotes: [],
+  };
+  stub(DiscussionPost, 'findById', () => q(post));
+  stub(DiscussionPost, 'findByIdAndUpdate', (id, u) => q({ ...post, ...u.$set }));
+  stub(DiscussionPost, 'updateMany', async () => ({ modifiedCount: 0 }));
+  res = mockRes();
+  await c.updatePost(reqFor(moderator, { params: { id: String(post._id) }, body: { is_pinned: true } }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(playbackCalls, 0);
+
+  // A lecture that no longer exists still 404s, moderator or not.
+  stub(Video, 'findById', () => q(null));
+  res = mockRes();
+  await c.listThread(reqFor(moderator, { query: { anchor_type: 'lecture', anchor_id: String(LECTURE._id) } }), res);
+  assert.equal(res.statusCode, 404);
+});
+
+// --- 13. fix round 1, Important 1: the mute is announced once ---
+
+test('maybeMute: a further hide while the author is already muted neither extends the mute nor notifies again', async () => {
+  const teacher = makeUser(['CanAccessDiscussions', 'CanModerateDiscussions']);
+  const authorId = oid();
+  const post = {
+    _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: authorId,
+    body: 'again', created_date: new Date(), upvotes: [],
+  };
+  stub(DiscussionPost, 'findById', () => q(post));
+  stub(DiscussionPost, 'findByIdAndUpdate', (id, u) => q({ ...post, ...u.$set }));
+  let hiddenLookups = 0;
+  stub(DiscussionPost, 'find', () => {
+    hiddenLookups += 1;
+    return q([{ created_date: new Date() }, { created_date: new Date() }, { created_date: new Date() }]);
+  });
+  stub(User, 'find', () => q([]));
+  stub(User, 'findById', () => q({ _id: authorId, email: 'ro@x.com', discussion_muted_until: new Date(Date.now() + 5 * 86400000) }));
+  let muteWrites = 0;
+  stub(User, 'findByIdAndUpdate', () => { muteWrites += 1; return q({}); });
+  const audits = [];
+  stub(AuditLog, 'create', async (d) => { audits.push(d); });
+  const notes = [];
+  const res = mockRes();
+  await controller({ createNotification: async (n) => { notes.push(n); } })
+    .updatePost(reqFor(teacher, { params: { id: String(post._id) }, body: { is_hidden: true } }), res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(muteWrites, 0, 'an active mute is never extended');
+  assert.equal(hiddenLookups, 0, 'the hidden-post count is not even asked for');
+  assert.deepEqual(audits.map((a) => a.action), ['discussion.hidden'], 'no second discussion.user_muted row');
+  assert.deepEqual(notes.map((n) => n.title), ['Your post was hidden'], 'no second Posting paused notification');
+});
+
+// --- 14. fix round 1, Important 2: pinning is audited ---
+
+test('updatePost: pinning and unpinning are audited, and a no-op pin writes no row', async () => {
+  const teacher = makeUser(['CanAccessDiscussions', 'CanModerateDiscussions']);
+  const post = {
+    _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: oid(),
+    body: 'the answer', created_date: new Date(), upvotes: [], is_pinned: false,
+  };
+  stub(DiscussionPost, 'findByIdAndUpdate', (id, u) => q({ ...post, ...u.$set }));
+  stub(DiscussionPost, 'updateMany', async () => ({ modifiedCount: 0 }));
+  stub(User, 'find', () => q([]));
+  const audits = [];
+  stub(AuditLog, 'create', async (d) => { audits.push(d); });
+
+  stub(DiscussionPost, 'findById', () => q(post));
+  let res = mockRes();
+  await controller().updatePost(reqFor(teacher, { params: { id: String(post._id) }, body: { is_pinned: true } }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].action, 'discussion.pinned');
+  assert.equal(audits[0].target_type, 'discussion_post');
+  assert.equal(audits[0].target_id, String(post._id));
+  assert.equal(audits[0].target_label, 'ENT basics', 'the lecture the pinned answer belongs to');
+  assert.deepEqual(audits[0].before, { is_pinned: false });
+  assert.deepEqual(audits[0].after, { is_pinned: true });
+
+  audits.length = 0;
+  stub(DiscussionPost, 'findById', () => q({ ...post, is_pinned: true }));
+  res = mockRes();
+  await controller().updatePost(reqFor(teacher, { params: { id: String(post._id) }, body: { is_pinned: false } }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(audits.map((a) => a.action), ['discussion.unpinned']);
+
+  audits.length = 0;
+  res = mockRes();
+  await controller().updatePost(reqFor(teacher, { params: { id: String(post._id) }, body: { is_pinned: true } }), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(audits, [], 'pinning an already pinned post changes nothing to record');
 });
