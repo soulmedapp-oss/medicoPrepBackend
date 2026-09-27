@@ -2,6 +2,7 @@ const Video = require('../models/Video');
 const User = require('../models/User');
 const Playlist = require('../models/Playlist');
 const VideoProgress = require('../models/VideoProgress');
+const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
 const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
@@ -565,6 +566,10 @@ function createVideosController() {
         { $pull: { items: { lecture_id: video._id } }, $set: { updated_by: req.userId, updated_by_at: new Date() } }
       );
       const progress = await VideoProgress.deleteMany({ video_id: video._id });
+      // The lecture's discussion thread goes with it (spec §8): deactivating a
+      // lecture leaves the posts alone, but a hard delete leaves no anchor for
+      // them to hang off, so they would be unreachable rows forever.
+      const discussions = await DiscussionPost.deleteMany({ 'anchor.type': 'lecture', 'anchor.id': video._id });
       await Video.deleteOne({ _id: video._id });
 
       await recordAudit(req, {
@@ -585,6 +590,7 @@ function createVideosController() {
           created_date: video.created_date,
           playlists: playlists.map((p) => ({ _id: p._id, name: p.name })),
           progress_rows: progress.deletedCount,
+          discussions_deleted: discussions.deletedCount,
         },
         after: { bunny },
       });
@@ -594,6 +600,7 @@ function createVideosController() {
         bunny,
         playlists_updated: pulled.modifiedCount,
         progress_deleted: progress.deletedCount,
+        discussions_deleted: discussions.deletedCount,
       });
     } catch (err) {
       reportError(req, err);
@@ -843,6 +850,9 @@ function createVideosController() {
   }
 
   return {
+    // Exported so the discussions router can reuse the ONE playback gate
+    // rather than growing a second copy of the entitlement rule.
+    loadVideoForPlayback,
     listVideos,
     createVideo,
     updateVideo,

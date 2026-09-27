@@ -30,6 +30,7 @@ const { authorize, selfService, publicRoute } = require('./rbac/authorize');
 const authRoutes = require('./routes/authRoutes');
 const createTestsRoutes = require('./routes/testsRoutes');
 const createDoubtsRoutes = require('./routes/doubtsRoutes');
+const createDiscussionsRoutes = require('./routes/discussionsRoutes');
 const createFeedbackRoutes = require('./routes/feedbackRoutes');
 const createConnectionsRoutes = require('./routes/connectionsRoutes');
 const createGroupsRoutes = require('./routes/groupsRoutes');
@@ -53,6 +54,7 @@ const createDashboardRoutes = require('./routes/dashboardRoutes');
 // removed: engagement routes (case of day, precision review, boss week)
 const { handleZoomWebhook } = require('./controllers/zoomController');
 const { createPaymentsController } = require('./controllers/paymentsController');
+const { createVideosController } = require('./controllers/videosController');
 const { authMiddleware } = require('./middlewares/auth');
 const { getRateLimitStats } = require('./middlewares/rateLimit');
 const { errorHandler, createCorsError } = require('./middlewares/errorHandler');
@@ -704,6 +706,18 @@ app.use(
   createDoubtsRoutes({
     authMiddleware,
     createNotification,
+  })
+);
+// A lecture discussion is gated by the lecture, so it reuses the ONE
+// playback gate (spec 6) instead of a second copy of the entitlement rule.
+// createVideosController() is stateless, so this instance is equivalent to
+// the one videosRoutes builds for itself.
+const { loadVideoForPlayback } = createVideosController();
+app.use(
+  createDiscussionsRoutes({
+    authMiddleware,
+    createNotification,
+    loadVideoForPlayback,
   })
 );
 app.use(

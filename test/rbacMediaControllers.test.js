@@ -554,15 +554,20 @@ test('deleteVideo: a not-found video writes nothing to the audit log', async () 
 // own guarantees: deactivated-first, Bunny-first, 404-tolerant, full cleanup,
 // and an audit row that names what was destroyed.
 const VideoProgress = require('../src/models/VideoProgress');
+const DiscussionPost = require('../src/models/DiscussionPost');
 const bunnyProvider = require('../src/services/video/bunnyProvider');
 const { canHardDelete } = require('../src/controllers/videosController');
 
-function stubCleanup({ playlists = [], progressCount = 0 } = {}) {
-  const calls = { pull: 0, progressDeleted: 0, videoDeleted: 0 };
+// Task 3: the hard delete also removes the lecture's discussion thread, so
+// DiscussionPost.deleteMany is stubbed here too — otherwise these tests would
+// reach the real model with no database behind it.
+function stubCleanup({ playlists = [], progressCount = 0, discussionCount = 0 } = {}) {
+  const calls = { pull: 0, progressDeleted: 0, videoDeleted: 0, discussionsDeleted: 0 };
   stub(Playlist, 'find', () => q(playlists));
   stub(Playlist, 'updateMany', async () => { calls.pull += 1; return { modifiedCount: playlists.length }; });
   stub(VideoProgress, 'countDocuments', async () => progressCount);
   stub(VideoProgress, 'deleteMany', async () => { calls.progressDeleted += 1; return { deletedCount: progressCount }; });
+  stub(DiscussionPost, 'deleteMany', async () => { calls.discussionsDeleted += 1; return { deletedCount: discussionCount }; });
   stub(Video, 'deleteOne', async () => { calls.videoDeleted += 1; return { deletedCount: 1 }; });
   return calls;
 }
@@ -584,7 +589,7 @@ test('permanentlyDeleteVideo: an ACTIVE lecture is refused with 409 and nothing 
   await videosController().permanentlyDeleteVideo({ user: makeUser(['CanDeleteVideos']), userId: oid(), params: { id: String(video._id) } }, res);
   assert.equal(res.statusCode, 409);
   assert.equal(bunnyCalled, false);
-  assert.deepEqual(calls, { pull: 0, progressDeleted: 0, videoDeleted: 0 });
+  assert.deepEqual(calls, { pull: 0, progressDeleted: 0, videoDeleted: 0, discussionsDeleted: 0 });
 });
 
 test('permanentlyDeleteVideo: Bunny refusal -> 502 and local records untouched', async () => {
@@ -597,7 +602,7 @@ test('permanentlyDeleteVideo: Bunny refusal -> 502 and local records untouched',
   const res = mockRes();
   await videosController().permanentlyDeleteVideo({ user: makeUser(['CanDeleteVideos']), userId: oid(), params: { id: String(video._id) } }, res);
   assert.equal(res.statusCode, 502);
-  assert.deepEqual(calls, { pull: 0, progressDeleted: 0, videoDeleted: 0 });
+  assert.deepEqual(calls, { pull: 0, progressDeleted: 0, videoDeleted: 0, discussionsDeleted: 0 });
   assert.equal(audited, false);
 });
 
@@ -605,7 +610,7 @@ test('permanentlyDeleteVideo: happy path removes from Bunny, playlists, progress
   const video = { _id: oid(), title: 'Old lecture', subject: 'ENT', is_active: false, provider: 'bunny', bunny_video_id: 'g1', bunny_library_id: '99' };
   stub(Video, 'findById', () => q(video));
   const playlists = [{ _id: oid(), name: 'ENT Basics' }, { _id: oid(), name: 'Crash Course' }];
-  const calls = stubCleanup({ playlists, progressCount: 37 });
+  const calls = stubCleanup({ playlists, progressCount: 37, discussionCount: 4 });
   let bunnyId;
   stub(bunnyProvider, 'deleteVideo', async (id) => { bunnyId = id; return { deleted: true, missing: false }; });
   let saved;
@@ -614,13 +619,20 @@ test('permanentlyDeleteVideo: happy path removes from Bunny, playlists, progress
   await videosController().permanentlyDeleteVideo({ user: makeUser(['CanDeleteVideos']), userId: oid(), params: { id: String(video._id) } }, res);
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
   assert.equal(bunnyId, 'g1');
-  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1 });
-  assert.deepEqual(res.body, { ok: true, bunny: { deleted: true, missing: false, skipped: false }, playlists_updated: 2, progress_deleted: 37 });
+  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1, discussionsDeleted: 1 });
+  assert.deepEqual(res.body, {
+    ok: true,
+    bunny: { deleted: true, missing: false, skipped: false },
+    playlists_updated: 2,
+    progress_deleted: 37,
+    discussions_deleted: 4,
+  });
   assert.equal(saved.action, 'video.deleted');
   assert.equal(saved.target_label, 'Old lecture');
   assert.equal(saved.before.bunny_video_id, 'g1');
   assert.deepEqual(saved.before.playlists.map((p) => p.name), ['ENT Basics', 'Crash Course']);
   assert.equal(saved.before.progress_rows, 37);
+  assert.equal(saved.before.discussions_deleted, 4, 'the audit row names the discussion posts destroyed with the lecture');
 });
 
 test('permanentlyDeleteVideo: a Bunny 404 (already removed in the dashboard) still cleans up locally', async () => {
@@ -632,7 +644,7 @@ test('permanentlyDeleteVideo: a Bunny 404 (already removed in the dashboard) sti
   await videosController().permanentlyDeleteVideo({ user: makeUser(['CanDeleteVideos']), userId: oid(), params: { id: String(video._id) } }, res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body.bunny, { deleted: false, missing: true, skipped: false });
-  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1 });
+  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1, discussionsDeleted: 1 });
 });
 
 test('permanentlyDeleteVideo: a YouTube lecture skips Bunny entirely', async () => {
@@ -646,7 +658,7 @@ test('permanentlyDeleteVideo: a YouTube lecture skips Bunny entirely', async () 
   assert.equal(res.statusCode, 200);
   assert.equal(bunnyCalled, false);
   assert.deepEqual(res.body.bunny, { deleted: false, missing: false, skipped: true });
-  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1 });
+  assert.deepEqual(calls, { pull: 1, progressDeleted: 1, videoDeleted: 1, discussionsDeleted: 1 });
 });
 
 test('deletionImpact: reports playlists, progress count and whether the delete is allowed', async () => {

@@ -5,6 +5,7 @@ const { listRoutes } = require('../src/rbac/listRoutes');
 const createTestsRoutes = require('../src/routes/testsRoutes');
 const createTutorSessionsRoutes = require('../src/routes/tutorSessionsRoutes');
 const createSubjectsRoutes = require('../src/routes/subjectsRoutes');
+const createDiscussionsRoutes = require('../src/routes/discussionsRoutes');
 
 const pass = (req, res, next) => next();
 const deps = {
@@ -69,4 +70,18 @@ test('subjects routes', () => {
   expectRule(routes, 'POST', '/subjects/:id/subtopics', 'permission', ['CanAddSubjects']);
   expectRule(routes, 'PATCH', '/subjects/:id/subtopics/:subtopicId', 'permission', ['CanEditSubjects']);
   expectRule(routes, 'PUT', '/subjects/:id/owners', 'permission', ['CanManageSubjectOwners']);
+});
+
+test('discussions routes', () => {
+  const routes = rulesFor(createDiscussionsRoutes);
+  expectRule(routes, 'GET', '/discussions/reports', 'permission', ['CanModerateDiscussions']);
+  expectRule(routes, 'GET', '/discussions', 'permission', ['CanAccessDiscussions']);
+  expectRule(routes, 'POST', '/discussions', 'permission', ['CanAccessDiscussions']);
+  expectRule(routes, 'POST', '/discussions/:id/upvote', 'permission', ['CanAccessDiscussions']);
+  expectRule(routes, 'POST', '/discussions/:id/report', 'permission', ['CanAccessDiscussions']);
+  expectRule(routes, 'PATCH', '/discussions/:id', 'permission', ['CanAccessDiscussions', 'CanModerateDiscussions']);
+  // The literal /discussions/reports must be registered before /discussions/:id,
+  // or validateObjectIdParams answers 400 "Invalid id" for "reports".
+  const paths = routes.map((r) => r.path);
+  assert.ok(paths.indexOf('/discussions/reports') < paths.indexOf('/discussions/:id'), paths.join(' '));
 });

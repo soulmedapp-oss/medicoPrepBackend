@@ -32,8 +32,7 @@ test('no permission in the catalogue is unused by both routes and controllers', 
   // CanAccessProgress/Subscription/Payments gate frontend pages only (their APIs are selfService).
   const frontendOnly = new Set(['CanAccessProgress', 'CanAccessSubscription', 'CanAccessPayments']);
   // Codes whose first backend use arrives with a LATER task. Each later task must delete its entry here.
-  // CanAccessDiscussions / CanModerateDiscussions: used by Task 3 (discussions routes).
-  const pendingLaterTasks = new Set(['CanAccessDiscussions', 'CanModerateDiscussions']);
+  const pendingLaterTasks = new Set();
   const unused = ALL_CODES.filter((code) => !frontendOnly.has(code) && !pendingLaterTasks.has(code) && !source.includes(`'${code}'`));
   assert.deepEqual(unused, []);
 });
