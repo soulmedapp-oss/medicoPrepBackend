@@ -9,7 +9,7 @@ const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
 const { normalizeTokenVersion } = require('../utils/security');
-const { validateNickname, isValidAvatarId } = require('../utils/identity');
+const { validateNickname, isValidAvatarId, isDuplicateNicknameError } = require('../utils/identity');
 const { loadPermissions } = require('../rbac/loadPermissions');
 const { reportError } = require('../lib/errorReporter.js');
 const session = require('../auth/session');
@@ -672,6 +672,13 @@ async function updateMe(req, res) {
     return res.json({ user: sanitizeUser(user) });
   } catch (err) {
     reportError(req, err);
+    // Fix round 1, Important 3: the pre-write uniqueness check above is a
+    // read-then-write race — a concurrent request can win the unique index
+    // between the check and this write. Turn that into the same 409 the
+    // pre-check would have given, not a 500.
+    if (isDuplicateNicknameError(err)) {
+      return res.status(409).json({ error: 'That nickname is already taken' });
+    }
     return res.status(500).json({ error: 'Failed to update user' });
   }
 }

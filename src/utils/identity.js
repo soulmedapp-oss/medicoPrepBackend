@@ -25,4 +25,18 @@ function displayNameFor(user) {
   return first || 'Student';
 }
 
-module.exports = { validateNickname, isValidAvatarId, AVATAR_IDS, DEFAULT_AVATAR_ID, displayNameFor };
+// Fix round 1, Important 3: `nickname_lc` is only ever checked for a taken
+// value before the write (updateMe / usersController.updateUser), which is a
+// read-then-write race — two concurrent requests can both pass that check
+// and both attempt to write the same nickname_lc, and only one wins the
+// unique index. The loser gets a Mongo duplicate-key error (code 11000)
+// instead of the 409 the pre-check would have given it; this turns that
+// error back into the same 409, rather than letting it fall through to a 500.
+function isDuplicateNicknameError(err) {
+  if (!err || err.code !== 11000) return false;
+  if (err.keyPattern && Object.prototype.hasOwnProperty.call(err.keyPattern, 'nickname_lc')) return true;
+  if (err.keyValue && Object.prototype.hasOwnProperty.call(err.keyValue, 'nickname_lc')) return true;
+  return /nickname_lc/.test(String(err.message || ''));
+}
+
+module.exports = { validateNickname, isValidAvatarId, AVATAR_IDS, DEFAULT_AVATAR_ID, displayNameFor, isDuplicateNicknameError };

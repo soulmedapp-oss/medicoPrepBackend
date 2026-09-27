@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
-const { validateNickname, isValidAvatarId, AVATAR_IDS, DEFAULT_AVATAR_ID, displayNameFor } = require('../src/utils/identity');
+const { validateNickname, isValidAvatarId, AVATAR_IDS, DEFAULT_AVATAR_ID, displayNameFor, isDuplicateNicknameError } = require('../src/utils/identity');
 const User = require('../src/models/User');
 const authController = require('../src/controllers/authController');
 
@@ -69,6 +69,17 @@ test('displayNameFor: nickname, else first name, else Student', () => {
   assert.equal(displayNameFor({}), 'Student');
 });
 
+// Fix round 1, Important 3: isDuplicateNicknameError.
+test('isDuplicateNicknameError: recognizes a Mongo duplicate-key error on nickname_lc, and only that', () => {
+  assert.equal(isDuplicateNicknameError({ code: 11000, keyPattern: { nickname_lc: 1 } }), true);
+  assert.equal(isDuplicateNicknameError({ code: 11000, keyValue: { nickname_lc: 'dr neuron' } }), true);
+  assert.equal(isDuplicateNicknameError({ code: 11000, message: 'E11000 duplicate key error collection: db.users index: nickname_lc_1 dup key: { nickname_lc: "dr neuron" }' }), true);
+  assert.equal(isDuplicateNicknameError({ code: 11000, keyPattern: { email: 1 } }), false, 'a duplicate on a different field must not match');
+  assert.equal(isDuplicateNicknameError({ code: 11001, keyPattern: { nickname_lc: 1 } }), false, 'the wrong error code must not match');
+  assert.equal(isDuplicateNicknameError(new Error('boom')), false);
+  assert.equal(isDuplicateNicknameError(null), false);
+});
+
 // --- authController.updateMe: nickname/avatar_id (Step 10) ---
 
 test('updateMe: a nickname taken by another user (any case) is refused 409, nothing written', async () => {
@@ -102,6 +113,8 @@ test('updateMe: a valid unique nickname is stored as typed with its lower-case t
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
   assert.equal(capturedOps.$set.nickname, 'Dr Neuron');
   assert.equal(capturedOps.$set.nickname_lc, 'dr neuron');
+  // Fix round 1, item 4: the internal uniqueness key never reaches the client.
+  assert.equal(res.body.user.nickname_lc, undefined);
 });
 
 test('updateMe: an unknown avatar id is refused 400', async () => {
@@ -116,4 +129,25 @@ test('updateMe: an unknown avatar id is refused 400', async () => {
   assert.equal(res.statusCode, 400);
   assert.equal(res.body.error, 'Unknown avatar');
   assert.equal(updateCalled, false, 'findByIdAndUpdate must not be called for an unknown avatar id');
+});
+
+// Fix round 1, Important 3: the pre-write check (User.exists) can be won by a
+// concurrent request between the check and the write itself; the loser must
+// still get 409, not a 500, when Mongo's unique index rejects the write.
+test('updateMe: a duplicate-key error from the write itself (lost the uniqueness race) is turned into 409, not 500', async () => {
+  const userId = oid();
+  stub(User, 'exists', async () => false);
+  stub(User, 'findByIdAndUpdate', () => {
+    const err = new Error('E11000 duplicate key error collection: db.users index: nickname_lc_1 dup key: { nickname_lc: "dr neuron" }');
+    err.code = 11000;
+    err.keyPattern = { nickname_lc: 1 };
+    throw err;
+  });
+
+  const req = { userId: String(userId), body: { nickname: 'Dr Neuron' } };
+  const res = mockRes();
+  await authController.updateMe(req, res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, 'That nickname is already taken');
 });

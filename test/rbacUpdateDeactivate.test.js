@@ -752,6 +752,63 @@ test('updateUser: reactivating a user whose admin_status is already active write
   assert.equal(Object.prototype.hasOwnProperty.call(written, 'admin_status'), false, 'admin_status must not be written when it was not inactive');
 });
 
+// Fix round 1, Important 1: the nickname shape check ("nickname can only be
+// cleared here") must run AFTER the permission gate, like every other field
+// validation in this handler — previously a caller lacking CanEditUsers got
+// this 400 before ever reaching the 403.
+test('updateUser: a caller lacking CanEditUsers who sends nickname is refused 403, not the nickname-shape 400', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Old', email: 'old@x.com', nickname: 'Dr Neuron' }));
+  let updateCalled = false;
+  stub(User, 'findByIdAndUpdate', () => { updateCalled = true; return q({ _id: id, toObject() { return this; } }); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: { _id: oid(), effective_permissions: [] }, body: { nickname: '' },
+  }, res);
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.body, { error: 'Permission denied', required: ['CanEditUsers'] });
+  assert.equal(updateCalled, false, 'the user must not be written when permission is denied');
+});
+
+// Fix round 1, Important 2 (ruled): a nickname clear writes ONLY the
+// dedicated audit action, mutually exclusive with the generic user.updated
+// for the same PATCH — same shape as the is_active -> user.deactivated split.
+test('updateUser: clearing a nickname writes exactly one audit row, action user.nickname_cleared', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Old', email: 'old@x.com', nickname: 'Dr Neuron' }));
+  stub(User, 'findByIdAndUpdate', () => q({ _id: id, is_active: true, full_name: 'Old', email: 'old@x.com', nickname: '', toObject() { return this; } }));
+  const audits = [];
+  stub(AuditLog, 'create', async (doc) => { audits.push(doc); });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { nickname: '' },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(audits.length, 1, 'exactly one audit row must be written');
+  assert.equal(audits[0].action, 'user.nickname_cleared');
+});
+
+// Fix round 1, Important 3: defense in depth — this handler only ever
+// *unsets* nickname_lc today, but the write is guarded the same way as
+// updateMe's genuine read-then-write race, so a duplicate-key error here
+// never surfaces as a 500 either.
+test('updateUser: a duplicate-key error on nickname_lc from the write is turned into 409, not 500', async () => {
+  const id = oid();
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Old', email: 'old@x.com', nickname: 'Dr Neuron' }));
+  stub(User, 'findByIdAndUpdate', () => {
+    const err = new Error('E11000 duplicate key error collection: db.users index: nickname_lc_1 dup key: { nickname_lc: "dr neuron" }');
+    err.code = 11000;
+    err.keyPattern = { nickname_lc: 1 };
+    throw err;
+  });
+  const res = mockRes();
+  await usersController().updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { nickname: '' },
+  }, res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, 'That nickname is already taken');
+});
+
 // --- rolesController.updateRole ---
 
 function rolesController() {

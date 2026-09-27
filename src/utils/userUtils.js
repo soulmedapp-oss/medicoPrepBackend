@@ -5,6 +5,7 @@ function sanitizeUser(user) {
     __v,
     googleId,
     token_version,
+    nickname_lc,
     email_verification_token,
     email_verification_expires,
     email_verification_sent_at,

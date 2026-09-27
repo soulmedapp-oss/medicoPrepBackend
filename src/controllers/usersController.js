@@ -13,6 +13,7 @@ const { missingForRoleGrant } = require('../rbac/escalation');
 const { countActiveAdmins } = require('../rbac/countActiveAdmins');
 const { recordAudit } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
+const { isDuplicateNicknameError } = require('../utils/identity');
 
 const ESCALATION_ERROR = 'You cannot grant permissions you do not hold.';
 
@@ -244,16 +245,6 @@ function createUsersController({ createNotification } = {}) {
         }
       }
 
-      if (Object.prototype.hasOwnProperty.call(payload, 'nickname')) {
-        // Admins only CLEAR nicknames (moderation); they do not set them.
-        if (String(payload.nickname || '').trim() !== '') {
-          return res.status(400).json({ error: 'nickname can only be cleared here' });
-        }
-        payload.nickname = '';
-        unsetOps.nickname_lc = '';
-        clearedNickname = existing.nickname || '';
-      }
-
       // Task 17 re-review, item J: check what is actually WRITTEN, not the
       // raw body — a stray key the handler discards anyway (e.g. `role`,
       // which this route ignores) must not demand CanEditUsers. `password`
@@ -305,6 +296,18 @@ function createUsersController({ createNotification } = {}) {
       }
       if (payload.phone && !isValidPhone(String(payload.phone))) {
         return res.status(400).json({ error: 'Invalid phone number' });
+      }
+      // Fix round 1, Important 1: this shape check must run AFTER the
+      // permission gate above, like every other field validation here — a
+      // caller lacking CanEditUsers must get 403, not this 400.
+      if (Object.prototype.hasOwnProperty.call(payload, 'nickname')) {
+        // Admins only CLEAR nicknames (moderation); they do not set them.
+        if (String(payload.nickname || '').trim() !== '') {
+          return res.status(400).json({ error: 'nickname can only be cleared here' });
+        }
+        payload.nickname = '';
+        unsetOps.nickname_lc = '';
+        clearedNickname = existing.nickname || '';
       }
 
       // role/roles/permissions are never in `payload` (stripped above by
@@ -360,6 +363,26 @@ function createUsersController({ createNotification } = {}) {
       const isActiveNow = user.is_active !== false;
       if (wasActive && !isActiveNow) {
         await recordAudit(req, { action: 'user.deactivated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email });
+      } else if (clearedNickname) {
+        // Fix round 1, Important 2 (ruled): a nickname clear writes ONLY this
+        // dedicated action, mutually exclusive with the generic user.updated
+        // below — same shape as the is_active branch just above.
+        await recordAudit(req, {
+          action: 'user.nickname_cleared',
+          target_type: 'user',
+          target_id: user._id,
+          target_label: user.full_name || user.email,
+          before: { nickname: clearedNickname },
+        });
+        if (createNotification) {
+          await createNotification({
+            userEmail: existing.email,
+            title: 'Nickname removed',
+            message: 'Your nickname was removed by a moderator. You can choose a new one from your profile.',
+            type: 'warning',
+            link: '/Profile',
+          });
+        }
       } else {
         // Fix round 1, Minor 3 (ruled, documented not changed): unlike roles
         // (Important 2), this stays guarded on changedKeys.length — a PATCH
@@ -377,28 +400,16 @@ function createUsersController({ createNotification } = {}) {
         }
       }
 
-      if (clearedNickname) {
-        await recordAudit(req, {
-          action: 'user.nickname_cleared',
-          target_type: 'user',
-          target_id: existing._id,
-          target_label: existing.email,
-          before: { nickname: clearedNickname },
-        });
-        if (createNotification) {
-          await createNotification({
-            userEmail: existing.email,
-            title: 'Nickname removed',
-            message: 'Your nickname was removed by a moderator. You can choose a new one from your profile.',
-            type: 'warning',
-            link: '/Profile',
-          });
-        }
-      }
-
       return res.json({ user: sanitizeUser(user) });
     } catch (err) {
       reportError(req, err);
+      // Fix round 1, Important 3: this route only ever *unsets* nickname_lc
+      // (admins clear, never set), so a duplicate-key error on it isn't
+      // reachable today — guarded anyway, defense in depth, same as
+      // updateMe's genuine read-then-write race.
+      if (isDuplicateNicknameError(err)) {
+        return res.status(409).json({ error: 'That nickname is already taken' });
+      }
       return res.status(500).json({ error: 'Failed to update user' });
     }
   }
