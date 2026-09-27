@@ -53,6 +53,13 @@ const userSchema = new mongoose.Schema(
       default: [],
       select: false,
     },
+    // Public identity for discussions (spec §4). nickname_lc backs the
+    // case-insensitive uniqueness; sparse so users without one don't collide.
+    nickname: { type: String, default: '' },
+    nickname_lc: { type: String, index: { unique: true, sparse: true } },
+    avatar_id: { type: String, default: '' },
+    // Set when a moderator hides a third post within 30 days (spec §6).
+    discussion_muted_until: { type: Date },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

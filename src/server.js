@@ -753,6 +753,7 @@ app.use(
 app.use(
   createUsersRoutes({
     authMiddleware,
+    createNotification,
   })
 );
 app.use(

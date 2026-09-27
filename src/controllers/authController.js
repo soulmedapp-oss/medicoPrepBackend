@@ -9,6 +9,7 @@ const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
 const { normalizeTokenVersion } = require('../utils/security');
+const { validateNickname, isValidAvatarId } = require('../utils/identity');
 const { loadPermissions } = require('../rbac/loadPermissions');
 const { reportError } = require('../lib/errorReporter.js');
 const session = require('../auth/session');
@@ -595,6 +596,8 @@ async function updateMe(req, res) {
       'profile_image',
       'last_login_date',
       'last_seen_date',
+      'nickname',
+      'avatar_id',
     ];
     const forbiddenFields = [
       'subscription_plan',
@@ -636,10 +639,33 @@ async function updateMe(req, res) {
         return res.status(400).json({ error: `${field} must be 120 characters or less` });
       }
     }
+    if (Object.prototype.hasOwnProperty.call(updates, 'avatar_id') && !isValidAvatarId(String(updates.avatar_id ?? ''))) {
+      return res.status(400).json({ error: 'Unknown avatar' });
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'nickname')) {
+      const raw = String(updates.nickname ?? '').trim();
+      if (raw === '') {
+        updates.nickname = '';
+        updates.nickname_lc = undefined; // $unset below keeps the sparse index clean
+      } else {
+        const check = validateNickname(raw);
+        if (!check.ok) return res.status(400).json({ error: check.error });
+        const taken = await User.exists({ nickname_lc: check.lc, _id: { $ne: req.userId } });
+        if (taken) return res.status(409).json({ error: 'That nickname is already taken' });
+        updates.nickname = check.value;
+        updates.nickname_lc = check.lc;
+      }
+    }
+
+    const updateOps = { $set: updates };
+    if (Object.prototype.hasOwnProperty.call(updates, 'nickname_lc') && updates.nickname_lc === undefined) {
+      delete updates.nickname_lc;
+      updateOps.$unset = { nickname_lc: '' };
+    }
 
     const user = await User.findByIdAndUpdate(
       req.userId,
-      { $set: updates },
+      updateOps,
       { new: true }
     );
 
@@ -647,6 +673,18 @@ async function updateMe(req, res) {
   } catch (err) {
     reportError(req, err);
     return res.status(500).json({ error: 'Failed to update user' });
+  }
+}
+
+async function nicknameAvailable(req, res) {
+  try {
+    const check = validateNickname(String(req.query.nickname || ''));
+    if (!check.ok) return res.json({ available: false, reason: check.error });
+    const taken = await User.exists({ nickname_lc: check.lc, _id: { $ne: req.userId } });
+    return res.json({ available: !taken, value: check.value });
+  } catch (err) {
+    reportError(req, err);
+    return res.status(500).json({ error: 'Failed to check nickname' });
   }
 }
 
@@ -736,5 +774,6 @@ module.exports = {
   validateResetToken,
   getMe,
   updateMe,
+  nicknameAvailable,
   googleAuth,
 };

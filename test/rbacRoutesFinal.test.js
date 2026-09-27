@@ -48,6 +48,7 @@ test('auth', () => {
   });
   expectRule(routes, 'GET', '/me', 'self', []);
   expectRule(routes, 'PATCH', '/me', 'self', []);
+  expectRule(routes, 'GET', '/nickname-available', 'self', []);
 });
 
 test('payments', () => {

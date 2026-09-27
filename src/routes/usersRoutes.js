@@ -3,10 +3,10 @@ const { createUsersController } = require('../controllers/usersController');
 const { validateObjectIdParams } = require('../middlewares/validateObjectId');
 const { authorize, selfService } = require('../rbac/authorize');
 
-function createUsersRoutes({ authMiddleware }) {
+function createUsersRoutes({ authMiddleware, createNotification }) {
   const router = express.Router();
   validateObjectIdParams(router, ["id"]);
-  const controller = createUsersController();
+  const controller = createUsersController({ createNotification });
 
   router.get('/users', authMiddleware, selfService, controller.listUsers);
   router.post('/users', authMiddleware, authorize('CanAddUsers'), controller.createUser);

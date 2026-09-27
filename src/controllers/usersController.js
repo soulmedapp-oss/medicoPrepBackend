@@ -68,7 +68,7 @@ async function resolveRequestedRoles(req, existingRoleNames) {
   return { requestedNames, finalRoles };
 }
 
-function createUsersController() {
+function createUsersController({ createNotification } = {}) {
   async function listUsers(req, res) {
     try {
       const { role } = req.query;
@@ -232,13 +232,26 @@ function createUsersController() {
         'email_verified_by',
         'email_verified_reason',
         'is_active',
+        'nickname',
       ];
+      let clearedNickname = '';
+      const unsetOps = {};
 
       const payload = {};
       for (const field of allowedFields) {
         if (Object.prototype.hasOwnProperty.call(updates, field)) {
           payload[field] = updates[field];
         }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'nickname')) {
+        // Admins only CLEAR nicknames (moderation); they do not set them.
+        if (String(payload.nickname || '').trim() !== '') {
+          return res.status(400).json({ error: 'nickname can only be cleared here' });
+        }
+        payload.nickname = '';
+        unsetOps.nickname_lc = '';
+        clearedNickname = existing.nickname || '';
       }
 
       // Task 17 re-review, item J: check what is actually WRITTEN, not the
@@ -324,6 +337,9 @@ function createUsersController() {
         updateOps.$inc = { token_version: 1 };
         updateOps.$set.refresh_tokens = [];
       }
+      if (Object.keys(unsetOps).length > 0) {
+        updateOps.$unset = unsetOps;
+      }
       const user = await User.findByIdAndUpdate(
         req.params.id,
         updateOps,
@@ -358,6 +374,25 @@ function createUsersController() {
         if (payload.passwordHash) after.password_changed = true;
         if (changedKeys.length > 0 || payload.passwordHash) {
           await recordAudit(req, { action: 'user.updated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email, before, after });
+        }
+      }
+
+      if (clearedNickname) {
+        await recordAudit(req, {
+          action: 'user.nickname_cleared',
+          target_type: 'user',
+          target_id: existing._id,
+          target_label: existing.email,
+          before: { nickname: clearedNickname },
+        });
+        if (createNotification) {
+          await createNotification({
+            userEmail: existing.email,
+            title: 'Nickname removed',
+            message: 'Your nickname was removed by a moderator. You can choose a new one from your profile.',
+            type: 'warning',
+            link: '/Profile',
+          });
         }
       }
 

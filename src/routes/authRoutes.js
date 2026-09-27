@@ -55,6 +55,7 @@ router.post('/reset-password', publicRoute, resetLimiter, authController.resetPa
 router.post('/validate-reset-token', publicRoute, validateResetLimiter, authController.validateResetToken);
 router.get('/me', authMiddleware, selfService, authController.getMe);
 router.patch('/me', authMiddleware, selfService, authController.updateMe);
+router.get('/nickname-available', authMiddleware, selfService, authController.nicknameAvailable);
 router.post('/google', publicRoute, googleLimiter, authController.googleAuth);
 // Cookie sessions: the refresh cookie is the credential here (Path-scoped to
 // this route), so no bearer/authMiddleware — publicRoute is the marker.
