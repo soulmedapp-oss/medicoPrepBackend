@@ -75,7 +75,10 @@ test('subjects routes', () => {
 test('discussions routes', () => {
   const routes = rulesFor(createDiscussionsRoutes);
   expectRule(routes, 'GET', '/discussions/reports', 'permission', ['CanModerateDiscussions']);
-  expectRule(routes, 'GET', '/discussions', 'permission', ['CanAccessDiscussions']);
+  // Fix round 2, Important 4: a moderator whose role came from legacy
+  // `manage_doubts` holds CanModerateDiscussions WITHOUT CanAccessDiscussions
+  // and could not read the threads they moderate. One marker, either code.
+  expectRule(routes, 'GET', '/discussions', 'permission', ['CanAccessDiscussions', 'CanModerateDiscussions']);
   expectRule(routes, 'POST', '/discussions', 'permission', ['CanAccessDiscussions']);
   expectRule(routes, 'POST', '/discussions/:id/upvote', 'permission', ['CanAccessDiscussions']);
   expectRule(routes, 'POST', '/discussions/:id/report', 'permission', ['CanAccessDiscussions']);

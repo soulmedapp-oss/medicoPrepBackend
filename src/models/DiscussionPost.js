@@ -24,6 +24,13 @@ const discussionPostSchema = new mongoose.Schema(
     hidden_by: { type: ObjectId, ref: 'User' },
     hidden_reason: { type: String, default: '' }, // 'moderator' | 'auto_reports' | 'filter'
     reports: [{ user_id: ObjectId, reason: String, at: Date }],
+    // Fix round 2, Critical 3: Dismiss moves the active `reports` here rather
+    // than deleting them, so the history survives and a dismissed reporter
+    // cannot re-trip the auto-hide (reportPost checks both arrays).
+    dismissed_reports: {
+      type: [{ user_id: ObjectId, reason: String, at: Date, dismissed_at: Date }],
+      default: [],
+    },
     report_count: { type: Number, default: 0, index: true }, // = reports.length, kept in step atomically
     edited_at: Date,
   },

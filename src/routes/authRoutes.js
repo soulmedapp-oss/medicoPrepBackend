@@ -1,7 +1,7 @@
 const express = require('express');
 const authController = require('../controllers/authController');
 const { authMiddleware } = require('../middlewares/auth');
-const { createRateLimiter } = require('../middlewares/rateLimit');
+const { createRateLimiter, userOrIpKey } = require('../middlewares/rateLimit');
 const { selfService, publicRoute } = require('../rbac/authorize');
 
 const router = express.Router();
@@ -43,6 +43,16 @@ const validateResetLimiter = createRateLimiter({
   max: 10,
   message: 'Rate limit reached. Please wait before retrying.',
 });
+// Fix round 2, Important 5: the nickname checker is an unauthenticated-cost
+// lookup on an indexed field, but it is also a cheap oracle for enumerating
+// which nicknames exist — metered per user (falling back to IP) like the rest.
+const nicknameLimiter = createRateLimiter({
+  name: 'auth-nickname-available',
+  windowMs: 60 * 1000,
+  max: 30,
+  keyGenerator: userOrIpKey,
+  message: 'Too many nickname checks. Please wait a minute.',
+});
 const googleLimiter = createRateLimiter({
   name: 'auth-google',
   windowMs: 60 * 1000,
@@ -55,7 +65,7 @@ router.post('/reset-password', publicRoute, resetLimiter, authController.resetPa
 router.post('/validate-reset-token', publicRoute, validateResetLimiter, authController.validateResetToken);
 router.get('/me', authMiddleware, selfService, authController.getMe);
 router.patch('/me', authMiddleware, selfService, authController.updateMe);
-router.get('/nickname-available', authMiddleware, selfService, authController.nicknameAvailable);
+router.get('/nickname-available', authMiddleware, selfService, nicknameLimiter, authController.nicknameAvailable);
 router.post('/google', publicRoute, googleLimiter, authController.googleAuth);
 // Cookie sessions: the refresh cookie is the credential here (Path-scoped to
 // this route), so no bearer/authMiddleware — publicRoute is the marker.

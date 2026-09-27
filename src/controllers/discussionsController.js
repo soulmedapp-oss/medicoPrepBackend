@@ -2,6 +2,7 @@ const DiscussionPost = require('../models/DiscussionPost');
 const User = require('../models/User');
 const Video = require('../models/Video');
 const { can } = require('../rbac/can');
+const { loadPermissions } = require('../rbac/loadPermissions');
 const { recordAudit } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
 const { isValidObjectId } = require('../utils/security');
@@ -27,6 +28,11 @@ function activeMute(user, now = Date.now()) {
 }
 
 const excerpt = (text) => String(text || '').slice(0, 120);
+
+// Everything maybeMute/maybeUnmute need off an author in one projection: the
+// address to notify, the mute already in force, and the role fields the
+// permission loader reads (effective_permissions is derived, never stored).
+const AUTHOR_FIELDS = 'email discussion_muted_until role roles permissions is_teacher';
 
 function createDiscussionsController({ createNotification, loadVideoForPlayback }) {
   const isModerator = (user) => can(user, 'CanModerateDiscussions');
@@ -209,18 +215,31 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       });
       const post = typeof created.toObject === 'function' ? created.toObject() : created;
 
-      if (parent && String(parent.author_id) !== String(req.user._id)) {
-        const parentAuthor = await User.findById(parent.author_id).select('email').lean();
-        if (parentAuthor?.email) {
-          const who = isAnonymous ? 'Anonymous' : displayNameFor(req.user);
-          const prefix = moderator ? 'Teacher ' : '';
-          await createNotification({
-            userEmail: parentAuthor.email,
-            title: 'New reply to your post',
-            message: `${prefix}${who} replied to your question on ${lecture.title || 'a lecture'}.`,
-            type: 'info',
-            link: DISCUSSION_LINK,
-          });
+      // Fix round 2, Minor: a reply to a reply concerns TWO people — the
+      // person answered and the person who asked the question — so both are
+      // told, deduped, and never the replier themself.
+      if (parent) {
+        const recipients = new Set([String(parent.author_id)]);
+        if (parent.parent_id) {
+          const top = await DiscussionPost.findById(parent.parent_id).select('author_id').lean();
+          if (top?.author_id) recipients.add(String(top.author_id));
+        }
+        recipients.delete(String(req.user._id));
+        const who = isAnonymous ? 'Anonymous' : displayNameFor(req.user);
+        const prefix = moderator ? 'Teacher ' : '';
+        for (const recipientId of recipients) {
+          // eslint-disable-next-line no-await-in-loop
+          const recipient = await User.findById(recipientId).select('email').lean();
+          if (recipient?.email) {
+            // eslint-disable-next-line no-await-in-loop
+            await createNotification({
+              userEmail: recipient.email,
+              title: 'New reply to your post',
+              message: `${prefix}${who} replied to your question on ${lecture.title || 'a lecture'}.`,
+              type: 'info',
+              link: DISCUSSION_LINK,
+            });
+          }
         }
       }
 
@@ -273,15 +292,22 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       // `reports.length` — both in ONE conditional update, so two concurrent
       // reports from the same person cannot both pass a read-then-write check
       // (fix round 1, Important 3). A null result means "already reported".
+      // Fix round 2, Critical 3: a reporter whose report was DISMISSED is
+      // still remembered — they get the same idempotent answer and cannot
+      // report again to re-trip the auto-hide a moderator just reversed.
       const updated = await DiscussionPost.findOneAndUpdate(
-        { _id: post._id, 'reports.user_id': { $ne: req.user._id } },
+        { _id: post._id, 'reports.user_id': { $ne: req.user._id }, 'dismissed_reports.user_id': { $ne: req.user._id } },
         { $push: { reports: { user_id: req.user._id, reason, at: new Date() } }, $inc: { report_count: 1 } },
         { new: true }
       ).lean();
       if (!updated) return res.json({ ok: true, hidden: Boolean(post.is_hidden) });
 
       let hidden = Boolean(updated.is_hidden);
-      if (!hidden && shouldAutoHide(updated.reports)) {
+      // Fix round 2, Critical 2: staff are exempt from crowd moderation. A
+      // teacher's reply is never auto-hidden — three students who dislike the
+      // answer must not be able to remove it — the report is recorded and the
+      // queue puts it in front of a human moderator instead.
+      if (!hidden && !updated.is_teacher_reply && shouldAutoHide(updated.reports)) {
         await DiscussionPost.updateOne({ _id: post._id }, { $set: { is_hidden: true, hidden_reason: 'auto_reports' } });
         hidden = true;
         await recordAudit(req, {
@@ -292,7 +318,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
           before: { is_hidden: false, report_count: post.report_count || 0 },
           after: { is_hidden: true, hidden_reason: 'auto_reports', report_count: updated.report_count },
         });
-        const author = await User.findById(updated.author_id).select('email discussion_muted_until').lean();
+        const author = await User.findById(updated.author_id).select(AUTHOR_FIELDS).lean();
         if (author?.email) {
           await createNotification({
             userEmail: author.email,
@@ -322,18 +348,27 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       const lectureTitle = gated.lecture.title || 'a lecture';
 
       const moderator = isModerator(req.user);
-      const wantsModeration = has('is_pinned') || has('is_hidden');
+      // Fix round 2, Critical 3: `dismiss_reports` is a moderation decision
+      // like pinning and hiding, so it belongs in the same gate — a student
+      // sending it gets 403, not a silently ignored key.
+      const wantsModeration = has('is_pinned') || has('is_hidden') || has('dismiss_reports');
       if (wantsModeration && !moderator) {
         return res.status(403).json({ error: 'Permission denied', required: ['CanModerateDiscussions'] });
       }
       if (has('body') && !canEditPost(post, req.user._id)) {
         return res.status(403).json({ error: 'You can only edit your own post, within 15 minutes of posting' });
       }
+      // Fix round 2, Minor: an author cannot rewrite a post that has already
+      // been hidden — the moderator judged the text that is there.
+      if (has('body') && post.is_hidden) {
+        return res.status(403).json({ error: 'This post is hidden' });
+      }
       if (!wantsModeration && !has('body')) {
         return res.status(400).json({ error: 'Nothing to update' });
       }
 
       const set = {};
+      const unset = {};
       if (has('body')) {
         const body = typeof updates.body === 'string' ? updates.body.trim() : '';
         if (body.length < BODY_MIN || body.length > BODY_MAX) {
@@ -347,6 +382,20 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       }
       const pinning = has('is_pinned') ? Boolean(updates.is_pinned) : null;
       const hiding = has('is_hidden') ? Boolean(updates.is_hidden) : null;
+      const dismissing = has('dismiss_reports') && Boolean(updates.dismiss_reports);
+
+      // Fix round 2, Important 1: the pin marks the accepted ANSWER, so only a
+      // reply can carry it — a question is not its own answer — and a hidden
+      // post must never be promoted to the top of its thread.
+      if (pinning === true) {
+        if (!post.parent_id) {
+          return res.status(400).json({ error: 'Only a reply can be pinned as the answer' });
+        }
+        if (post.is_hidden) {
+          return res.status(400).json({ error: 'A hidden post cannot be pinned' });
+        }
+      }
+
       if (pinning !== null) set.is_pinned = pinning;
       if (hiding !== null) {
         set.is_hidden = hiding;
@@ -354,15 +403,53 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         set.hidden_by = hiding ? req.user._id : null;
       }
 
-      // One pinned answer per thread: pinning this one unpins its siblings.
+      // Fix round 2, Critical 3: Dismiss is a real decision, not a UI no-op.
+      // The active reports MOVE to dismissed_reports (the history is kept, and
+      // those reporters can never re-trip the auto-hide), and a post the crowd
+      // hid comes back up. A post a moderator hid by hand stays hidden — only
+      // its reports are cleared, so it leaves the queue.
+      let dismissedRows = [];
+      if (dismissing) {
+        const dismissedAt = new Date();
+        dismissedRows = (post.reports || []).map((report) => ({
+          user_id: report.user_id, reason: report.reason, at: report.at, dismissed_at: dismissedAt,
+        }));
+        set.reports = [];
+        set.report_count = 0;
+        if (post.hidden_reason === 'auto_reports') {
+          set.is_hidden = false;
+          set.hidden_reason = '';
+          // $set and $unset must never name the same path in one update.
+          delete set.hidden_by;
+          unset.hidden_by = '';
+        }
+      }
+
+      // One pinned answer per QUESTION: pinning this reply unpins the other
+      // replies to the same question, and leaves every other thread on the
+      // lecture alone (fix round 2, Important 1 — `parent_id` was missing from
+      // this filter, so pinning an answer under one question unpinned the
+      // pinned answer of every other question on the lecture).
       if (pinning === true) {
         await DiscussionPost.updateMany(
-          { 'anchor.type': post.anchor?.type, 'anchor.id': post.anchor?.id, _id: { $ne: post._id }, is_pinned: true },
+          {
+            'anchor.type': post.anchor?.type,
+            'anchor.id': post.anchor?.id,
+            parent_id: post.parent_id,
+            _id: { $ne: post._id },
+            is_pinned: true,
+          },
           { $set: { is_pinned: false } }
         );
       }
 
-      const updated = await DiscussionPost.findByIdAndUpdate(post._id, { $set: set }, { new: true }).lean();
+      const updateOps = {};
+      if (Object.keys(set).length > 0) updateOps.$set = set;
+      if (Object.keys(unset).length > 0) updateOps.$unset = unset;
+      if (dismissedRows.length > 0) updateOps.$push = { dismissed_reports: { $each: dismissedRows } };
+      const updated = Object.keys(updateOps).length > 0
+        ? await DiscussionPost.findByIdAndUpdate(post._id, updateOps, { new: true }).lean()
+        : null;
 
       if (pinning !== null && Boolean(post.is_pinned) !== pinning) {
         await recordAudit(req, {
@@ -387,7 +474,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         if (hiding) {
           // Loaded once and handed to maybeMute, which needs the same two
           // fields (email to notify, discussion_muted_until to not re-mute).
-          const author = await User.findById(post.author_id).select('email discussion_muted_until').lean();
+          const author = await User.findById(post.author_id).select(AUTHOR_FIELDS).lean();
           if (author?.email) {
             await createNotification({
               userEmail: author.email,
@@ -398,7 +485,34 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
             });
           }
           await maybeMute(req, post.author_id, { trigger: 'moderator', author });
+        } else {
+          // Fix round 2, Critical 1: reversing a hide can take the author back
+          // under the mute threshold — if it does, the mute goes with it.
+          await maybeUnmute(post.author_id);
         }
+      }
+
+      if (dismissing) {
+        await recordAudit(req, {
+          action: 'discussion.reports_dismissed',
+          target_type: 'discussion_post',
+          target_id: post._id,
+          target_label: excerpt(post.body),
+          before: {
+            reports: post.reports || [],
+            report_count: post.report_count || 0,
+            is_hidden: Boolean(post.is_hidden),
+            hidden_reason: post.hidden_reason || '',
+          },
+          after: {
+            report_count: 0,
+            is_hidden: Boolean((updated || post).is_hidden),
+            hidden_reason: (updated || post).hidden_reason || '',
+          },
+        });
+        // Dismissed reports are no longer a hide either, so the author may fall
+        // back under the mute threshold here too (fix round 2, Critical 1).
+        await maybeUnmute(post.author_id);
       }
 
       const row = updated || post;
@@ -418,11 +532,18 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         .lean();
       const authors = await loadAuthors(rows);
       const ctx = { user: req.user, moderator: isModerator(req.user), authors };
+      // Fix round 2, Critical 3: the queue also carries the lecture TITLE, in
+      // ONE query over the distinct anchors — the report queue page used to
+      // fetch the entire video catalogue (/videos?all=true) just to name them.
+      const anchorIds = [...new Set(rows.map((post) => String(post.anchor?.id || '')).filter(Boolean))];
+      const lectures = anchorIds.length ? await Video.find({ _id: { $in: anchorIds } }).select('title').lean() : [];
+      const titleById = new Map(lectures.map((lecture) => [String(lecture._id), lecture.title || '']));
       // `anchor` so the queue can link to the lecture; `reports` so the
       // moderator sees who reported it and why.
       const posts = rows.map((post) => ({
         ...shape(post, ctx),
         anchor: post.anchor,
+        anchor_label: titleById.get(String(post.anchor?.id || '')) || '',
         parent_id: post.parent_id || null,
         reports: post.reports || [],
       }));
@@ -438,10 +559,19 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
   // Called after a hide, by a moderator or by auto-reports; `author` is the
   // already-loaded author document where the caller has one.
   async function maybeMute(req, authorId, { trigger = 'moderator', author } = {}) {
-    const target = author || await User.findById(authorId).select('email discussion_muted_until').lean();
+    const target = author || await User.findById(authorId).select(AUTHOR_FIELDS).lean();
     // Already paused: every later hide inside the window would otherwise
     // extend the mute and notify again.
     if (activeMute(target)) return;
+    // Fix round 2, Critical 2: staff are exempt from crowd moderation — a
+    // moderator is never muted, or three students reporting the same teacher
+    // answer could silence the very person meant to police the threads.
+    // `effective_permissions` is derived, not stored, so it is resolved here
+    // through the same loader authMiddleware uses.
+    if (target) {
+      const { permissions } = await loadPermissions(target);
+      if (can({ effective_permissions: permissions }, 'CanModerateDiscussions')) return;
+    }
     const hidden = await DiscussionPost.find({
       author_id: authorId,
       is_hidden: true,
@@ -465,6 +595,26 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       type: 'warning',
       link: DISCUSSION_LINK,
     });
+  }
+
+  // Fix round 2, Critical 1: a mute must be liftable by undoing what caused
+  // it. When a hide is reversed — unhidden by hand, or the reports behind an
+  // auto-hide dismissed — the author can drop back under the threshold, and the
+  // mute has to go with it. No notification and no audit row of its own: the
+  // hide/unhide (or reports_dismissed) row already records the decision this
+  // follows from.
+  async function maybeUnmute(authorId) {
+    const target = await User.findById(authorId).select('discussion_muted_until').lean();
+    if (!activeMute(target)) return;
+    const hidden = await DiscussionPost.find({
+      author_id: authorId,
+      is_hidden: true,
+      hidden_reason: { $in: ['moderator', 'auto_reports'] },
+    }).select('created_date').lean();
+    // The same helper the mute itself uses, so the threshold and the 30-day
+    // window are read from one place: null here IS "under MUTE_THRESHOLD".
+    if (nextMuteUntil(hidden.map((p) => p.created_date))) return;
+    await User.findByIdAndUpdate(authorId, { $unset: { discussion_muted_until: '' } });
   }
 
   return { listThread, createPost, toggleUpvote, reportPost, updatePost, listReports };
