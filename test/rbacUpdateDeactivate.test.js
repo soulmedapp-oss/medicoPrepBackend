@@ -948,6 +948,37 @@ test('updateUser: a caller lacking CanEditUsers who sends discussion_muted_until
   assert.equal(updateCalled, false);
 });
 
+// Final re-review NEW-1: a PATCH that clears BOTH the mute and the nickname
+// must audit both and still roll the snapshots back — the earlier else-if
+// chain silently dropped the nickname half.
+test('updateUser: clearing nickname and mute together writes both audit rows and still rewrites the snapshots', async () => {
+  const id = oid();
+  const until = new Date(Date.now() + 5 * 86400000);
+  stub(User, 'findById', () => q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: 'Rude Name', discussion_muted_until: until }));
+  let ops = null;
+  stub(User, 'findByIdAndUpdate', (updateId, updateOps) => {
+    ops = updateOps;
+    return q({ _id: id, is_active: true, full_name: 'Asha Rao', email: 'asha@x.com', nickname: '', toObject() { return this; } });
+  });
+  let snapshot = null;
+  stub(DiscussionPost, 'updateMany', async (filter, update) => { snapshot = { filter, update }; return { modifiedCount: 2 }; });
+  const audits = [];
+  stub(AuditLog, 'create', async (doc) => { audits.push(doc); });
+  const notifications = [];
+  const res = mockRes();
+  await createUsersController({ createNotification: async (n) => { notifications.push(n); } }).updateUser({
+    params: { id: String(id) }, user: editOnly('CanEditUsers'), body: { nickname: '', discussion_muted_until: null },
+  }, res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(ops.$unset, { nickname_lc: '', discussion_muted_until: '' });
+  assert.deepEqual(audits.map((a) => a.action).sort(), ['user.discussion_unmuted', 'user.nickname_cleared']);
+  assert.ok(snapshot, 'the author snapshots must still be rewritten');
+  assert.equal(String(snapshot.filter.author_id), String(id));
+  assert.equal(snapshot.update.$set['author_snapshot.display_name'], 'Asha');
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, 'Nickname removed');
+});
+
 // Fix round 2, Important 3: a cleared nickname must leave the threads too —
 // the display name on a post is a snapshot taken when it was written.
 test('updateUser: clearing a nickname rewrites the author snapshot on that user\'s posts to their first name', async () => {

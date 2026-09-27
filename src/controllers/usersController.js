@@ -383,48 +383,28 @@ function createUsersController({ createNotification } = {}) {
       const isActiveNow = user.is_active !== false;
       if (wasActive && !isActiveNow) {
         await recordAudit(req, { action: 'user.deactivated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email });
-      } else if (clearedMuteUntil) {
-        // Fix round 2, Critical 1: lifting a mute is its own recorded decision,
-        // mutually exclusive with the generic user.updated below — same shape
-        // as the nickname clear and the is_active branches around it.
-        await recordAudit(req, {
-          action: 'user.discussion_unmuted',
-          target_type: 'user',
-          target_id: user._id,
-          target_label: user.full_name || user.email,
-          before: { discussion_muted_until: clearedMuteUntil },
-        });
-      } else if (clearedNickname) {
-        // Fix round 1, Important 2 (ruled): a nickname clear writes ONLY this
-        // dedicated action, mutually exclusive with the generic user.updated
-        // below — same shape as the is_active branch just above.
-        await recordAudit(req, {
-          action: 'user.nickname_cleared',
-          target_type: 'user',
-          target_id: user._id,
-          target_label: user.full_name || user.email,
-          before: { nickname: clearedNickname },
-        });
-        // Fix round 2, Important 3: the display name on every post is a
-        // SNAPSHOT, so clearing a nickname for moderation left it printed all
-        // over the threads. Roll the snapshots back to the first name — the
-        // same name a post would be written under now. Log-and-continue: the
-        // nickname itself is already cleared, so this must not fail the PATCH.
-        try {
-          await DiscussionPost.updateMany(
-            { author_id: user._id },
-            { $set: { 'author_snapshot.display_name': displayNameFor({ full_name: user.full_name }) } }
-          );
-        } catch (err) {
-          reportError(req, err);
+      } else if (clearedMuteUntil || clearedNickname) {
+        // Fix round 1, Important 2 (ruled) / fix round 2, Critical 1: each
+        // clear writes its own dedicated action, mutually exclusive with the
+        // generic user.updated below — same shape as the is_active branch
+        // just above. A PATCH that clears both writes both rows (final
+        // re-review NEW-1: the earlier else-if chain dropped the second).
+        if (clearedMuteUntil) {
+          await recordAudit(req, {
+            action: 'user.discussion_unmuted',
+            target_type: 'user',
+            target_id: user._id,
+            target_label: user.full_name || user.email,
+            before: { discussion_muted_until: clearedMuteUntil },
+          });
         }
-        if (createNotification) {
-          await createNotification({
-            userEmail: existing.email,
-            title: 'Nickname removed',
-            message: 'Your nickname was removed by a moderator. You can choose a new one from your profile.',
-            type: 'warning',
-            link: '/Profile',
+        if (clearedNickname) {
+          await recordAudit(req, {
+            action: 'user.nickname_cleared',
+            target_type: 'user',
+            target_id: user._id,
+            target_label: user.full_name || user.email,
+            before: { nickname: clearedNickname },
           });
         }
       } else {
@@ -441,6 +421,33 @@ function createUsersController({ createNotification } = {}) {
         if (payload.passwordHash) after.password_changed = true;
         if (changedKeys.length > 0 || payload.passwordHash) {
           await recordAudit(req, { action: 'user.updated', target_type: 'user', target_id: user._id, target_label: user.full_name || user.email, before, after });
+        }
+      }
+
+      if (clearedNickname) {
+        // Fix round 2, Important 3: the display name on every post is a
+        // SNAPSHOT, so clearing a nickname for moderation left it printed all
+        // over the threads. Roll the snapshots back to the first name — the
+        // same name a post would be written under now. Runs on every nickname
+        // clear regardless of which audit branch fired (final re-review
+        // NEW-1). Log-and-continue: the nickname itself is already cleared,
+        // so this must not fail the PATCH.
+        try {
+          await DiscussionPost.updateMany(
+            { author_id: user._id },
+            { $set: { 'author_snapshot.display_name': displayNameFor({ full_name: user.full_name }) } }
+          );
+        } catch (err) {
+          reportError(req, err);
+        }
+        if (createNotification) {
+          await createNotification({
+            userEmail: existing.email,
+            title: 'Nickname removed',
+            message: 'Your nickname was removed by a moderator. You can choose a new one from your profile.',
+            type: 'warning',
+            link: '/Profile',
+          });
         }
       }
 
