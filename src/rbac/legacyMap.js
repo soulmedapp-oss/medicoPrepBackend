@@ -15,7 +15,7 @@ const LEGACY_PERMISSION_MAP = {
   // from the default teacher bundle the same way CanHostAnyClass is.
   manage_videos: all('Videos').filter((code) => code !== 'CanDeleteVideos'),
   manage_students: ['CanViewUsers', 'CanViewAllAttempts'],
-  manage_doubts: all('Doubts'),
+  manage_doubts: [...all('Doubts'), 'CanModerateDiscussions'],
   manage_feedback: all('Feedback'),
   manage_roles: [...all('Roles', 'Permissions'), 'CanAssignUserRoles'],
   manage_subscriptions: all('SubscriptionPlans', 'Subscriptions'),

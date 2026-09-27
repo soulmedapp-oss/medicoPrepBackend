@@ -52,6 +52,8 @@ const PERMISSIONS = [
   one('Doubts', 'CanViewAllDoubts', 'View all doubts', "See every student's doubts."),
   one('Doubts', 'CanAnswerDoubts', 'Answer doubts', 'Answer doubts and change their status.'),
 
+  one('Discussions', 'CanModerateDiscussions', 'Moderate discussions', 'Pin answers, hide posts and see who wrote anonymous posts.'),
+
   one('Feedback', 'CanViewAllFeedback', 'View all feedback', 'See feedback from every user.'),
   one('Feedback', 'CanEditFeedback', 'Edit feedback', 'Reply to feedback and change its status.'),
 
@@ -78,6 +80,7 @@ const PERMISSIONS = [
   one('StudentPages', 'CanAccessLiveClasses', 'Attend live classes', 'Browse, join and watch live classes.'),
   one('StudentPages', 'CanAccessVideos', 'Watch videos', 'Browse and watch the video library.'),
   one('StudentPages', 'CanAccessDoubts', 'Ask doubts', 'Post doubts and see your own.'),
+  one('StudentPages', 'CanAccessDiscussions', 'Discuss lectures', 'Read and post in the discussion under each lecture.'),
   one('StudentPages', 'CanAccessProgress', 'View own progress', 'Open the progress page.'),
   one('StudentPages', 'CanAccessSubscription', 'Manage own subscription', 'Open the subscription page.'),
   one('StudentPages', 'CanAccessPayments', 'View own payments', 'Open the payments page.'),
