@@ -14,8 +14,10 @@ const {
 
 const ANCHOR_TYPES = new Set(['lecture']); // 'question' is modelled, not yet served
 const REPORT_QUEUE_LIMIT = 200;
-// Every discussion notification points at the lecture page (spec §7).
+// Every discussion notification points at the lecture page (spec §7) — deep
+// linked to the lecture itself, which the Videos page opens as its watch view.
 const DISCUSSION_LINK = '/Videos';
+const discussionLink = (post) => (post?.anchor?.id ? `${DISCUSSION_LINK}?lecture=${post.anchor.id}` : DISCUSSION_LINK);
 
 // The mute is a date, so an expired one is no mute at all. Both the read
 // (muted_until in the thread) and the write (POST 403) go through here so
@@ -237,7 +239,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
               title: 'New reply to your post',
               message: `${prefix}${who} replied to your question on ${lecture.title || 'a lecture'}.`,
               type: 'info',
-              link: DISCUSSION_LINK,
+              link: discussionLink(parent),
             });
           }
         }
@@ -325,7 +327,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
             title: 'Your post was hidden',
             message: `Your post on ${gated.lecture.title || 'a lecture'} was hidden after reports from other students.`,
             type: 'warning',
-            link: DISCUSSION_LINK,
+            link: discussionLink(post),
           });
         }
         await maybeMute(req, updated.author_id, { trigger: 'auto_reports', author });
@@ -481,7 +483,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
               title: 'Your post was hidden',
               message: `A moderator hid your post on ${lectureTitle}: it did not meet the discussion guidelines.`,
               type: 'warning',
-              link: DISCUSSION_LINK,
+              link: discussionLink(post),
             });
           }
           await maybeMute(req, post.author_id, { trigger: 'moderator', author });

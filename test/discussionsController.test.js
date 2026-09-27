@@ -328,7 +328,7 @@ test('createPost: replying notifies the parent author, never yourself, with a Te
   assert.equal(notes[0].userEmail, 'asha@x.com');
   assert.match(notes[0].message, /Ashy replied to your question on ENT basics/);
   assert.ok(!notes[0].message.startsWith('Teacher'), notes[0].message);
-  assert.equal(notes[0].link, '/Videos');
+  assert.equal(notes[0].link, `/Videos?lecture=${LECTURE._id}`, 'deep-linked to the lecture the Videos page opens as its watch view');
 
   notes.length = 0;
   await c.createPost(reqFor(makeUser(['CanAccessDiscussions'], { _id: parentAuthor._id }), { body: payload }), mockRes());
