@@ -156,14 +156,14 @@ Verify first, then schedule those.
 Two new permissions govern lecture discussions:
 
 - **`CanAccessDiscussions`** (label: *Discuss lectures*; resource: StudentPages) — enables students and teachers to read, post, and reply in lecture discussions. Included in the default student and teacher bundles for **new** databases.
-- **`CanModerateDiscussions`** (label: *Moderate discussions*; resource: Discussions) — enables teachers to moderate discussions (edit/delete posts, close threads, mute users). Included in the default teacher bundle.
+- **`CanModerateDiscussions`** (label: *Moderate discussions*; resource: Discussions) — lets teachers pin an answer, hide/unhide posts, see who wrote anonymous posts and view the report queue (posts are never deleted; repeat offenders are muted automatically). Included in the default teacher bundle.
 
 ### On an existing database
 
 Roles on an existing database **are not overwritten on restart**. To enable discussions:
 
 1. Navigate to **Roles** in the admin panel, and for each role that should access discussions, tick *Discuss lectures*. Teachers should also tick *Moderate discussions*.
-2. Or, run `node scripts/migrateRbac.js --reset-defaults` (from the backend repo root) to re-apply every default bundle across all roles. This is idempotent.
+2. Or, run `node scripts/migrateRbac.js --reset-defaults` (from the backend repo root) to re-apply every default bundle to the four default roles. Note this also undoes any permission an admin has unticked on those roles — use it knowingly.
 
 ### Data sync
 
