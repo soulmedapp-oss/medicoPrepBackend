@@ -150,3 +150,21 @@ window:
   `Video`. The migration takes each playlist's *name* from it.
 
 Verify first, then schedule those.
+
+## Discussions (added 2026-09-27)
+
+Two new permissions govern lecture discussions:
+
+- **`CanAccessDiscussions`** (label: *Discuss lectures*; resource: StudentPages) — enables students and teachers to read, post, and reply in lecture discussions. Included in the default student and teacher bundles for **new** databases.
+- **`CanModerateDiscussions`** (label: *Moderate discussions*; resource: Discussions) — enables teachers to moderate discussions (edit/delete posts, close threads, mute users). Included in the default teacher bundle.
+
+### On an existing database
+
+Roles on an existing database **are not overwritten on restart**. To enable discussions:
+
+1. Navigate to **Roles** in the admin panel, and for each role that should access discussions, tick *Discuss lectures*. Teachers should also tick *Moderate discussions*.
+2. Or, run `node scripts/migrateRbac.js --reset-defaults` (from the backend repo root) to re-apply every default bundle across all roles. This is idempotent.
+
+### Data sync
+
+No data migration is required. The `permissions` collection syncs with the backend code on the next restart, so no operator action is needed beyond the permission grants above.
