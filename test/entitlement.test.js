@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled, questionPlanClause, upgradeRefusal, viewerFor, invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const { normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled, questionPlanClause, upgradeRefusal, viewerFor, invalidateEntitlementPlans, featureLock, featureLocksFor } = require('../src/utils/entitlement');
 const SubscriptionPlan = require('../src/models/SubscriptionPlan');
 
 const PLANS = [
@@ -165,6 +165,7 @@ test('viewerFor: the plans loader selects price, so a paid plan hand-edited to t
     invalidateEntitlementPlans();
     const freeViewer = await viewerFor({ subscription_plan: 'free' });
     assert.match(selected, /\bprice\b/, 'getActivePlans must select price for the tierOf floor');
+    assert.match(selected, /\bfeatures\b/, 'getActivePlans must select features for featureLock');
     assert.deepEqual(lockState({ allowed_plans: ['elite'] }, freeViewer), { required_plan: 'elite', required_label: 'Elite', required_tier: 1 });
     invalidateEntitlementPlans();
     const eliteViewer = await viewerFor({ subscription_plan: 'elite' });
@@ -173,4 +174,27 @@ test('viewerFor: the plans loader selects price, so a paid plan hand-edited to t
     SubscriptionPlan.find = original;
     invalidateEntitlementPlans();
   }
+});
+
+const PLANS_F = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, price: 0, is_active: true, features: ['transcript'] },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, price: 199, is_active: true, features: ['transcript', 'ai_summary'] },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, price: 499, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
+  { plan_name: 'legacy', display_name: 'Legacy', tier: 1, price: 99, is_active: true }, // no features field
+];
+
+test('featureLock: included → null; otherwise the cheapest active plan listing it; none → a paid plan tier 1', () => {
+  assert.equal(featureLock('transcript', buildViewer({ subscription_plan: 'free' }, PLANS_F)), null);
+  assert.deepEqual(featureLock('ai_summary', buildViewer({ subscription_plan: 'free' }, PLANS_F)), { required_plan: 'basic', required_label: 'Basic', required_tier: 1 });
+  assert.deepEqual(featureLock('ai_tutor', buildViewer({ subscription_plan: 'basic' }, PLANS_F)), { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
+  assert.deepEqual(featureLock('ai_tutor', buildViewer({ subscription_plan: 'legacy' }, PLANS_F)).required_plan, 'premium', 'a plan with no features field includes nothing');
+  assert.deepEqual(featureLock('ai_tutor', buildViewer({ subscription_plan: 'free' }, PLANS_F.filter((p) => p.plan_name !== 'premium'))), { required_plan: '', required_label: 'a paid plan', required_tier: 1 });
+  assert.equal(featureLock('bogus', buildViewer({ subscription_plan: 'premium' }, PLANS_F)).required_label, 'a paid plan', 'unknown feature is never open');
+});
+
+test('featureLocksFor: one entry per catalogue feature', () => {
+  const locks = featureLocksFor(buildViewer({ subscription_plan: 'basic' }, PLANS_F));
+  assert.deepEqual(Object.keys(locks).sort(), ['ai_summary', 'ai_tutor', 'transcript']);
+  assert.equal(locks.ai_summary, null);
+  assert.equal(locks.ai_tutor.required_plan, 'premium');
 });

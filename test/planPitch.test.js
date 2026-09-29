@@ -112,3 +112,13 @@ test('validatePlanFields: the refusal reads the MERGED document, not just the pa
   // Making a paid plan free at the same time is fine.
   assert.equal(validatePlanFields({ price: 0, tier: 0 }, { price: 999, tier: 2 }).ok, true);
 });
+
+test('validatePlanFields: features validated via normalizeFeatures — dedupe/reorder on success, 400 on an unknown key or non-array', () => {
+  const r = validatePlanFields({ features: ['transcript', 'ai_tutor', 'transcript'] });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.value.features, ['ai_tutor', 'transcript']);
+  assert.match(validatePlanFields({ features: ['downloads'] }).error, /Unknown feature/);
+  assert.equal(validatePlanFields({ features: 'ai_tutor' }).ok, false);
+  // A body without `features` at all passes through untouched, same as tier/pitch.
+  assert.equal(Object.prototype.hasOwnProperty.call(validatePlanFields({ display_name: 'Elite' }).value, 'features'), false);
+});

@@ -572,6 +572,7 @@ async function connectDb() {
   });
   await ensureDefaultSubscriptionPlans();
   await ensurePlanTiers();
+  await ensurePlanFeatures();
   await ensureDefaultRoles();
   // eslint-disable-next-line no-console
   logger.info({ db: mongoose.connection.name, host: mongoose.connection.host }, `MongoDB connected (db: ${mongoose.connection.name})`);
@@ -602,6 +603,7 @@ async function ensureDefaultSubscriptionPlans() {
       is_active: true,
       sort_order: 0,
       tier: 0,
+      features: ['transcript'],
       pitch: {
         headline: 'Start for free',
         highlights: [
@@ -634,6 +636,7 @@ async function ensureDefaultSubscriptionPlans() {
       is_active: true,
       sort_order: 1,
       tier: 1,
+      features: ['transcript', 'ai_summary'],
       pitch: {
         headline: 'Unlock premium tests and live classes.',
         highlights: [
@@ -667,6 +670,7 @@ async function ensureDefaultSubscriptionPlans() {
       is_active: true,
       sort_order: 2,
       tier: 2,
+      features: ['ai_tutor', 'ai_summary', 'transcript'],
       pitch: {
         headline: 'Everything in Basic, plus the full lecture library and live classes.',
         highlights: [
@@ -701,6 +705,7 @@ async function ensureDefaultSubscriptionPlans() {
       is_active: true,
       sort_order: 3,
       tier: 3,
+      features: ['ai_tutor', 'ai_summary', 'transcript'],
       pitch: {
         headline: 'Dedicated mentor with full access to everything.',
         highlights: [
@@ -751,6 +756,30 @@ async function ensurePlanTiers() {
       `${misTiered.length} active paid plan(s) sit at tier 0 — their content is treated as tier 1 so it does not unlock for free students, but set a real tier in Plans`
     );
   }
+}
+
+// Seeded defaults (spec §2), by plan_name. Applied only to a plan whose
+// `features` field is entirely absent — see ensurePlanFeatures below.
+const DEFAULT_PLAN_FEATURES = {
+  free: ['transcript'],
+  basic: ['transcript', 'ai_summary'],
+  premium: ['ai_tutor', 'ai_summary', 'transcript'],
+  ultimate: ['ai_tutor', 'ai_summary', 'transcript'],
+};
+
+// One-time, idempotent, like ensurePlanTiers: a plan created before `features`
+// existed has the field absent (the schema default is `undefined`, not `[]`,
+// precisely so this can tell "never set" apart from "admin cleared it to
+// none"). Seeds the defaults above by plan_name so a fresh deploy does not
+// lock every existing student out of everything the moment this ships. Any
+// plan that already has a `features` array — even an empty one — is left
+// alone.
+async function ensurePlanFeatures() {
+  await Promise.all(
+    Object.entries(DEFAULT_PLAN_FEATURES).map(([plan_name, features]) =>
+      SubscriptionPlan.updateOne({ plan_name, features: { $exists: false } }, { $set: { features } })
+    )
+  );
 }
 
 async function ensureDefaultRoles() {

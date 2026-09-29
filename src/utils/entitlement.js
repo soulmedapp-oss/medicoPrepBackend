@@ -4,6 +4,7 @@
 // plans' admin-set `tier`, whether a viewer may open it and, if not, which
 // plan is the cheapest way in.
 const SubscriptionPlan = require('../models/SubscriptionPlan');
+const { PLAN_FEATURES } = require('./planFeatures');
 
 const ALIASES = { medium: 'premium', advance: 'ultimate' };
 const FALLBACK_REQUIRED = Object.freeze({ plan_name: '', display_name: 'a paid plan', tier: 1 });
@@ -112,9 +113,36 @@ function upgradeRefusal(lock) {
   return { error: 'Upgrade required', code: 'UPGRADE_REQUIRED', lock };
 }
 
+// A feature is open when the viewer's own active plan lists it (spec §2). A
+// plan whose `features` field is absent (never touched, or predates this
+// column) is treated as listing nothing — never as "everything" — which is
+// why this checks `Array.isArray` rather than defaulting a missing field.
+// Locked: names the cheapest (lowest-tier) active plan that lists the
+// feature; if none does, the same tier-1 "a paid plan" fallback used
+// elsewhere in this file, since neither an unknown feature key nor an empty
+// catalogue can be enumerated as an allowed plan.
+function featureLock(feature, viewer) {
+  const own = viewer?.plansByName?.get(viewer.planName);
+  if (own?.features?.includes(feature)) return null;
+  const plans = viewer?.plansByName instanceof Map ? [...viewer.plansByName.values()] : [];
+  const candidates = plans
+    .filter((p) => Array.isArray(p.features) && p.features.includes(feature))
+    .sort((a, b) => tierOf(a) - tierOf(b));
+  if (!candidates.length) return { required_plan: '', required_label: 'a paid plan', required_tier: 1 };
+  const cheapest = candidates[0];
+  return { required_plan: normalizePlanName(cheapest.plan_name), required_label: cheapest.display_name || cheapest.plan_name, required_tier: tierOf(cheapest) };
+}
+
+// One entry per catalogue feature (spec §4's `feature_locks` shape).
+function featureLocksFor(viewer) {
+  const locks = {};
+  PLAN_FEATURES.forEach((feature) => { locks[feature] = featureLock(feature, viewer); });
+  return locks;
+}
+
 async function getActivePlans() {
   if (cache.value && cache.expiresAt > Date.now()) return cache.value;
-  const plans = await SubscriptionPlan.find({ is_active: true }).select('plan_name display_name tier price is_active').lean();
+  const plans = await SubscriptionPlan.find({ is_active: true }).select('plan_name display_name tier price is_active features').lean();
   cache = { value: plans, expiresAt: Date.now() + PLANS_TTL_MS };
   return plans;
 }
@@ -129,6 +157,6 @@ async function viewerFor(user) {
 
 module.exports = {
   normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled,
-  questionPlanClause, upgradeRefusal,
+  questionPlanClause, upgradeRefusal, featureLock, featureLocksFor,
   getActivePlans, viewerFor, invalidateEntitlementPlans,
 };

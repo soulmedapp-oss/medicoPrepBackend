@@ -1,6 +1,8 @@
 // The per-plan "upgrade pitch" shown in the student Upgrade dialog, and the
 // tier that orders plans for entitlement (spec §4). Pure validation so the
 // controller stays a thin pass-through.
+const { normalizeFeatures } = require('./planFeatures');
+
 const PITCH_ICONS = ['video', 'notes', 'questions', 'live', 'doubt', 'ai', 'analytics', 'star', 'check'];
 const PITCH_MAX_HIGHLIGHTS = 6;
 const PITCH_TEXT_MAX = 120;
@@ -65,6 +67,11 @@ function validatePlanFields(body, existing) {
       highlights.push({ icon, text });
     }
     value.pitch = { headline, highlights, banner_url: String(pitch.banner_url || '').trim() };
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'features')) {
+    const result = normalizeFeatures(value.features);
+    if (!result.ok) return { ok: false, error: result.error };
+    value.features = result.value;
   }
   // C1: refuse a paid plan at tier 0, judged on the MERGED document — a patch
   // that only drops the tier, and a patch that only adds a price, are both the

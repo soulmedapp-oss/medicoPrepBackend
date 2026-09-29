@@ -27,6 +27,12 @@ const subscriptionPlanSchema = new mongoose.Schema(
     // required tier may open it. Free = 0. Set by the admin; backfilled from
     // sort_order once by ensurePlanTiers() in server.js.
     tier: { type: Number, default: 0, min: 0 },
+    // Which of PLAN_FEATURES (src/utils/planFeatures.js) this plan includes
+    // (spec §2). `default: undefined` — NOT `[]` — so the field stays absent
+    // on a plan nobody has touched, which is exactly what lets
+    // ensurePlanFeatures() (server.js) tell "never set" apart from
+    // "deliberately cleared to none" and seed only the former.
+    features: { type: [String], default: undefined },
     // Copy for the student Upgrade dialog when this plan is the cheapest way
     // into a locked item.
     pitch: {
