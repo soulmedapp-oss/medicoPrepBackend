@@ -225,3 +225,28 @@ test('getMe: staff (admin role, which carries CanViewVideos) gets all three feat
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
   assert.deepEqual(res.body.user.feature_locks, { ai_tutor: null, ai_summary: null, transcript: null });
 });
+
+// Fix round 1 (Important): withFeatureLocks must never fail the request it's
+// attached to — a broken plan lookup degrades fail-closed (every key locked
+// to the same tier-1 "a paid plan" fallback featureLock itself uses when no
+// plan lists a feature) rather than 500ing login/getMe/googleAuth over a
+// display-only field. The real gate (featureLock on each video/transcript
+// endpoint) is unaffected by this and still decides access for real.
+test('getMe: when the plan lookup throws, feature_locks degrades to all-locked instead of 500ing, and the failure is reported', async () => {
+  const userId = oid();
+  stub(SubscriptionPlan, 'find', () => { throw new Error('mongo down'); });
+  stub(Role, 'find', () => q([]));
+  stub(User, 'findById', () => q({
+    _id: userId, role: 'student', roles: ['student'], is_teacher: false, subscription_plan: 'free',
+  }));
+
+  const loggedErrors = [];
+  const req = { userId: String(userId), log: { error: (...args) => loggedErrors.push(args) } };
+  const res = mockRes();
+  await authController.getMe(req, res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const fallback = { required_plan: '', required_label: 'a paid plan', required_tier: 1 };
+  assert.deepEqual(res.body.user.feature_locks, { ai_tutor: fallback, ai_summary: fallback, transcript: fallback });
+  assert.equal(loggedErrors.length, 1, 'reportError must log the failure exactly once (via req.log.error)');
+});

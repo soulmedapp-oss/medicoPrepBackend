@@ -141,17 +141,36 @@ async function attachEffectivePermissions(payload) {
   return payload;
 }
 
+// Fix round 1: if viewerFor/featureLocksFor throws (e.g. SubscriptionPlan.find
+// fails), login/getMe/googleAuth must not 500 over a display-only field. Every
+// non-staff key degrades to this — the same "a paid plan" tier-1 fallback
+// featureLock itself returns when no plan lists a feature — so the client
+// shows every tab locked rather than trusting a possibly-wrong unlocked
+// state; the real gate is still the server-side featureLock check on each
+// endpoint, which runs its own viewerFor and fails the request (never silently
+// opens) if the same lookup is failing.
+const FEATURE_LOCK_FALLBACK = Object.freeze({ required_plan: '', required_label: 'a paid plan', required_tier: 1 });
+
 // Task 2 (spec §2/§4): the same three-key { ai_tutor, ai_summary, transcript }
 // lock object the video/transcript endpoints enforce, mirrored onto every
 // auth payload the browser receives, so a locked watch-page tab can render
 // without a second request. Staff (CanViewVideos) always get all three null
 // — must run AFTER attachEffectivePermissions, since can() reads
 // effective_permissions.
-async function withFeatureLocks(user) {
+async function withFeatureLocks(user, req) {
   if (can(user, 'CanViewVideos')) {
     return { ai_tutor: null, ai_summary: null, transcript: null };
   }
-  return featureLocksFor(await viewerFor(user));
+  try {
+    return featureLocksFor(await viewerFor(user));
+  } catch (err) {
+    reportError(req, err, 'withFeatureLocks failed; degrading fail-closed');
+    return {
+      ai_tutor: { ...FEATURE_LOCK_FALLBACK },
+      ai_summary: { ...FEATURE_LOCK_FALLBACK },
+      transcript: { ...FEATURE_LOCK_FALLBACK },
+    };
+  }
 }
 
 function getClientIp(req) {
@@ -378,7 +397,7 @@ async function login(req, res) {
     const updatedUser = await expireSubscriptionIfNeeded(user);
     const token = await issueSession(req, res, user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
-    payload.feature_locks = await withFeatureLocks(payload);
+    payload.feature_locks = await withFeatureLocks(payload, req);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
   } catch (err) {
@@ -594,7 +613,7 @@ async function getMe(req, res) {
     const refreshed = await expireSubscriptionIfNeeded(user);
     const payload = sanitizeUser(refreshed || user);
     await attachEffectivePermissions(payload);
-    payload.feature_locks = await withFeatureLocks(payload);
+    payload.feature_locks = await withFeatureLocks(payload, req);
     return res.json({ user: payload });
   } catch (err) {
     reportError(req, err);
@@ -781,7 +800,7 @@ async function googleAuth(req, res) {
 
     const token = await issueSession(req, res, user);
     const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
-    responsePayload.feature_locks = await withFeatureLocks(responsePayload);
+    responsePayload.feature_locks = await withFeatureLocks(responsePayload, req);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: responsePayload, token });
   } catch (err) {
