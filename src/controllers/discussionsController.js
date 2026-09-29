@@ -14,6 +14,7 @@ const {
 
 const ANCHOR_TYPES = new Set(['lecture']); // 'question' is modelled, not yet served
 const REPORT_QUEUE_LIMIT = 200;
+const QUESTION_QUEUE_LIMIT = 200;
 // Every discussion notification points at the lecture page (spec §7) — deep
 // linked to the lecture itself, which the Videos page opens as its watch view.
 const DISCUSSION_LINK = '/Videos';
@@ -534,12 +535,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         .lean();
       const authors = await loadAuthors(rows);
       const ctx = { user: req.user, moderator: isModerator(req.user), authors };
-      // Fix round 2, Critical 3: the queue also carries the lecture TITLE, in
-      // ONE query over the distinct anchors — the report queue page used to
-      // fetch the entire video catalogue (/videos?all=true) just to name them.
-      const anchorIds = [...new Set(rows.map((post) => String(post.anchor?.id || '')).filter(Boolean))];
-      const lectures = anchorIds.length ? await Video.find({ _id: { $in: anchorIds } }).select('title').lean() : [];
-      const titleById = new Map(lectures.map((lecture) => [String(lecture._id), lecture.title || '']));
+      const titleById = await lectureTitles(rows);
       // `anchor` so the queue can link to the lecture; `reports` so the
       // moderator sees who reported it and why.
       const posts = rows.map((post) => ({
@@ -553,6 +549,53 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load reported posts' });
+    }
+  }
+
+  // Fix round 2, Critical 3: queues carry the lecture TITLE, in ONE query
+  // over the distinct anchors — the report queue page used to fetch the
+  // entire video catalogue (/videos?all=true) just to name them.
+  async function lectureTitles(posts) {
+    const anchorIds = [...new Set(posts.map((post) => String(post.anchor?.id || '')).filter(Boolean))];
+    const lectures = anchorIds.length ? await Video.find({ _id: { $in: anchorIds } }).select('title').lean() : [];
+    return new Map(lectures.map((lecture) => [String(lecture._id), lecture.title || '']));
+  }
+
+  // The teacher's work queue: every visible question (top-level post) that no
+  // teacher has replied to yet, newest first. "Answered" means a visible reply
+  // whose author held CanModerateDiscussions when they wrote it — peer replies
+  // do not close a question, and a hidden teacher reply does not count either.
+  async function listUnanswered(req, res) {
+    try {
+      const questions = await DiscussionPost.find({ parent_id: null, is_hidden: { $ne: true } })
+        .sort({ created_date: -1 })
+        .limit(QUESTION_QUEUE_LIMIT)
+        .lean();
+      const ids = questions.map((post) => post._id);
+      const replies = ids.length
+        ? await DiscussionPost.find({ parent_id: { $in: ids }, is_hidden: { $ne: true } }).select('parent_id is_teacher_reply').lean()
+        : [];
+      const replyCount = new Map();
+      const answered = new Set();
+      replies.forEach((reply) => {
+        const key = String(reply.parent_id);
+        replyCount.set(key, (replyCount.get(key) || 0) + 1);
+        if (reply.is_teacher_reply) answered.add(key);
+      });
+      const open = questions.filter((post) => !answered.has(String(post._id)));
+      const authors = await loadAuthors(open);
+      const ctx = { user: req.user, moderator: isModerator(req.user), authors };
+      const titleById = await lectureTitles(open);
+      const posts = open.map((post) => ({
+        ...shape(post, ctx),
+        anchor: post.anchor,
+        anchor_label: titleById.get(String(post.anchor?.id || '')) || '',
+        reply_count: replyCount.get(String(post._id)) || 0,
+      }));
+      return res.json({ posts });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load unanswered questions' });
     }
   }
 
@@ -619,7 +662,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
     await User.findByIdAndUpdate(authorId, { $unset: { discussion_muted_until: '' } });
   }
 
-  return { listThread, createPost, toggleUpvote, reportPost, updatePost, listReports };
+  return { listThread, createPost, toggleUpvote, reportPost, updatePost, listReports, listUnanswered };
 }
 
 module.exports = { createDiscussionsController };

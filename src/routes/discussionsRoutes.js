@@ -40,6 +40,8 @@ function createDiscussionsRoutes({ authMiddleware, createNotification, loadVideo
   // one is added, the :id param validator would answer 400 "Invalid id" for
   // the literal "reports" — and the shadowing would be silent.
   router.get('/discussions/reports', authMiddleware, authorize('CanModerateDiscussions'), controller.listReports);
+  // The teacher work queue: questions nobody on staff has answered yet.
+  router.get('/discussions/unanswered', authMiddleware, authorize('CanModerateDiscussions'), controller.listUnanswered);
   // Fix round 2, Important 4: a moderator built from legacy `manage_doubts`
   // holds CanModerateDiscussions WITHOUT CanAccessDiscussions, and could not
   // read the very threads they moderate. One marker, either code — the gate()

@@ -604,6 +604,47 @@ test('listReports: only reported or hidden posts, in queue order, with moderator
   assert.equal(res.body.posts[1].anchor_label, 'ENT basics');
 });
 
+test('listUnanswered: visible questions with no visible teacher reply, newest first, with reply counts and lecture titles', async () => {
+  const moderator = makeUser(['CanModerateDiscussions']);
+  const author = { _id: oid(), full_name: 'Asha Rao', email: 'asha@x.com', nickname: 'Ashy' };
+  const base = {
+    anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: author._id,
+    author_snapshot: { display_name: 'Ashy', avatar_id: 'avatar-03' }, upvotes: [], reports: [], report_count: 0, is_hidden: false,
+  };
+  const openNoReplies = { ...base, _id: oid(), body: 'Q1 nobody answered', created_date: new Date('2026-09-23T10:00:00Z') };
+  const openPeerOnly = { ...base, _id: oid(), body: 'Q2 a peer replied', created_date: new Date('2026-09-22T10:00:00Z') };
+  const answeredByTeacher = { ...base, _id: oid(), body: 'Q3 teacher answered', created_date: new Date('2026-09-21T10:00:00Z') };
+  const hiddenTeacherReply = { ...base, _id: oid(), body: 'Q4 teacher reply was hidden', created_date: new Date('2026-09-20T10:00:00Z') };
+  const replies = [
+    { parent_id: openPeerOnly._id, is_teacher_reply: false },
+    { parent_id: openPeerOnly._id, is_teacher_reply: false },
+    { parent_id: answeredByTeacher._id, is_teacher_reply: true },
+    // Q4's teacher reply is hidden, so the visible-replies query never returns it.
+  ];
+  const filters = [];
+  let questionChain;
+  stub(DiscussionPost, 'find', (f) => {
+    filters.push(f);
+    if (f.parent_id === null) { questionChain = q([openNoReplies, openPeerOnly, answeredByTeacher, hiddenTeacherReply]); return questionChain; }
+    return q(replies);
+  });
+  stub(User, 'find', () => q([author]));
+  stub(Video, 'find', () => q([LECTURE]));
+
+  const res = mockRes();
+  await controller().listUnanswered(reqFor(moderator, { query: {} }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(filters[0], { parent_id: null, is_hidden: { $ne: true } }, 'hidden questions are not work');
+  assert.deepEqual(questionChain.args.sort, { created_date: -1 });
+  assert.equal(questionChain.args.limit, 200);
+  assert.deepEqual(filters[1].is_hidden, { $ne: true }, 'a hidden teacher reply does not answer a question');
+  assert.deepEqual(res.body.posts.map((p) => p.body), ['Q1 nobody answered', 'Q2 a peer replied', 'Q4 teacher reply was hidden']);
+  assert.deepEqual(res.body.posts.map((p) => p.reply_count), [0, 2, 0]);
+  assert.equal(res.body.posts[0].anchor_label, 'ENT basics');
+  assert.equal(String(res.body.posts[0].anchor.id), String(LECTURE._id));
+  assert.equal(res.body.posts[0].identity.real_name, 'Asha Rao', 'moderator identities, like the report queue');
+});
+
 // --- 11. fix round 1, Critical 1: the by-id routes are gated too ---
 
 test('the by-id routes run the same lecture gate: a caller who cannot play the lecture cannot upvote, report or edit its posts', async () => {
