@@ -8,7 +8,7 @@ const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { can, canAny } = require('../rbac/can');
-const { normalizePlanName, questionPlanClause, viewerFor } = require('../utils/entitlement');
+const { normalizePlanName, questionPlanClause, viewerFor, lockState, upgradeRefusal } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
 const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -208,19 +208,28 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
   async function listTests(req, res) {
     try {
       const { all } = req.query;
-      if (all === 'true') {
+      const isStaffAll = all === 'true';
+      if (isStaffAll) {
         if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       }
-      const filter = all === 'true'
+      const filter = isStaffAll
         ? {}
         : { is_published: true, is_active: { $ne: false }, ...studentScheduleClause() };
       const tests = await Test.find(filter)
         .sort({ created_date: -1 })
         .limit(clampLimit(req.query.limit, MAX_LIST_LIMIT))
         .lean();
-      return res.json({ tests });
+      // Every row carries `lock` for a stable shape: null when open, or
+      // { required_plan, required_label, required_tier } when the caller's
+      // plan tier is below the test's. Staff (all=true) always sees lock:
+      // null — they bypass entitlement entirely.
+      if (isStaffAll) {
+        return res.json({ tests: tests.map((t) => ({ ...t, lock: null })) });
+      }
+      const viewer = await viewerFor(req.user);
+      return res.json({ tests: tests.map((t) => ({ ...t, lock: lockState(t, viewer) })) });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load tests' });
@@ -1201,6 +1210,10 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const isStaff = canAny(user, ['CanViewTests', 'CanViewQuestions']);
       if (!isStaff && !isTestLiveForStudent(test)) {
         return res.status(403).json({ error: 'This test is not currently available' });
+      }
+      if (!isStaff) {
+        const lock = lockState(test, await viewerFor(user));
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
       // Status, start time and marks are server-controlled; the request body is ignored.

@@ -229,7 +229,10 @@ test('listClasses: all=true — a class with an empty teacher_email never matche
 // --- Fix round 1: the tier rule as the class handlers actually apply it ---
 // A class restricted to `premium` (tier 2) is refused for a tier-1 viewer and
 // allowed for a tier-3 one — the old rule needed the plan name to match exactly,
-// so `ultimate` was refused here too. The 403 body is unchanged in this task.
+// so `ultimate` was refused here too.
+// Task 4: the 403 body is now the uniform { error, code: 'UPGRADE_REQUIRED',
+// lock } shared by every plan-gated handler, not the old bare
+// { error: 'Upgrade required' }.
 test('getClassRecording: a premium-only class refuses a basic viewer and admits an ultimate one (higher tier includes lower)', async () => {
   const liveClass = {
     _id: oid(), is_published: true, is_active: true, recording_url: 'https://rec',
@@ -245,7 +248,8 @@ test('getClassRecording: a premium-only class refuses a basic viewer and admits 
     resBasic
   );
   assert.equal(resBasic.statusCode, 403);
-  assert.deepEqual(resBasic.body, { error: 'Upgrade required' });
+  assert.equal(resBasic.body.code, 'UPGRADE_REQUIRED');
+  assert.deepEqual(resBasic.body.lock, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
 
   const resUltimate = mockRes();
   await classesController().getClassRecording(
@@ -256,7 +260,10 @@ test('getClassRecording: a premium-only class refuses a basic viewer and admits 
   assert.equal(resUltimate.body.url, 'https://rec');
 });
 
-test('listClasses: the student list hides a premium-only class from a basic viewer and shows it to an ultimate one', async () => {
+// Task 4: a locked class is no longer dropped from the student list — it's
+// returned alongside the open ones with `lock` set, so the basic viewer sees
+// both titles now (the premium row just carries a lock).
+test('listClasses: the student list carries lock on a premium-only class instead of hiding it; an ultimate viewer sees it unlocked', async () => {
   const free = { _id: oid(), title: 'Free', scheduled_date: new Date(), is_published: true, is_active: true, is_free: true, allowed_plans: [], status: 'completed' };
   const premium = { _id: oid(), title: 'Premium', scheduled_date: new Date(), is_published: true, is_active: true, is_free: false, allowed_plans: ['premium'], status: 'completed' };
   stub(LiveClass, 'find', () => q([free, premium]));
@@ -266,12 +273,15 @@ test('listClasses: the student list hides a premium-only class from a basic view
   const resBasic = mockRes();
   await classesController().listClasses({ userId: String(basic._id), user: basic, query: {} }, resBasic);
   assert.equal(resBasic.statusCode, 200);
-  assert.deepEqual(resBasic.body.classes.map((c) => c.title), ['Free']);
+  assert.deepEqual(resBasic.body.classes.map((c) => c.title), ['Free', 'Premium']);
+  assert.equal(resBasic.body.classes.find((c) => c.title === 'Free').lock, null);
+  assert.deepEqual(resBasic.body.classes.find((c) => c.title === 'Premium').lock, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
 
   const ultimate = makeUser(['CanAccessLiveClasses'], { subscription_plan: 'ultimate' });
   const resUltimate = mockRes();
   await classesController().listClasses({ userId: String(ultimate._id), user: ultimate, query: {} }, resUltimate);
   assert.deepEqual(resUltimate.body.classes.map((c) => c.title), ['Free', 'Premium']);
+  assert.equal(resUltimate.body.classes.find((c) => c.title === 'Premium').lock, null);
 });
 
 // --- classesController.getClassRecording / getClassSummary ---

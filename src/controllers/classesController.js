@@ -7,7 +7,7 @@ const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
 const { sendEmail } = require('../services/emailService');
 const { can } = require('../rbac/can');
-const { isEntitled, viewerFor } = require('../utils/entitlement');
+const { lockState, upgradeRefusal, viewerFor } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -107,13 +107,6 @@ function buildClassInviteIcs(liveClass) {
 }
 
 function createClassesController({ createNotification }) {
-  // One entitlement rule for playlists, classes and tests alike (Task 2):
-  // `viewer` carries the caller's plan tier, so a higher plan includes every
-  // lower one instead of needing an exact allowed_plans name match.
-  function canAccessClass(liveClass, viewer) {
-    return isEntitled(liveClass, viewer);
-  }
-
   async function listClasses(req, res) {
     try {
       const { all } = req.query;
@@ -166,23 +159,34 @@ function createClassesController({ createNotification }) {
           )
         );
       }
-      let visibleClasses = all === 'true'
-        ? classes
-        : classes.filter((liveClass) => canAccessClass(liveClass, viewer));
-
-      if (all !== 'true') {
-        visibleClasses = visibleClasses.map(sanitizeClassForStudent);
-      } else {
+      let visibleClasses;
+      if (all === 'true') {
         // zoom_start_url is the Zoom HOST link — the one exception to "no
         // ownership rules" (spec section 2: handing every CanEditClasses
         // holder every class's host link would re-open the 2026-09-19 leak).
         // Kept only for the class's own teacher or a CanHostAnyClass holder.
+        // `lock: null` on every row keeps the same shape as the student list.
         const canHostAny = can(req.user, 'CanHostAnyClass');
-        visibleClasses = visibleClasses.map((liveClass) => {
-          if (canHostAny || isClassTeacher(req.user, liveClass)) return liveClass;
-          const sanitized = { ...liveClass };
+        visibleClasses = classes.map((liveClass) => {
+          if (canHostAny || isClassTeacher(req.user, liveClass)) return { ...liveClass, lock: null };
+          const sanitized = { ...liveClass, lock: null };
           delete sanitized.zoom_start_url;
           return sanitized;
+        });
+      } else {
+        // Locked classes stay in the list (with `lock` set) instead of being
+        // dropped — the student sees what exists and what it takes to open
+        // it. A locked row is stripped of join/recording hints on top of the
+        // usual student sanitizer, since neither is usable without the plan.
+        visibleClasses = classes.map((liveClass) => {
+          const lock = lockState(liveClass, viewer);
+          const row = sanitizeClassForStudent(liveClass);
+          if (lock) {
+            delete row.youtube_url;
+            row.has_join_link = false;
+            row.has_recording = false;
+          }
+          return { ...row, lock };
         });
       }
       return res.json({ classes: visibleClasses });
@@ -445,9 +449,8 @@ function createClassesController({ createNotification }) {
           return res.status(404).json({ error: 'Class not found' });
         }
         const viewer = await viewerFor(req.user);
-        if (!canAccessClass(liveClass, viewer)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
       // Never hand out the Zoom S2S access token (it grants account-wide API
@@ -499,9 +502,8 @@ function createClassesController({ createNotification }) {
       }
 
       const viewer = await viewerFor(req.user);
-      if (!canAccessClass(liveClass, viewer)) {
-        return res.status(403).json({ error: 'Upgrade required' });
-      }
+      const lock = lockState(liveClass, viewer);
+      if (lock) return res.status(403).json(upgradeRefusal(lock));
 
       const url = liveClass.zoom_join_url || liveClass.meeting_link || '';
       if (!url) {
@@ -530,9 +532,8 @@ function createClassesController({ createNotification }) {
           return res.status(404).json({ error: 'Class not found' });
         }
         const viewer = await viewerFor(req.user);
-        if (!canAccessClass(liveClass, viewer)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
       const summary = await requestClassSummary(liveClass);
@@ -566,9 +567,8 @@ function createClassesController({ createNotification }) {
           return res.status(404).json({ error: 'Class not found' });
         }
         const viewer = await viewerFor(req.user);
-        if (!canAccessClass(liveClass, viewer)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
       const answer = await requestClassChat(message.trim(), liveClass);
