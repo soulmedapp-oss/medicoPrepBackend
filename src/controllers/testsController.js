@@ -8,7 +8,7 @@ const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { can, canAny } = require('../rbac/can');
-const { normalizePlanName, questionPlanClause, viewerFor, lockState, upgradeRefusal } = require('../utils/entitlement');
+const { normalizePlanName, questionPlanClause, viewerFor, lockState, upgradeRefusal, getActivePlans } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
 const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -28,6 +28,25 @@ function questionLabel(question) {
 // buildQuestionFilter reads the admin-set `tier` off SubscriptionPlan.
 function normalizePlan(value) {
   return normalizePlanName(value) || 'free';
+}
+
+// Final fix wave M5. A bulk import used to accept any `required_plan` cell
+// silently, so a typo ("premim") produced questions gated on a plan that does
+// not exist — and because an unenumerable plan name cannot be whitelisted,
+// questionPlanClause admits it from tier 1 up and hides it at tier 0. That is
+// the safe direction, but it is not what the uploader meant, and nothing told
+// them. The value is still kept as-is (never silently rewritten, which could
+// widen access); the row is reported instead.
+function normalizedPlanNames(plans) {
+  return new Set((plans || []).map((plan) => normalizePlanName(plan?.plan_name)).filter(Boolean));
+}
+
+function unknownPlanWarning(rowNumber, rawValue, knownNames) {
+  const raw = String(rawValue ?? '').trim();
+  if (!raw) return null;
+  const normalized = normalizePlanName(raw);
+  if (!normalized || normalized === 'free' || knownNames.has(normalized)) return null;
+  return `Row ${rowNumber}: unknown plan "${raw}" — students below tier 1 will not see this question`;
 }
 
 const MAX_LIST_LIMIT = 200;
@@ -254,7 +273,16 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           });
         }
       }
-      return res.json({ test });
+      // Final fix wave I1: the test carries `lock` for the same reason every
+      // list row does — the client needs something to render the locked state
+      // and the upgrade prompt from, instead of discovering the lock only by
+      // getting a 403 out of the questions request. Staff bypass entitlement
+      // entirely, so `lock` is null for them (the key is always present).
+      if (canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
+        return res.json({ test: { ...test, lock: null } });
+      }
+      const lock = lockState(test, await viewerFor(req.user));
+      return res.json({ test: { ...test, lock } });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load test' });
@@ -412,6 +440,15 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(404).json({ error: 'Test not available' });
       }
       const viewer = await viewerFor(req.user);
+      // Final fix wave I2: a locked test's paper is refused outright, before
+      // any question is read. buildQuestionFilter below would otherwise narrow
+      // the paper per question plan and hand back whatever was left — which
+      // for a test the student cannot open at all is the wrong answer, not a
+      // smaller one.
+      if (!isStaff) {
+        const lock = lockState(test, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
       const filter = buildQuestionFilter(req.params.id, req.user, viewer);
 
       const questions = await Question.find(filter).sort({ created_date: 1 }).lean();
@@ -491,6 +528,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const actor = getActor(req);
       const created = [];
       const errors = [];
+      const warnings = [];
+      const knownPlanNames = normalizedPlanNames(await getActivePlans());
 
       records.forEach((row, index) => {
         try {
@@ -533,7 +572,10 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           const difficulty = String(row.difficulty || 'medium').toLowerCase();
           const marks = Number(row.marks ?? 1) || 1;
           const negative_marks = Number(row.negative_marks ?? 0) || 0;
-          const required_plan = normalizePlan(row.required_plan || row.plan);
+          const rawPlan = row.required_plan || row.plan;
+          const required_plan = normalizePlan(rawPlan);
+          const planWarning = unknownPlanWarning(index + 1, rawPlan, knownPlanNames);
+          if (planWarning) warnings.push(planWarning);
 
           created.push({
             test_id: req.params.id,
@@ -569,6 +611,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       return res.status(201).json({
         inserted: inserted.length,
         errors,
+        warnings,
       });
     } catch (err) {
       reportError(req, err);
@@ -725,6 +768,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const actor = getActor(req);
       const created = [];
       const errors = [];
+      const warnings = [];
+      const knownPlanNames = normalizedPlanNames(await getActivePlans());
 
       for (let index = 0; index < records.length; index += 1) {
         const row = records[index];
@@ -781,7 +826,10 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
           const difficulty = String(row.difficulty || 'medium').toLowerCase();
           const marks = Number(row.marks ?? 1) || 1;
           const negative_marks = Number(row.negative_marks ?? 0) || 0;
-          const required_plan = normalizePlan(row.required_plan || row.plan);
+          const rawPlan = row.required_plan || row.plan;
+          const required_plan = normalizePlan(rawPlan);
+          const planWarning = unknownPlanWarning(index + 1, rawPlan, knownPlanNames);
+          if (planWarning) warnings.push(planWarning);
 
           created.push({
             test_id: null,
@@ -816,6 +864,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       return res.status(201).json({
         inserted: inserted.length,
         errors,
+        warnings,
       });
     } catch (err) {
       reportError(req, err);
@@ -1327,6 +1376,16 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       // Grade against exactly the questions the attempt owner (the caller, per the
       // owner-only check above) can see.
       const viewer = await viewerFor(req.user);
+      // Final fix wave I5: if the test is locked for this viewer — they lost the
+      // plan mid-attempt, or the test was re-gated — refuse the completion
+      // rather than grade a narrowed paper and write a score the student can
+      // never explain. Ruling: refuse, not grade. Checked before any grading or
+      // write, and staff (who bypass entitlement) are unaffected.
+      if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
+        const test = await Test.findById(attempt.test_id).lean();
+        const lock = test ? lockState(test, viewer) : null;
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
       const questions = await Question.find(buildQuestionFilter(attempt.test_id, req.user, viewer))
         .sort({ created_date: 1 })
         .lean();

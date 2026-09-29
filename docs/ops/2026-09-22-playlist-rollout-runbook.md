@@ -179,13 +179,45 @@ numeric plan **tier** instead of matching plan names one by one.
 
 ### What changes on deploy
 
-No data migration. On first start after deploy, `ensurePlanTiers()` copies
-each plan's existing `sort_order` into a new `tier` field, for any plan that
-doesn't have one yet (`updateMany({ tier: { $exists: false } }, ...)`).
-Idempotent — safe to restart as many times as you like, it only fills tiers
-that are still missing. Seeded default plans (free/basic/premium/ultimate) get
-sane tiers and a starter pitch out of the box; existing plans on your database
-just get their current `sort_order` carried over as-is.
+No data migration. On first start after deploy, `ensurePlanTiers()` fills the
+new `tier` field for any plan that doesn't have one yet: a plan priced at 0 or
+below gets tier 0, and the paid plans are ranked 1, 2, 3… ordered by
+`sort_order`, then by `price`. A plan that already has a tier is left exactly
+as it is, so this is idempotent — safe to restart as many times as you like.
+Seeded default plans (free/basic/premium/ultimate) get sane tiers and a starter
+pitch out of the box.
+
+(It used to copy `sort_order` straight into `tier`. That put every plan sharing
+the default `sort_order` of 0 at tier 0 — **including paid ones**, which means
+everything they gate would have been unlocked for every free student. Hence the
+pre-deploy check below.)
+
+### Pre-deploy check — no paid plan may show tier 0
+
+Run this against the target database before you deploy, and again after the
+first start:
+
+```js
+db.subscriptionplans.find({ is_active: true }, { plan_name: 1, price: 1, sort_order: 1, tier: 1 })
+```
+
+**No paid plan (`price > 0`) may show `tier: 0`.** A paid plan at tier 0 sits at
+the same tier as free, so a free student would be entitled to everything it
+gates. Three things now stop that, but you still want eyes on the list:
+
+- `ensurePlanTiers()` ranks any plan that has **no** tier at all;
+- the Plans API refuses to save a paid plan at tier 0 — "A paid plan needs a
+  tier of 1 or more" — on both create and edit;
+- at runtime, a priced plan found at tier 0 is *treated* as tier 1 anyway, so
+  its content still locks. The server also logs a startup `WARN` naming every
+  active paid plan sitting at tier 0. If you see that warning, fix the ladder
+  in **Plans**; the safety net is not a resting place.
+
+**Cache lag:** plan tiers and pitches are cached in-process for 60 seconds, per
+process. On a multi-process or multi-instance deployment a tier change can take
+up to 60 s to be reflected everywhere, and different instances can disagree
+during that window. Don't judge a tier edit by one request — wait a minute, and
+check on more than one instance if you run several.
 
 ### What you do
 
@@ -228,3 +260,4 @@ everywhere else.
 - A premium student can open both premium **and** basic content (higher includes lower); an ultimate student can open everything.
 - Editing a plan's pitch (headline/highlights/banner) in admin shows up in the student dialog within about 60 seconds (the plans list is cached).
 - Deactivating the only plan a playlist/class/test names locks it as "a paid plan" rather than unlocking it or 500ing.
+- A paid plan created without touching **Tier** is refused (or auto-ranked at the next start), and its content still locks: create a paid plan leaving Tier at 0, confirm the save is refused, set a tier of 1 or more, tick it on a playlist, and check a free student sees the lock badge rather than the content.

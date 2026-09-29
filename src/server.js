@@ -67,6 +67,7 @@ const {
   getExtension,
 } = require('./utils/uploadValidation');
 const { isTokenVersionCurrent } = require('./utils/security');
+const { assignMissingTiers } = require('./utils/planPitch');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
@@ -719,11 +720,37 @@ async function ensureDefaultSubscriptionPlans() {
 }
 
 // One-time, idempotent: plans created before `tier` existed order by sort_order.
+// Final fix wave C1. This used to copy `sort_order` into `tier`, which put
+// every plan sharing the default sort_order 0 at tier 0 — including PAID
+// plans, which then unlocked all their gated content for every free student.
+// assignMissingTiers (utils/planPitch, unit-tested) ranks instead: free plans
+// (price <= 0) get 0, paid plans get 1, 2, 3… by (sort_order, then price). Any
+// plan that already has a tier is preserved, so this stays idempotent.
 async function ensurePlanTiers() {
-  await SubscriptionPlan.updateMany(
-    { tier: { $exists: false } },
-    [{ $set: { tier: { $ifNull: ['$sort_order', 0] } } }]
-  );
+  const plans = await SubscriptionPlan.find({})
+    .select('plan_name price sort_order tier is_active')
+    .lean();
+  const assignments = assignMissingTiers(plans);
+  if (assignments.length > 0) {
+    await Promise.all(
+      assignments.map(({ _id, tier }) => SubscriptionPlan.updateOne({ _id }, { $set: { tier } }))
+    );
+  }
+  // `tier` carries a schema default of 0, so a paid plan can still be sitting
+  // at tier 0 from before the API refusal landed, or from a hand-edited
+  // document. entitlement.tierOf floors those at 1 so nothing fails open, but
+  // an operator has to fix the ladder — say so loudly at every start.
+  const byId = new Map(assignments.map(({ _id, tier }) => [String(_id), tier]));
+  const misTiered = plans
+    .filter((plan) => plan && plan.is_active !== false && Number(plan.price) > 0)
+    .filter((plan) => Number(byId.has(String(plan._id)) ? byId.get(String(plan._id)) : plan.tier) === 0)
+    .map((plan) => ({ plan_name: plan.plan_name, price: plan.price, tier: 0 }));
+  if (misTiered.length > 0) {
+    logger.warn(
+      { plans: misTiered },
+      `${misTiered.length} active paid plan(s) sit at tier 0 — their content is treated as tier 1 so it does not unlock for free students, but set a real tier in Plans`
+    );
+  }
 }
 
 async function ensureDefaultRoles() {

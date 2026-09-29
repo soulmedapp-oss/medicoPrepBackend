@@ -8,6 +8,9 @@ const { requestClassSummary, requestClassChat } = require('../services/tutorServ
 const { sendEmail } = require('../services/emailService');
 const { can } = require('../rbac/can');
 const { lockState, upgradeRefusal, viewerFor } = require('../utils/entitlement');
+// Final fix wave C2: the student class projection now lives in utils so the
+// student dashboard's upcoming_classes goes through exactly the same one.
+const { studentClassRow } = require('../utils/classProjection');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -38,18 +41,6 @@ const UPDATABLE_CLASS_FIELDS = [
   'allowed_plans',
 ];
 
-// Never sent to students in list responses; joining goes through
-// GET /classes/:id/join and recordings through GET /classes/:id/recording,
-// which enforce the time window / plan checks.
-const STUDENT_HIDDEN_CLASS_FIELDS = [
-  'meeting_link',
-  'recording_url',
-  'zoom_recording_files',
-  'zoom_recording_password',
-  'zoom_start_url',
-  'zoom_join_url',
-];
-
 function pickFields(source, fields) {
   const out = {};
   fields.forEach((field) => {
@@ -69,17 +60,6 @@ function isClassTeacher(user, liveClass) {
   const teacherEmail = String(liveClass?.teacher_email || '').trim().toLowerCase();
   const userEmail = String(user?.email || '').trim().toLowerCase();
   return Boolean(teacherEmail) && Boolean(userEmail) && teacherEmail === userEmail;
-}
-
-function sanitizeClassForStudent(liveClass) {
-  const sanitized = { ...liveClass };
-  const hasZoomRecording = Array.isArray(liveClass.zoom_recording_files) && liveClass.zoom_recording_files.length > 0;
-  sanitized.has_recording = Boolean(liveClass.recording_url || liveClass.youtube_url || hasZoomRecording);
-  sanitized.has_join_link = Boolean(liveClass.zoom_join_url || liveClass.meeting_link);
-  STUDENT_HIDDEN_CLASS_FIELDS.forEach((field) => {
-    delete sanitized[field];
-  });
-  return sanitized;
 }
 
 function buildClassInviteIcs(liveClass) {
@@ -178,16 +158,7 @@ function createClassesController({ createNotification }) {
         // dropped — the student sees what exists and what it takes to open
         // it. A locked row is stripped of join/recording hints on top of the
         // usual student sanitizer, since neither is usable without the plan.
-        visibleClasses = classes.map((liveClass) => {
-          const lock = lockState(liveClass, viewer);
-          const row = sanitizeClassForStudent(liveClass);
-          if (lock) {
-            delete row.youtube_url;
-            row.has_join_link = false;
-            row.has_recording = false;
-          }
-          return { ...row, lock };
-        });
+        visibleClasses = classes.map((liveClass) => studentClassRow(liveClass, lockState(liveClass, viewer)));
       }
       return res.json({ classes: visibleClasses });
     } catch (err) {

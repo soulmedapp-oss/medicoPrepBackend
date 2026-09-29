@@ -60,7 +60,9 @@ function createSubscriptionsController({
       if (existing) {
         return res.status(409).json({ error: 'Plan already exists' });
       }
-      const checked = validatePlanFields(data);
+      // `null`: nothing to merge onto, so absent fields take their schema
+      // defaults — which is how a paid plan with no tier is caught (C1).
+      const checked = validatePlanFields(data, null);
       if (!checked.ok) return res.status(400).json({ error: checked.error });
       const plan = await SubscriptionPlan.create(checked.value);
       clearPlansCache();
@@ -84,7 +86,7 @@ function createSubscriptionsController({
       // order is safe.
       const missing = missingUpdatePermissions(req.user, req.body || {}, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
-      const checked = validatePlanFields(req.body || {});
+      const checked = validatePlanFields(req.body || {}, existing);
       if (!checked.ok) return res.status(400).json({ error: checked.error });
       const updates = checked.value;
       const plan = await SubscriptionPlan.findByIdAndUpdate(

@@ -194,18 +194,32 @@ function requiresDeactivatePermission(user, updates, existing) {
 }
 
 // Task 6 — pure: projects playlists already known to contain a lecture (via
-// the one query in getLecturePlaylists below) down to the ones this student
-// may actually open, as {_id, name} only. Review Focus #3: "Also in" must
-// never leak a playlist the student cannot access — an unpublished,
-// inactive, or unentitled playlist is dropped here even though it contains
-// the lecture, exactly like getPlaylist's own entitlement check.
+// the one query in getLecturePlaylists below) down to what this student may
+// see, as {_id, name, lock}. An unpublished or inactive playlist is dropped
+// outright whatever the viewer's tier — curation state is not the student's
+// business — exactly like getPlaylist's own checks.
+//
+// Final fix wave I4: entitlement no longer drops a playlist, it locks it.
+// Returning nothing at all for a lecture that only lives in paid playlists
+// left a student who deep-linked straight to that lecture with no route to
+// the upgrade prompt — the one surface where the lock had to appear, and the
+// only place the feature was still silent. So: the entitled playlists first,
+// each with `lock: null`; and only when there are NONE, the locked ones, each
+// carrying its `lock`. Never both, because an entitled route in is the answer
+// to "where can I open this?" and a lock badge beside it would only confuse.
+// The projection is unchanged — {_id, name} plus `lock`, nothing else about
+// the playlist is exposed.
 function playlistsForLecture(playlists, viewer) {
-  return (playlists || [])
-    .filter(
-      (playlist) =>
-        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, viewer)
-    )
-    .map((playlist) => ({ _id: playlist._id, name: playlist.name }));
+  const visible = (playlists || []).filter(
+    (playlist) => playlist && playlist.is_published && playlist.is_active !== false
+  );
+  const entitled = visible.filter((playlist) => canAccessPlaylist(playlist, viewer));
+  if (entitled.length > 0) {
+    return entitled.map((playlist) => ({ _id: playlist._id, name: playlist.name, lock: null }));
+  }
+  return visible
+    .map((playlist) => ({ _id: playlist._id, name: playlist.name, lock: lockState(playlist, viewer) }))
+    .filter((row) => row.lock !== null);
 }
 
 function createPlaylistsController() {
@@ -541,8 +555,11 @@ function createPlaylistsController() {
   // above, so it never adds a query to the main playlist read. The Mongo
   // filter narrows to playlists containing this lecture that are published
   // and active (mirroring Task 5's playback query); playlistsForLecture then
-  // applies entitlement and projects to {_id, name} only — nothing else
-  // about the playlist is exposed.
+  // applies entitlement and projects to {_id, name, lock} only — nothing
+  // else about the playlist is exposed. Final fix wave I4: when the lecture
+  // lives only in playlists the student cannot open, those come back locked
+  // rather than as an empty list, so a lecture-only deep link still reaches
+  // the upgrade prompt.
   async function getLecturePlaylists(req, res) {
     try {
       const playlists = await Playlist.find({

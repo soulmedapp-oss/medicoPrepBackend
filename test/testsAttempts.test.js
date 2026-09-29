@@ -76,6 +76,13 @@ function setup({ attempt, questions, student }) {
   stub(TestAttempt, 'countDocuments', () => { calls.testCount += 1; return q(1); });
   stub(TestAttempt, 'aggregate', async () => [{ _id: null, count: 1, avg: 50 }]);
   stub(Test, 'findByIdAndUpdate', () => q(null));
+  // Final fix wave I5: completion now re-checks the test's lock for the caller
+  // before grading (a student who lost the plan mid-attempt is refused rather
+  // than graded on a narrowed paper), so the test itself has to be readable
+  // here. Open unless a case overrides this stub.
+  stub(Test, 'findById', () => q({
+    _id: attempt.test_id, is_published: true, is_active: true, is_free: true, required_plan: 'free',
+  }));
   stub(User, 'findByIdAndUpdate', () => { calls.userStats += 1; return q(null); });
   stub(User, 'findById', () => q(student));
   stub(Question, 'find', () => q(questions));

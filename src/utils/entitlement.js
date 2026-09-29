@@ -19,9 +19,17 @@ function plansByName(plans) {
   return new Map((plans || []).filter((p) => p && p.is_active !== false).map((p) => [normalizePlanName(p.plan_name), p]));
 }
 
+// Final fix wave C1, layer 3 (the runtime safety net). A PAID plan at tier 0
+// would sit at the same tier as free, so every free student would be entitled
+// to everything that plan gates — a fail-open paywall. planPitch's startup
+// backfill and validatePlanFields stop that being created, but a hand-edited
+// document or a direct Mongo write can still reintroduce it, so a plan with a
+// price above 0 is floored at tier 1 here, wherever it is read from.
 function tierOf(plan) {
   const t = Number(plan?.tier);
-  return Number.isFinite(t) && t >= 0 ? t : 0;
+  const tier = Number.isFinite(t) && t >= 0 ? t : 0;
+  if (tier === 0 && Number(plan?.price) > 0) return 1;
+  return tier;
 }
 
 function planTier(planName, plans) {
@@ -106,7 +114,7 @@ function upgradeRefusal(lock) {
 
 async function getActivePlans() {
   if (cache.value && cache.expiresAt > Date.now()) return cache.value;
-  const plans = await SubscriptionPlan.find({ is_active: true }).select('plan_name display_name tier is_active').lean();
+  const plans = await SubscriptionPlan.find({ is_active: true }).select('plan_name display_name tier price is_active').lean();
   cache = { value: plans, expiresAt: Date.now() + PLANS_TTL_MS };
   return plans;
 }

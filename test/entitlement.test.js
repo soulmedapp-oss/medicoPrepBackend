@@ -108,3 +108,37 @@ test('questionPlanClause: a viewer with no plans loaded is treated as tier 0', (
   assert.deepEqual(questionPlanClause(undefined), { $in: ['free', '', null] });
   assert.deepEqual(questionPlanClause({ tier: 0 }), { $in: ['free', '', null] });
 });
+
+// Final fix wave C1, layer 3: the runtime safety net. If a paid plan somehow
+// reaches the database at tier 0 anyway — a hand-edited document, a direct
+// Mongo update, a row created before the validation landed — treating it as
+// tier 0 would hand every free student everything that plan gates (the plan's
+// own subscribers and free users would sit at the same tier). tierOf floors a
+// priced plan at 1 instead, so the content still locks.
+test('tierOf: a plan with a price above 0 is never tier 0 — it floors at 1', () => {
+  assert.equal(tierOf({ plan_name: 'elite', price: 999, tier: 0 }), 1);
+  assert.equal(tierOf({ plan_name: 'elite', price: '999', tier: 0 }), 1, 'a string price counts');
+  assert.equal(tierOf({ plan_name: 'free', price: 0, tier: 0 }), 0, 'a free plan stays at 0');
+  assert.equal(tierOf({ plan_name: 'free', tier: 0 }), 0, 'no price at all stays at 0');
+  assert.equal(tierOf({ plan_name: 'elite', price: 999, tier: 3 }), 3, 'a real tier is never overridden');
+});
+
+test('lockState: content gated on a mis-tiered paid plan still locks, at required_tier 1', () => {
+  const plans = [
+    { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+    { plan_name: 'elite', display_name: 'Elite', price: 999, tier: 0, is_active: true },
+  ];
+  const lock = lockState({ allowed_plans: ['elite'] }, buildViewer({ subscription_plan: 'free' }, plans));
+  assert.deepEqual(lock, { required_plan: 'elite', required_label: 'Elite', required_tier: 1 });
+  // And the plan's own subscriber is at tier 1, so they can still open it.
+  assert.equal(lockState({ allowed_plans: ['elite'] }, buildViewer({ subscription_plan: 'elite' }, plans)), null);
+});
+
+test('questionPlanClause: a mis-tiered paid plan is excluded from a free viewer whitelist', () => {
+  const plans = [
+    { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+    { plan_name: 'elite', display_name: 'Elite', price: 999, tier: 0, is_active: true },
+  ];
+  const clause = questionPlanClause(buildViewer({ subscription_plan: 'free' }, plans));
+  assert.equal(clause.$in.includes('elite'), false, 'a priced tier-0 plan is not a free-tier plan');
+});

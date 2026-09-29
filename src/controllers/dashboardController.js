@@ -7,6 +7,11 @@ const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { reportError } = require('../lib/errorReporter.js');
+// Final fix wave C2 + I3: the dashboard is a student read like any other, so
+// it uses the same projection as classesController.listClasses and the same
+// entitlement rule as every other gated surface.
+const { studentClassRow } = require('../utils/classProjection');
+const { viewerFor, lockState } = require('../utils/entitlement');
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -344,8 +349,13 @@ function createDashboardController() {
           'zoom_recording_started_at',
         ])
         .lean();
+      // C2: these rows used to be returned raw — meeting_link, recording_url
+      // and every zoom_* field included — which handed a free student the join
+      // link for a plan-gated class straight off their home page. They now go
+      // through exactly the projection listClasses uses, and carry `lock`.
+      const viewer = await viewerFor(req.user);
       const upcomingClasses = upcomingClassesRaw.map((liveClass) => ({
-        ...liveClass,
+        ...studentClassRow(liveClass, lockState(liveClass, viewer)),
         id: String(liveClass._id),
       }));
 
@@ -377,10 +387,27 @@ function createDashboardController() {
           },
         },
       ]);
-      const recentAttempts = recentAttemptsRaw.map((attempt) => ({
-        ...attempt,
-        id: String(attempt._id),
-      }));
+      // I3: `test_lock` per attempt, so the Retake affordance follows the same
+      // rule as everything else instead of the frontend re-deriving plan
+      // ranks. The aggregate above only projects test_required_plan, and
+      // `is_free` is half of the rule, so the tests are resolved once in a
+      // single $in rather than per row. A test that no longer exists reports
+      // no lock — unjudgeable, and createAttempt is the real gate anyway.
+      const attemptTestIds = [...new Set(
+        recentAttemptsRaw.map((attempt) => attempt.test_id).filter(Boolean).map(String)
+      )];
+      const lockableTests = attemptTestIds.length > 0
+        ? await Test.find({ _id: { $in: attemptTestIds } }).select('is_free required_plan').lean()
+        : [];
+      const testsById = new Map(lockableTests.map((row) => [String(row._id), row]));
+      const recentAttempts = recentAttemptsRaw.map((attempt) => {
+        const resolved = testsById.get(String(attempt.test_id));
+        return {
+          ...attempt,
+          id: String(attempt._id),
+          test_lock: resolved ? lockState(resolved, viewer) : null,
+        };
+      });
 
       const subjectProgressRaw = await TestAttempt.aggregate([
         { $match: { user_id: userId, status: 'completed' } },
