@@ -41,8 +41,11 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
   const isModerator = (user) => can(user, 'CanModerateDiscussions');
 
   // Resolves the anchor and applies the lecture gate. Returns { lecture } or
-  // { status, error }. This is deliberately the SAME gate as playback
-  // (spec §6): a lecture that 404s for playback must 404 for its thread.
+  // { status, error, body }. This is deliberately the SAME gate as playback
+  // (spec §6): a lecture that 404s for playback must 404 for its thread —
+  // and (Fix round 1) a locked lecture's 403 carries the same `body`
+  // (upgradeRefusal's { error, code, lock }) playback does, so the client
+  // can open the identical upgrade prompt for its discussion thread.
   //
   // Fix round 1, Critical 1: EVERY handler goes through here — the by-id
   // routes resolve the anchor off the post they loaded — so a student can

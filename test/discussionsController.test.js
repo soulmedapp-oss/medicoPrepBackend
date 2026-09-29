@@ -111,6 +111,44 @@ test('listThread: the gate mirrors playback — a refusal from loadVideoForPlayb
   assert.equal(queried, false);
 });
 
+// Fix round 1: a locked lecture (the playlist that carries it exists, but
+// this viewer's plan doesn't reach it) is a 403 UPGRADE_REQUIRED, and the
+// gate must pass the EXACT uniform body through — not just the status —
+// since that body is what lets the client open the same upgrade prompt
+// playback already shows this user for the same lecture. Pinned for both a
+// query route (listThread, via gate directly) and a by-id route
+// (toggleUpvote, via gateForPost), since both paths thread `body` through
+// separately.
+test('listThread and toggleUpvote: a locked lecture answers 403 with the exact UPGRADE_REQUIRED body, and no post is ever read or written', async () => {
+  const lock = { required_plan: 'elite', required_label: 'Elite', required_tier: 2 };
+  const upgradeBody = { error: 'Upgrade required', code: 'UPGRADE_REQUIRED', lock };
+  const locked = async () => ({ error: 'Upgrade required', status: 403, body: upgradeBody });
+
+  let queried = false;
+  stub(DiscussionPost, 'find', () => { queried = true; return q([]); });
+  const res = mockRes();
+  await controller({ loadVideoForPlayback: locked })
+    .listThread(reqFor(makeUser(['CanAccessDiscussions']), { query: { anchor_type: 'lecture', anchor_id: String(LECTURE._id) } }), res);
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.body, upgradeBody);
+  assert.equal(queried, false, 'no thread is read for a lecture this viewer cannot play');
+
+  const me = makeUser(['CanAccessDiscussions']);
+  const post = {
+    _id: oid(), anchor: { type: 'lecture', id: LECTURE._id }, parent_id: null, author_id: oid(),
+    body: 'Q', created_date: new Date(), upvotes: [], reports: [],
+  };
+  let writes = 0;
+  stub(DiscussionPost, 'findById', () => q(post));
+  stub(DiscussionPost, 'findByIdAndUpdate', () => { writes += 1; return q(post); });
+  const res2 = mockRes();
+  await controller({ loadVideoForPlayback: locked })
+    .toggleUpvote(reqFor(me, { params: { id: String(post._id) } }), res2);
+  assert.equal(res2.statusCode, 403);
+  assert.deepEqual(res2.body, upgradeBody);
+  assert.equal(writes, 0, 'nothing is written for a locked lecture');
+});
+
 // --- 2. identity projection (spec 4.3) ---
 
 test('listThread: students receive snapshot identities only; moderators receive real_name/email and the hidden posts', async () => {
