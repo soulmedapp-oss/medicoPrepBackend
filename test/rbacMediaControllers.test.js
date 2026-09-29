@@ -26,6 +26,19 @@ tutorService.requestVideoChat = async () => 'video chat answer';
 
 const { createClassesController } = require('../src/controllers/classesController');
 const { createVideosController } = require('../src/controllers/videosController');
+// Task 2: every plan-gated handler now resolves the caller's tier through
+// entitlement.viewerFor, which reads the active SubscriptionPlan rows. Stub
+// that one query (there is no database here) and drop the 60 s plan cache
+// between tests so one test's fixture can never leak into the next.
+const SubscriptionPlan = require('../src/models/SubscriptionPlan');
+const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const PLANS = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true },
+  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+];
+
 
 const oid = () => new mongoose.Types.ObjectId();
 
@@ -59,12 +72,14 @@ test.afterEach(() => {
     const [obj, key, fn] = originals.pop();
     obj[key] = fn;
   }
+  invalidateEntitlementPlans();
 });
 // Task 11: recordAudit is now wired into updateClass/deleteClass/updateVideo/
 // deleteVideo. Default it to a silent no-op so pre-existing tests don't hit
 // the real model.
 test.beforeEach(() => {
   stub(AuditLog, 'create', async () => {});
+  stub(SubscriptionPlan, 'find', () => q(PLANS));
 });
 
 function makeUser(effective_permissions, extra) {

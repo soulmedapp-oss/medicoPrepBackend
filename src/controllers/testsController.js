@@ -8,6 +8,7 @@ const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { can, canAny } = require('../rbac/can');
+const { normalizePlanName, viewerFor } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
 const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -21,23 +22,12 @@ function questionLabel(question) {
   return truncateText(question?.question_text, LABEL_MAX);
 }
 
-const PLAN_RANKS = {
-  free: 0,
-  basic: 1,
-  medium: 2,
-  advance: 3,
-  premium: 4,
-  ultimate: 5,
-};
-
-// Canonical plans for bulk uploads. Legacy aliases "medium"/"advance" (still in
-// PLAN_RANKS so old questions keep ranking correctly) are mapped to their
-// current equivalents; anything unknown falls back to free.
+// Canonical plans for bulk uploads. Legacy aliases "medium"/"advance" map to
+// their current equivalents (utils/entitlement owns that table now); a blank
+// cell falls back to free. Ranking itself is no longer hard-coded here —
+// buildQuestionFilter reads the admin-set `tier` off SubscriptionPlan.
 function normalizePlan(value) {
-  const plan = String(value || 'free').toLowerCase();
-  if (plan === 'medium') return 'premium';
-  if (plan === 'advance') return 'ultimate';
-  return Object.prototype.hasOwnProperty.call(PLAN_RANKS, plan) ? plan : 'free';
+  return normalizePlanName(value) || 'free';
 }
 
 const MAX_LIST_LIMIT = 200;
@@ -83,14 +73,21 @@ function stripAnswerKey(question) {
 
 // Mirrors the question visibility used by GET /tests/:id/questions so a user is
 // graded on exactly the questions they were shown.
-function buildQuestionFilter(testId, user) {
+function buildQuestionFilter(testId, user, viewer) {
   const filter = { test_id: testId };
   if (!canAny(user, ['CanViewTests', 'CanViewQuestions'])) {
     filter.is_active = true;
-    const userRank = getPlanRank(user?.subscription_plan);
-    filter.required_plan = {
-      $in: Object.entries(PLAN_RANKS).filter(([, rank]) => rank <= userRank).map(([plan]) => plan),
-    };
+    // Questions at or below the viewer's tier: those whose required_plan is
+    // free/absent, or names an active plan with tier <= viewer.tier.
+    const plans = viewer?.plansByName instanceof Map ? [...viewer.plansByName.values()] : [];
+    const viewerTier = viewer?.tier || 0;
+    const allowedNames = ['free', '', null, undefined,
+      ...plans.filter((p) => Number(p.tier || 0) <= viewerTier).map((p) => p.plan_name)];
+    // Old questions may still store the legacy names; they mean their alias
+    // target, so they are allowed exactly when that target is.
+    if (allowedNames.includes('premium')) allowedNames.push('medium');
+    if (allowedNames.includes('ultimate')) allowedNames.push('advance');
+    filter.required_plan = { $in: allowedNames };
   }
   return filter;
 }
@@ -172,11 +169,6 @@ function getActor(req) {
     id: user._id || req.userId || null,
     name: user.full_name || user.name || user.email || '',
   };
-}
-
-function getPlanRank(plan) {
-  if (!plan) return 0;
-  return PLAN_RANKS[plan] ?? 0;
 }
 
 function computeMedian(values) {
@@ -417,7 +409,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (!isStaff && !isTestLiveForStudent(test)) {
         return res.status(404).json({ error: 'Test not available' });
       }
-      const filter = buildQuestionFilter(req.params.id, req.user);
+      const viewer = await viewerFor(req.user);
+      const filter = buildQuestionFilter(req.params.id, req.user, viewer);
 
       const questions = await Question.find(filter).sort({ created_date: 1 }).lean();
       // Students never receive the answer key here; they get it from
@@ -1327,7 +1320,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       // Grade against exactly the questions the attempt owner (the caller, per the
       // owner-only check above) can see.
-      const questions = await Question.find(buildQuestionFilter(attempt.test_id, req.user))
+      const viewer = await viewerFor(req.user);
+      const questions = await Question.find(buildQuestionFilter(attempt.test_id, req.user, viewer))
         .sort({ created_date: 1 })
         .lean();
       const graded = gradeAttempt(questions, answerMap);

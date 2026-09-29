@@ -1,6 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { playbackResponse, resolvePlaybackAccess } = require('../src/controllers/videosController');
+const { buildViewer } = require('../src/utils/entitlement');
+
+// Task 2: resolvePlaybackAccess takes a `viewer` (plan + tier) rather than a
+// bare plan name. These fixtures stand in for the active SubscriptionPlan rows.
+const PLANS = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
+  { plan_name: 'gold', display_name: 'Gold', tier: 2, is_active: true },
+  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+];
+const viewer = (subscription_plan) => buildViewer({ subscription_plan }, PLANS);
+
 
 test('a youtube video returns its stored url and no token', () => {
   const result = playbackResponse({ provider: 'youtube', video_url: 'https://y/1' });
@@ -82,7 +94,7 @@ test('a lecture in no playlist is refused cleanly, not thrown, and carries no to
     const result = resolvePlaybackAccess({
       lecture: { _id: 'L1', is_active: true },
       playlists: [],
-      planName: 'free',
+      viewer: viewer('free'),
       isStaff: false,
     });
     assert.equal(result.allowed, false);
@@ -97,7 +109,7 @@ test('a lecture in a published, entitled playlist is allowed', () => {
   const playlists = [
     { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
   ];
-  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
   assert.equal(result.allowed, true);
   assert.equal(result.error, undefined);
 });
@@ -107,7 +119,7 @@ test('a lecture only in a playlist for another plan is refused with the same sha
   const playlists = [
     { is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'], items: [{ lecture_id: 'L1' }] },
   ];
-  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
   assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
 });
 
@@ -117,7 +129,7 @@ test('staff may play an active lecture that is in no playlist at all', () => {
   const result = resolvePlaybackAccess({
     lecture: { _id: 'L1', is_active: true },
     playlists: [],
-    planName: 'free',
+    viewer: viewer('free'),
     isStaff: true,
   });
   assert.equal(result.allowed, true);
@@ -127,7 +139,7 @@ test('an inactive lecture is never playable, even for staff', () => {
   const result = resolvePlaybackAccess({
     lecture: { _id: 'L1', is_active: false },
     playlists: [],
-    planName: 'free',
+    viewer: viewer('free'),
     isStaff: true,
   });
   assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
@@ -135,7 +147,7 @@ test('an inactive lecture is never playable, even for staff', () => {
 
 test('a missing lecture returns "Video not found" rather than throwing', () => {
   assert.doesNotThrow(() => {
-    const result = resolvePlaybackAccess({ lecture: null, playlists: [], planName: 'free', isStaff: false });
+    const result = resolvePlaybackAccess({ lecture: null, playlists: [], viewer: viewer('free'), isStaff: false });
     assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
   });
 });
@@ -151,7 +163,7 @@ test('a lecture with is_published:false is still playable when a published playl
   const playlists = [
     { is_published: true, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
   ];
-  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
   assert.equal(result.allowed, true);
 });
 
@@ -160,6 +172,18 @@ test('a lecture whose only playlist was unpublished is refused, even though the 
   const playlists = [
     { is_published: false, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
   ];
-  const result = resolvePlaybackAccess({ lecture, playlists, planName: 'free', isStaff: false });
+  const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
   assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
+});
+
+// Task 2: the playlist gate is tier-based now, not an exact allowed_plans name
+// match — an `ultimate` (tier 3) viewer plays a lecture whose only playlist is
+// restricted to `gold` (tier 2), where the old exact-match rule refused them.
+test('a higher-tier viewer plays a lecture whose playlist names a lower tier', () => {
+  const lecture = { _id: 'L1', is_active: true };
+  const playlists = [
+    { is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'], items: [{ lecture_id: 'L1' }] },
+  ];
+  assert.equal(resolvePlaybackAccess({ lecture, playlists, viewer: viewer('ultimate'), isStaff: false }).allowed, true);
+  assert.equal(resolvePlaybackAccess({ lecture, playlists, viewer: viewer('basic'), isStaff: false }).allowed, false);
 });

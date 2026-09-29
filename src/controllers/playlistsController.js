@@ -3,6 +3,7 @@ const Video = require('../models/Video');
 const { isValidTextLength } = require('../utils/validation');
 const { isValidObjectId } = require('../utils/security');
 const { canAccessPlaylist, visibleItems, countVisibleItems } = require('../utils/playlistAccess');
+const { viewerFor } = require('../utils/entitlement');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { can } = require('../rbac/can');
@@ -193,11 +194,11 @@ function requiresDeactivatePermission(user, updates, existing) {
 // never leak a playlist the student cannot access — an unpublished,
 // inactive, or unentitled playlist is dropped here even though it contains
 // the lecture, exactly like getPlaylist's own entitlement check.
-function playlistsForLecture(playlists, planName) {
+function playlistsForLecture(playlists, viewer) {
   return (playlists || [])
     .filter(
       (playlist) =>
-        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, planName)
+        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, viewer)
     )
     .map((playlist) => ({ _id: playlist._id, name: playlist.name }));
 }
@@ -420,8 +421,8 @@ function createPlaylistsController() {
       const { subject_id: subjectId } = req.query;
       const filter = browseFilter(subjectId || null);
       const playlists = await Playlist.find(filter).sort({ created_date: -1 }).lean();
-      const planName = req.user?.subscription_plan || 'free';
-      const visible = playlists.filter((playlist) => canAccessPlaylist(playlist, planName));
+      const viewer = await viewerFor(req.user);
+      const visible = playlists.filter((playlist) => canAccessPlaylist(playlist, viewer));
 
       // lecture_count mirrors what the detail view (visibleItems) would
       // render: only items whose lecture exists and is not deactivated.
@@ -469,9 +470,9 @@ function createPlaylistsController() {
       if (!playlist) {
         return res.status(404).json({ error: 'Playlist not found' });
       }
-      const planName = req.user?.subscription_plan || 'free';
+      const viewer = await viewerFor(req.user);
       const entitled =
-        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, planName);
+        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, viewer);
       if (!entitled) {
         return res.status(404).json({ error: 'Playlist not found' });
       }
@@ -515,8 +516,8 @@ function createPlaylistsController() {
       })
         .select('_id name allowed_plans is_free')
         .lean();
-      const planName = req.user?.subscription_plan || 'free';
-      return res.json({ playlists: playlistsForLecture(playlists, planName) });
+      const viewer = await viewerFor(req.user);
+      return res.json({ playlists: playlistsForLecture(playlists, viewer) });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlists' });

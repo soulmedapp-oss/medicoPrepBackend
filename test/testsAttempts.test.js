@@ -9,6 +9,19 @@ const Question = require('../src/models/Question');
 const TestAttempt = require('../src/models/TestAttempt');
 const User = require('../src/models/User');
 const { createTestsController } = require('../src/controllers/testsController');
+// Task 2: every plan-gated handler now resolves the caller's tier through
+// entitlement.viewerFor, which reads the active SubscriptionPlan rows. Stub
+// that one query (there is no database here) and drop the 60 s plan cache
+// between tests so one test's fixture can never leak into the next.
+const SubscriptionPlan = require('../src/models/SubscriptionPlan');
+const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const PLANS = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true },
+  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+];
+
 
 const oid = () => new mongoose.Types.ObjectId();
 
@@ -39,11 +52,15 @@ function stub(obj, key, fn) {
   originals.push([obj, key, obj[key]]);
   obj[key] = fn;
 }
+test.beforeEach(() => {
+  stub(SubscriptionPlan, 'find', () => q(PLANS));
+});
 test.afterEach(() => {
   while (originals.length) {
     const [obj, key, fn] = originals.pop();
     obj[key] = fn;
   }
+  invalidateEntitlementPlans();
 });
 
 function setup({ attempt, questions, student }) {

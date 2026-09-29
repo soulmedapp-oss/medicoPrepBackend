@@ -7,6 +7,7 @@ const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
 const { sendEmail } = require('../services/emailService');
 const { can } = require('../rbac/can');
+const { isEntitled, viewerFor } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -106,26 +107,24 @@ function buildClassInviteIcs(liveClass) {
 }
 
 function createClassesController({ createNotification }) {
-  function canAccessClass(liveClass, planName) {
-    if (liveClass.is_free) return true;
-    const allowed = Array.isArray(liveClass.allowed_plans) ? liveClass.allowed_plans : [];
-    if (allowed.length === 0) return true;
-    return allowed.includes(planName);
+  // One entitlement rule for playlists, classes and tests alike (Task 2):
+  // `viewer` carries the caller's plan tier, so a higher plan includes every
+  // lower one instead of needing an exact allowed_plans name match.
+  function canAccessClass(liveClass, viewer) {
+    return isEntitled(liveClass, viewer);
   }
 
   async function listClasses(req, res) {
     try {
       const { all } = req.query;
       const filter = {};
-      let userPlan = 'free';
+      let viewer = null;
       if (all === 'true') {
         if (!can(req.user, 'CanViewClasses')) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
-        if (req.user?.subscription_plan) {
-          userPlan = req.user.subscription_plan;
-        }
+        viewer = await viewerFor(req.user);
         filter.is_published = true;
         filter.is_active = { $ne: false };
       }
@@ -169,7 +168,7 @@ function createClassesController({ createNotification }) {
       }
       let visibleClasses = all === 'true'
         ? classes
-        : classes.filter((liveClass) => canAccessClass(liveClass, userPlan));
+        : classes.filter((liveClass) => canAccessClass(liveClass, viewer));
 
       if (all !== 'true') {
         visibleClasses = visibleClasses.map(sanitizeClassForStudent);
@@ -445,8 +444,8 @@ function createClassesController({ createNotification }) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const planName = req.user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
+        const viewer = await viewerFor(req.user);
+        if (!canAccessClass(liveClass, viewer)) {
           return res.status(403).json({ error: 'Upgrade required' });
         }
       }
@@ -499,8 +498,8 @@ function createClassesController({ createNotification }) {
         return res.status(400).json({ error: 'Class is not live yet' });
       }
 
-      const planName = req.user?.subscription_plan || 'free';
-      if (!canAccessClass(liveClass, planName)) {
+      const viewer = await viewerFor(req.user);
+      if (!canAccessClass(liveClass, viewer)) {
         return res.status(403).json({ error: 'Upgrade required' });
       }
 
@@ -530,8 +529,8 @@ function createClassesController({ createNotification }) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const planName = req.user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
+        const viewer = await viewerFor(req.user);
+        if (!canAccessClass(liveClass, viewer)) {
           return res.status(403).json({ error: 'Upgrade required' });
         }
       }
@@ -566,8 +565,8 @@ function createClassesController({ createNotification }) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const planName = req.user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
+        const viewer = await viewerFor(req.user);
+        if (!canAccessClass(liveClass, viewer)) {
           return res.status(403).json({ error: 'Upgrade required' });
         }
       }

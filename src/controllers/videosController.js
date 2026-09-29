@@ -4,6 +4,7 @@ const Playlist = require('../models/Playlist');
 const VideoProgress = require('../models/VideoProgress');
 const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
+const { viewerFor } = require('../utils/entitlement');
 const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
@@ -184,7 +185,7 @@ function playbackResponse(video) {
 // decide nothing. A lecture in no playlist therefore falls through to the
 // same clean "Upgrade required" 403 an unentitled lecture gets today — never
 // a thrown error, never a token.
-function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
+function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff }) {
   if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
   if (lecture.is_active === false) {
     return { allowed: false, status: 404, error: 'Video not found' };
@@ -192,7 +193,7 @@ function resolvePlaybackAccess({ lecture, playlists, planName, isStaff }) {
   if (isStaff) {
     return { allowed: true };
   }
-  if (!isLecturePlayable(lecture, playlists, planName)) {
+  if (!isLecturePlayable(lecture, playlists, viewer)) {
     return { allowed: false, status: 403, error: 'Upgrade required' };
   }
   return { allowed: true };
@@ -230,8 +231,8 @@ function createVideosController() {
         is_active: { $ne: false },
       }).lean();
     }
-    const planName = user?.subscription_plan || 'free';
-    const decision = resolvePlaybackAccess({ lecture: video, playlists, planName, isStaff });
+    const viewer = isStaff ? null : await viewerFor(user);
+    const decision = resolvePlaybackAccess({ lecture: video, playlists, viewer, isStaff });
     if (!decision.allowed) {
       return { error: decision.error, status: decision.status };
     }
@@ -308,14 +309,14 @@ function createVideosController() {
       if (isStaff) {
         return res.json({ videos });
       }
-      const planName = req.user?.subscription_plan || 'free';
+      const viewer = await viewerFor(req.user);
       const playlists = await Playlist.find({
         is_published: true,
         is_active: { $ne: false },
       })
         .select('items allowed_plans is_free is_published is_active')
         .lean();
-      const visible = videos.filter((video) => isLecturePlayable(video, playlists, planName));
+      const visible = videos.filter((video) => isLecturePlayable(video, playlists, viewer));
       return res.json({ videos: visible });
     } catch (err) {
       reportError(req, err);

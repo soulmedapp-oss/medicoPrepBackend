@@ -1,9 +1,11 @@
-function canAccessPlaylist(playlist, planName) {
+const { isEntitled } = require('./entitlement');
+
+// `viewer` comes from entitlement.viewerFor(req.user) / buildViewer — one
+// tier-based rule for playlists, live classes and tests alike, so a higher
+// plan now includes every lower one instead of needing an exact name match.
+function canAccessPlaylist(playlist, viewer) {
   if (!playlist) return false;
-  if (playlist.is_free) return true;
-  const allowed = Array.isArray(playlist.allowed_plans) ? playlist.allowed_plans : [];
-  if (allowed.length === 0) return true;
-  return allowed.includes(planName);
+  return isEntitled(playlist, viewer);
 }
 
 // Read-time filter, never a write: a deactivated lecture disappears for
@@ -32,12 +34,12 @@ function countVisibleItems(playlist, activeLectureIds) {
   );
 }
 
-function isLecturePlayable(lecture, playlists, planName) {
+function isLecturePlayable(lecture, playlists, viewer) {
   if (!lecture || lecture.is_active === false) return false;
   return (playlists || []).some((playlist) =>
     playlist.is_published &&
     playlist.is_active !== false &&
-    canAccessPlaylist(playlist, planName) &&
+    canAccessPlaylist(playlist, viewer) &&
     (playlist.items || []).some((item) => String(item.lecture_id) === String(lecture._id))
   );
 }

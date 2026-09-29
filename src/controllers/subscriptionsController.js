@@ -78,11 +78,15 @@ function createSubscriptionsController({
       if (!existing) {
         return res.status(404).json({ error: 'Plan not found' });
       }
+      // Authorisation before validation: an unauthorised caller must get 403,
+      // not a 400 that tells them which field they got wrong. Both read the
+      // same key set (validatePlanFields only coerces tier/pitch), so the
+      // order is safe.
+      const missing = missingUpdatePermissions(req.user, req.body || {}, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       const checked = validatePlanFields(req.body || {});
       if (!checked.ok) return res.status(400).json({ error: checked.error });
       const updates = checked.value;
-      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
-      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       const plan = await SubscriptionPlan.findByIdAndUpdate(
         req.params.id,
         { $set: updates },

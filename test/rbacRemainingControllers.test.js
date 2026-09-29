@@ -318,6 +318,20 @@ test('updatePlan: a refused update writes nothing to the audit log', async () =>
   assert.equal(auditCalled, false, 'nothing must be written on a refusal');
 });
 
+// Task 2 side fix: authorisation runs before field validation, so an
+// unauthorised caller is told 403 rather than handed a 400 that leaks which
+// field of the body was malformed.
+test('updatePlan: an unauthorised caller sending an invalid body gets 403, not 400', async () => {
+  const id = oid();
+  stub(SubscriptionPlan, 'findById', () => q({ _id: id, is_active: true, plan_name: 'monthly', display_name: 'Monthly' }));
+  const res = mockRes();
+  await subsController().updatePlan({
+    params: { id: String(id) }, user: { effective_permissions: [] }, body: { tier: -3 },
+  }, res);
+  assert.equal(res.statusCode, 403, JSON.stringify(res.body));
+  assert.deepEqual(res.body.required, ['CanEditSubscriptionPlans']);
+});
+
 test('ALLOW (stronger): extendSubscription — a non-admin caller holding only CanEditSubscriptions succeeds and extends exactly the targeted subscription by extend_days', async () => {
   const codes = codesFor(subsApp, 'POST', '/subscriptions/:id/extend');
   const caller = nonAdminUser({ effective_permissions: codes });
