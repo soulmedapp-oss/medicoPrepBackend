@@ -170,3 +170,61 @@ Roles on an existing database **are not overwritten on restart**. To enable disc
 No data migration is required. The `permissions` collection syncs with the backend code on the next restart, so no operator action is needed beyond the permission grants above.
 
 One index change does need an operator action on an existing database: the unique index on `users.nickname_lc` is now a partial index (it indexes string values only, so cleared nicknames cannot collide on `null`). Mongoose will not alter an index that already exists under the same name, so drop the old one once — `db.users.dropIndex('nickname_lc_1')` — and it is recreated with the new definition on the next restart.
+
+## Plan tiers and upgrade pitch (added 2026-09-29)
+
+Locked playlists, classes and tests now show students a lock badge and an
+upgrade dialog instead of just disappearing, and entitlement is decided by a
+numeric plan **tier** instead of matching plan names one by one.
+
+### What changes on deploy
+
+No data migration. On first start after deploy, `ensurePlanTiers()` copies
+each plan's existing `sort_order` into a new `tier` field, for any plan that
+doesn't have one yet (`updateMany({ tier: { $exists: false } }, ...)`).
+Idempotent — safe to restart as many times as you like, it only fills tiers
+that are still missing. Seeded default plans (free/basic/premium/ultimate) get
+sane tiers and a starter pitch out of the box; existing plans on your database
+just get their current `sort_order` carried over as-is.
+
+### What you do
+
+1. Open **Plans** in the admin panel. Confirm the tier ladder makes sense:
+   `free = 0 < basic = 1 < premium = 2 < ultimate = 3`, or your own ordering
+   if you use different plan names — what matters is that a cheaper plan has
+   a strictly lower `tier` than a more expensive one.
+2. For every paid plan, fill in an **Upgrade pitch**: a headline (short —
+   this is what students see in the "This is a `<Plan>` feature" dialog), up
+   to 6 highlights (icon + one line each), and an optional banner image. A
+   plan with no pitch still works, it just shows a generic dialog.
+
+### The semantic change to call out to teachers and admins
+
+**Higher tier now includes everything below it.** A playlist, class, or test
+ticked for `premium` only is no longer premium-exclusive — anyone on
+`ultimate` (or any tier above premium) can open it too, because entitlement
+is now "is your tier high enough", not "is your plan named on this content".
+If a piece of content was deliberately meant to be premium-only and off
+limits to ultimate students, that is no longer expressible — call this out
+before deploy, not after a teacher notices.
+
+A related trap: if a plan named on some content gets deactivated or renamed,
+that content does **not** silently unlock. It locks at "a paid plan" (tier 1)
+until someone re-ticks the content with a plan that still exists and is
+active. Re-tick the affected playlists/classes/tests once the plan situation
+is sorted.
+
+Also visible to students immediately: locked playlists, classes, and tests
+are no longer hidden from browse/list views. They now show up with a lock
+badge and an "Unlock with `<Plan>`" prompt that opens the upgrade dialog. A
+locked test additionally can no longer be started — `POST
+/tests/:id/attempts` refuses it with the same `UPGRADE_REQUIRED` body used
+everywhere else.
+
+### What to check after deploy
+
+- A free student browsing Videos sees a lock badge on a paid playlist; opening it shows the teaser/dialog, not the player.
+- The dialog's **View plans** button lands on Subscription with the required plan's card highlighted.
+- A premium student can open both premium **and** basic content (higher includes lower); an ultimate student can open everything.
+- Editing a plan's pitch (headline/highlights/banner) in admin shows up in the student dialog within about 60 seconds (the plans list is cached).
+- Deactivating the only plan a playlist/class/test names locks it as "a paid plan" rather than unlocking it or 500ing.
