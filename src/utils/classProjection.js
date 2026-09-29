@@ -19,6 +19,11 @@ const STUDENT_HIDDEN_CLASS_FIELDS = [
   'zoom_recording_password',
   'zoom_start_url',
   'zoom_join_url',
+  // Staff provenance (spec §2/§4) — who scheduled/last modified a class is
+  // an admin-only detail, same as Video's created_by/updated_by/updated_by_at.
+  'created_by',
+  'updated_by',
+  'updated_by_at',
 ];
 
 function sanitizeClassForStudent(liveClass) {

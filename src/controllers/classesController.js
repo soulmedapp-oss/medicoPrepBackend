@@ -1,5 +1,7 @@
 const LiveClass = require('../models/LiveClass');
 const LiveClassNote = require('../models/LiveClassNote');
+const User = require('../models/User');
+const { attachActorNames } = require('../utils/actorNames');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
@@ -147,7 +149,20 @@ function createClassesController({ createNotification }) {
         // Kept only for the class's own teacher or a CanHostAnyClass holder.
         // `lock: null` on every row keeps the same shape as the student list.
         const canHostAny = can(req.user, 'CanHostAnyClass');
-        visibleClasses = classes.map((liveClass) => {
+        // Scheduled-by / last-modified-by columns (spec §2/§4): one User.find
+        // over the distinct created_by/updated_by ids, then the same pure
+        // attachActorNames helper videosController's staff list uses.
+        const userIds = new Set();
+        classes.forEach((liveClass) => {
+          if (liveClass.created_by) userIds.add(String(liveClass.created_by));
+          if (liveClass.updated_by) userIds.add(String(liveClass.updated_by));
+        });
+        const users = userIds.size
+          ? await User.find({ _id: { $in: Array.from(userIds) } }).select('_id full_name').lean()
+          : [];
+        const userMap = new Map(users.map((user) => [String(user._id), user]));
+        const withNames = attachActorNames(classes, userMap);
+        visibleClasses = withNames.map((liveClass) => {
           if (canHostAny || isClassTeacher(req.user, liveClass)) return { ...liveClass, lock: null };
           const sanitized = { ...liveClass, lock: null };
           delete sanitized.zoom_start_url;
@@ -254,6 +269,9 @@ function createClassesController({ createNotification }) {
         is_published: Boolean(data.is_published),
         status: data.status || 'scheduled',
         allowed_plans: allowedPlans,
+        created_by: req.userId,
+        updated_by: req.userId,
+        updated_by_at: new Date(),
       });
 
       if (liveClass.teacher_email) {
@@ -347,6 +365,11 @@ function createClassesController({ createNotification }) {
       }
       const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditClasses', deactivate: 'CanDeactivateClasses' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
+      // Stamped on every write regardless of which fields changed — never
+      // client-writable (not in UPDATABLE_CLASS_FIELDS) and applied after the
+      // permission check, so it can't affect which permission is required.
+      updates.updated_by = req.userId;
+      updates.updated_by_at = new Date();
       const liveClass = await LiveClass.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
@@ -384,6 +407,8 @@ function createClassesController({ createNotification }) {
       }
       liveClass.is_active = false;
       liveClass.is_published = false;
+      liveClass.updated_by = req.userId;
+      liveClass.updated_by_at = new Date();
       await liveClass.save();
       await recordDeactivated(req, { resource: 'class', targetId: liveClass._id, targetLabel: liveClass.title });
       return res.json({ ok: true, liveClass: liveClass.toObject() });

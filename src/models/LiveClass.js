@@ -29,6 +29,13 @@ const liveClassSchema = new mongoose.Schema(
     is_active: { type: Boolean, default: true },
     status: { type: String, default: 'scheduled' },
     allowed_plans: { type: [String], default: [] },
+    created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Set together, only on a human-initiated create/update/deactivate —
+    // mirrors Video.updated_by/updated_by_at (see src/models/Video.js) so the
+    // admin UI's "last modified by <name>" column works the same way for
+    // both Lecture Library and Manage Live Class.
+    updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updated_by_at: { type: Date },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

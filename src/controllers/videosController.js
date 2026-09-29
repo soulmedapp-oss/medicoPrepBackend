@@ -14,6 +14,10 @@ const { resolveSubjectForWrite } = require('../utils/subjects');
 const { subjectWriteFields, buildSubjectFilter } = require('../utils/subjectResolution');
 const { requestVideoSummary, requestVideoChat } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
+// Moved to utils so classesController's staff list can reuse the identical
+// enrichment; re-exported below (module.exports.attachActorNames) so
+// test/videosActorNames.test.js keeps importing it from this module.
+const { attachActorNames } = require('../utils/actorNames');
 const { can } = require('../rbac/can');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
@@ -47,27 +51,6 @@ function pickFields(source, fields) {
     }
   });
   return out;
-}
-
-// Pure: given the staff-path video page and a Map of userId string -> user
-// doc ({ _id, full_name }), returns new video objects carrying three flat
-// fields for the admin UI — created_by_name, updated_by_name and
-// updated_by_at (passed through as-is). Never mutates the input videos.
-// A missing/deleted user (absent from the map) yields null rather than
-// throwing, and only _id/full_name ever reach the output — no email, no
-// other user field.
-function attachActorNames(videos, userMap) {
-  const nameFor = (id) => {
-    if (!id) return null;
-    const user = userMap instanceof Map ? userMap.get(String(id)) : undefined;
-    return user && user.full_name ? user.full_name : null;
-  };
-  return videos.map((video) => ({
-    ...video,
-    created_by_name: nameFor(video.created_by),
-    updated_by_name: nameFor(video.updated_by),
-    updated_by_at: video.updated_by_at || null,
-  }));
 }
 
 // How long an upload claim (processing_status === 'uploading' with no
