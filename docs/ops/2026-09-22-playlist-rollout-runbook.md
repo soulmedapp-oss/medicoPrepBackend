@@ -261,3 +261,75 @@ everywhere else.
 - Editing a plan's pitch (headline/highlights/banner) in admin shows up in the student dialog within about 60 seconds (the plans list is cached).
 - Deactivating the only plan a playlist/class/test names locks it as "a paid plan" rather than unlocking it or 500ing.
 - A paid plan created without touching **Tier** is refused (or auto-ranked at the next start), and its content still locks: create a paid plan leaving Tier at 0, confirm the save is refused, set a tier of 1 or more, tick it on a playlist, and check a free student sees the lock badge rather than the content.
+
+## Plan features (added 2026-09-30)
+
+Plans now also gate three student-facing features — **AI Tutor**, **AI Summary**,
+**Transcript** — the same lock-and-upgrade-dialog machinery as playlists,
+classes and tests, applied to tabs on the watch page instead of whole
+lectures.
+
+### What changes on deploy
+
+No data migration. On first start after deploy, `ensurePlanFeatures()` seeds
+the `features` field for any plan that doesn't have one yet: **free** gets
+`['transcript']`, **basic** gets `['transcript', 'ai_summary']`, **premium**
+and **ultimate** get all three. This only runs once per plan, keyed on
+`plan_name`, and only for a plan that has **no** `features` field at all — a
+plan that already has one (even `[]`) is left alone.
+
+A plan the seed doesn't recognize by name — a custom plan you created
+yourself, or one renamed away from the seeded defaults — gets **no**
+features on deploy, not the seeded set for whatever it's closest to. It
+stays feature-locked for everyone until an operator ticks its Features
+checkboxes by hand. Check every active plan's Features after deploy, not
+just the four seeded ones.
+
+### What you do
+
+Open **Plans** in the admin panel. Each plan has a **Features** section
+with one checkbox per feature: **AI Tutor**, **AI Summary**, **Transcript**.
+Tick whichever features that plan includes and save. There is no ordering
+requirement here (unlike tiers) — features are a flat list per plan, not a
+ladder.
+
+### What a student sees
+
+The watch page now shows four tabs under the player: **Discussion | AI
+Tutor | AI Summary | Transcript** (Lectures joins them below `xl` width).
+A feature not in the student's plan shows its tab with a lock badge naming
+the **cheapest active plan that includes it**; opening that tab shows a
+locked panel with a **View plans** button that opens the same upgrade
+dialog used elsewhere. If no active plan lists the feature at all, the
+lock falls back to "a paid plan" (tier 1), same as any other content lock.
+Staff (`CanViewVideos`) always see all four tabs unlocked.
+
+AI Summary and Transcript are fetched only when their tab is opened, not
+on every lecture load as before.
+
+### Cache lag and re-login
+
+Two caches sit between a Plans-page edit and a student seeing it change:
+
+- The in-process **plans cache** (60 s), same one tiers use — a feature
+  tick/untick can take up to a minute to be visible to any given server
+  process, longer across instances if you run several.
+- The student's **`feature_locks`** are computed once, at login/`getMe`,
+  and stored on the client's auth state — not re-fetched on every page
+  view. A logged-in student's tabs won't reflect a plan edit until their
+  session refreshes `getMe` (a page refresh) or they log in again. Don't
+  judge a features edit by an already-open tab in another window.
+
+### Post-deploy checks
+
+- **Free student**: Transcript tab works (cues clickable / text renders);
+  AI Tutor and AI Summary tabs show a lock badge, and opening one shows the
+  locked panel and upgrade dialog, not the endpoint's content.
+- **Premium student**: all four tabs work, including AI Tutor and AI
+  Summary.
+- **Untick a feature**: in Plans, untick AI Summary on Premium and save;
+  after the affected student refreshes (or re-logs in), their AI Summary
+  tab shows locked.
+- **Manage Live Class**: create or edit a class and confirm **Scheduled
+  by** and **Last modified** fill in with the actor's name and timestamp;
+  a class created before this deploy shows `—` in both columns.
