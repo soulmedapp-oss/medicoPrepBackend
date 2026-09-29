@@ -9,7 +9,7 @@ const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
 const { sendEmail } = require('../services/emailService');
 const { can } = require('../rbac/can');
-const { lockState, upgradeRefusal, viewerFor } = require('../utils/entitlement');
+const { lockState, upgradeRefusal, viewerFor, featureLock } = require('../utils/entitlement');
 // Final fix wave C2: the student class projection now lives in utils so the
 // student dashboard's upcoming_classes goes through exactly the same one.
 const { studentClassRow } = require('../utils/classProjection');
@@ -530,6 +530,13 @@ function createClassesController({ createNotification }) {
         const viewer = await viewerFor(req.user);
         const lock = lockState(liveClass, viewer);
         if (lock) return res.status(403).json(upgradeRefusal(lock));
+        // Final fix wave (Rec 3): the same plan feature the watch page gates
+        // a lecture's AI Summary tab on. Without this a free student could
+        // read an AI summary of a free class while the identical tab on a
+        // lecture was locked. Runs before the AI call, so a locked feature
+        // never spends a token.
+        const featureRefusal = featureLock('ai_summary', viewer);
+        if (featureRefusal) return res.status(403).json(upgradeRefusal(featureRefusal));
       }
 
       const summary = await requestClassSummary(liveClass);
@@ -565,6 +572,10 @@ function createClassesController({ createNotification }) {
         const viewer = await viewerFor(req.user);
         const lock = lockState(liveClass, viewer);
         if (lock) return res.status(403).json(upgradeRefusal(lock));
+        // Final fix wave (Rec 3): the AI Tutor feature, gated exactly as it is
+        // on a lecture, before the AI call.
+        const featureRefusal = featureLock('ai_tutor', viewer);
+        if (featureRefusal) return res.status(403).json(upgradeRefusal(featureRefusal));
       }
 
       const answer = await requestClassChat(message.trim(), liveClass);

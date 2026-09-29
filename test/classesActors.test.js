@@ -216,3 +216,45 @@ test('listClasses: student list never carries created_by/updated_by/updated_by_a
   assert.equal(Object.prototype.hasOwnProperty.call(row, 'updated_by'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(row, 'updated_by_at'), false);
 });
+
+// Final fix wave I3: a class transcript is plan-gated content (same as a
+// lecture's, which only GET /videos/:id/transcript hands out after a
+// featureLock check), but the class list used to ship transcript_text and
+// transcript_url inline on every student row — the whole transcript, to every
+// student, with no gate at all. Both student reads go through
+// classProjection, so pinning it there covers the list and the dashboard.
+const { studentClassRow } = require('../src/utils/classProjection');
+
+test('STUDENT_HIDDEN_CLASS_FIELDS: transcript_text/transcript_url never reach a student row', () => {
+  assert.equal(STUDENT_HIDDEN_CLASS_FIELDS.includes('transcript_text'), true);
+  assert.equal(STUDENT_HIDDEN_CLASS_FIELDS.includes('transcript_url'), true);
+  // studentClassRow is the dashboard's row (dashboardController.upcoming_classes).
+  const row = studentClassRow({
+    _id: 'c1', title: 'Open class', transcript_text: 'the whole transcript', transcript_url: 'https://cdn/x.vtt',
+  }, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(row, 'transcript_text'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(row, 'transcript_url'), false);
+  assert.equal(row.title, 'Open class', 'the rest of the row is untouched');
+});
+
+test('listClasses: the student list never carries transcript_text/transcript_url', async () => {
+  stub(SubscriptionPlan, 'find', () => q(PLANS));
+  stub(LiveClass, 'findByIdAndUpdate', () => q(null));
+  stub(LiveClass, 'find', () => q([
+    {
+      _id: oid(), title: 'Open class', is_published: true, is_active: true, is_free: true,
+      status: 'completed', scheduled_date: new Date(Date.now() - 4 * 3600_000),
+      transcript_text: 'the whole transcript', transcript_url: 'https://cdn/x.vtt',
+    },
+  ]));
+  const student = {
+    _id: oid(), email: 's@x.com', role: 'student', subscription_plan: 'free',
+    effective_permissions: ['CanAccessLiveClasses'],
+  };
+  const res = mockRes();
+  await controller().listClasses(reqFor(student, { query: {} }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const [row] = res.body.classes;
+  assert.equal(Object.prototype.hasOwnProperty.call(row, 'transcript_text'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(row, 'transcript_url'), false);
+});

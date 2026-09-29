@@ -68,6 +68,7 @@ const {
 } = require('./utils/uploadValidation');
 const { isTokenVersionCurrent } = require('./utils/security');
 const { assignMissingTiers } = require('./utils/planPitch');
+const { defaultFeaturesFor } = require('./utils/defaultPlanFeatures');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
@@ -758,27 +759,27 @@ async function ensurePlanTiers() {
   }
 }
 
-// Seeded defaults (spec §2), by plan_name. Applied only to a plan whose
-// `features` field is entirely absent — see ensurePlanFeatures below.
-const DEFAULT_PLAN_FEATURES = {
-  free: ['transcript'],
-  basic: ['transcript', 'ai_summary'],
-  premium: ['ai_tutor', 'ai_summary', 'transcript'],
-  ultimate: ['ai_tutor', 'ai_summary', 'transcript'],
-};
-
 // One-time, idempotent, like ensurePlanTiers: a plan created before `features`
 // existed has the field absent (the schema default is `undefined`, not `[]`,
 // precisely so this can tell "never set" apart from "admin cleared it to
-// none"). Seeds the defaults above by plan_name so a fresh deploy does not
-// lock every existing student out of everything the moment this ships. Any
-// plan that already has a `features` array — even an empty one — is left
-// alone.
+// none"). Seeds src/utils/defaultPlanFeatures.js's defaults so a fresh deploy
+// does not lock every existing student out of everything the moment this
+// ships. Any plan that already has a `features` array — even an empty one —
+// is left alone.
+//
+// Final fix wave I1: driven off the plans that actually need seeding rather
+// than off the default table's keys, so each plan's STORED plan_name is run
+// through normalizePlanName first — "medium" gets premium's set, "advance"
+// gets ultimate's, and case no longer decides whether a plan is seeded at
+// all. A name the table does not recognize is still left untouched.
 async function ensurePlanFeatures() {
+  const unseeded = await SubscriptionPlan.find({ features: { $exists: false } }).select('plan_name').lean();
   await Promise.all(
-    Object.entries(DEFAULT_PLAN_FEATURES).map(([plan_name, features]) =>
-      SubscriptionPlan.updateOne({ plan_name, features: { $exists: false } }, { $set: { features } })
-    )
+    unseeded.map((plan) => {
+      const features = defaultFeaturesFor(plan.plan_name);
+      if (!features) return null;
+      return SubscriptionPlan.updateOne({ _id: plan._id, features: { $exists: false } }, { $set: { features } });
+    })
   );
 }
 

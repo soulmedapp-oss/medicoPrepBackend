@@ -274,16 +274,21 @@ lectures.
 No data migration. On first start after deploy, `ensurePlanFeatures()` seeds
 the `features` field for any plan that doesn't have one yet: **free** gets
 `['transcript']`, **basic** gets `['transcript', 'ai_summary']`, **premium**
-and **ultimate** get all three. This only runs once per plan, keyed on
-`plan_name`, and only for a plan that has **no** `features` field at all — a
-plan that already has one (even `[]`) is left alone.
+and **ultimate** get all three. This only runs once per plan, keyed on the
+plan's stored `plan_name`, and only for a plan that has **no** `features`
+field at all — a plan that already has one (even `[]`) is left alone.
+
+The name is normalized before the lookup, the same way the rest of the
+paywall normalizes it: case and surrounding space don't matter, and the
+legacy spellings are folded in — a plan stored as **medium** gets
+premium's set, **advance** gets ultimate's.
 
 A plan the seed doesn't recognize by name — a custom plan you created
-yourself, or one renamed away from the seeded defaults — gets **no**
-features on deploy, not the seeded set for whatever it's closest to. It
-stays feature-locked for everyone until an operator ticks its Features
-checkboxes by hand. Check every active plan's Features after deploy, not
-just the four seeded ones.
+yourself, or one renamed away from the seeded defaults (and their
+medium/advance aliases) — gets **no** features on deploy, not the seeded
+set for whatever it's closest to. It stays feature-locked for everyone
+until an operator ticks its Features checkboxes by hand. Check every
+active plan's Features after deploy, not just the four seeded ones.
 
 ### What you do
 
@@ -322,6 +327,10 @@ Two caches sit between a Plans-page edit and a student seeing it change:
 
 ### Post-deploy checks
 
+- **Every active plan**: open Plans and confirm **Features** is filled in on
+  each one, reading the plan's stored `plan_name` (a plan stored as
+  **medium** is treated as premium by the seed, **advance** as ultimate; any
+  other unrecognized name is seeded with nothing and needs ticking by hand).
 - **Free student**: Transcript tab works (cues clickable / text renders);
   AI Tutor and AI Summary tabs show a lock badge, and opening one shows the
   locked panel and upgrade dialog, not the endpoint's content.

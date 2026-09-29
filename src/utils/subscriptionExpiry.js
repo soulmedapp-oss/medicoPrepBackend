@@ -21,8 +21,14 @@ async function expireSubscriptionIfNeeded(user) {
     },
   });
 
+  // Final fix wave I4: callers pass a Mongoose DOCUMENT (authController.login,
+  // middlewares/auth), and spreading one copies its internals ($__, _doc,
+  // $isNew) instead of its fields — so the payload built from this return
+  // value lost _id, full_name, email and the rest on exactly the request where
+  // a subscription lapsed. toObject() first; a plain `.lean()` object (no
+  // toObject) still spreads as before.
   return {
-    ...user,
+    ...(typeof user.toObject === 'function' ? user.toObject() : user),
     subscription_plan: 'free',
     subscription_status: 'expired',
   };

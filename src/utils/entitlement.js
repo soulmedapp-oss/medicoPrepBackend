@@ -117,19 +117,36 @@ function upgradeRefusal(lock) {
 // plan whose `features` field is absent (never touched, or predates this
 // column) is treated as listing nothing — never as "everything" — which is
 // why this checks `Array.isArray` rather than defaulting a missing field.
-// Locked: names the cheapest (lowest-tier) active plan that lists the
-// feature; if none does, the same tier-1 "a paid plan" fallback used
-// elsewhere in this file, since neither an unknown feature key nor an empty
-// catalogue can be enumerated as an allowed plan.
+// Locked: names the cheapest active plan that lists the feature AND is at or
+// above the viewer's own tier; if none does, the same tier-1 "a paid plan"
+// fallback used elsewhere in this file, since neither an unknown feature key
+// nor an empty catalogue can be enumerated as an allowed plan.
+//
+// Final fix wave I2: "cheapest" alone told a premium student to buy BASIC when
+// a feature happened to sit on basic and ultimate but not premium — a lock
+// that asks the student to downgrade, losing everything else their plan
+// includes, and that the upgrade dialog cannot honestly present. Plans at or
+// above the viewer's tier are preferred; only when the feature genuinely
+// lives nowhere at or above them does the cheapest overall get named (still
+// better than an unexplained lock with no way in). Equal tiers tie-break on
+// price, then plan_name, so the choice is deterministic rather than whatever
+// order Mongo returned.
+const byCost = (a, b) => (
+  tierOf(a) - tierOf(b)
+  || (Number(a?.price) || 0) - (Number(b?.price) || 0)
+  || String(a?.plan_name || '').localeCompare(String(b?.plan_name || ''))
+);
+
 function featureLock(feature, viewer) {
   const own = viewer?.plansByName?.get(viewer.planName);
   if (own?.features?.includes(feature)) return null;
   const plans = viewer?.plansByName instanceof Map ? [...viewer.plansByName.values()] : [];
   const candidates = plans
     .filter((p) => Array.isArray(p.features) && p.features.includes(feature))
-    .sort((a, b) => tierOf(a) - tierOf(b));
+    .sort(byCost);
   if (!candidates.length) return { required_plan: '', required_label: 'a paid plan', required_tier: 1 };
-  const cheapest = candidates[0];
+  const viewerTier = viewer?.tier || 0;
+  const cheapest = candidates.find((p) => tierOf(p) >= viewerTier) || candidates[0];
   return { required_plan: normalizePlanName(cheapest.plan_name), required_label: cheapest.display_name || cheapest.plan_name, required_tier: tierOf(cheapest) };
 }
 

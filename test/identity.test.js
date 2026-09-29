@@ -6,6 +6,7 @@ const User = require('../src/models/User');
 const Role = require('../src/models/Role');
 const SubscriptionPlan = require('../src/models/SubscriptionPlan');
 const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const bcrypt = require('bcryptjs');
 const authController = require('../src/controllers/authController');
 
 const oid = () => new mongoose.Types.ObjectId();
@@ -249,4 +250,52 @@ test('getMe: when the plan lookup throws, feature_locks degrades to all-locked i
   const fallback = { required_plan: '', required_label: 'a paid plan', required_tier: 1 };
   assert.deepEqual(res.body.user.feature_locks, { ai_tutor: fallback, ai_summary: fallback, transcript: fallback });
   assert.equal(loggedErrors.length, 1, 'reportError must log the failure exactly once (via req.log.error)');
+});
+
+// Final fix wave, Minor 6: getMe's feature_locks were pinned above, but login
+// builds its payload on its own path (sanitizeUser -> attachEffectivePermissions
+// -> withFeatureLocks). The client stores THAT payload at sign-in, so a
+// regression there would leave every watch-page tab guessing until the next
+// getMe.
+const session = require('../src/auth/session');
+
+test('login: the payload carries feature_locks with exactly the three catalogue keys', async () => {
+  const userId = oid();
+  stub(SubscriptionPlan, 'find', () => q(PLANS_F));
+  stub(Role, 'find', () => q([]));
+  stub(User, 'findOne', async () => ({
+    _id: userId,
+    id: String(userId),
+    email: 'student@x.com',
+    passwordHash: 'stored-hash',
+    is_active: true,
+    email_verified: true,
+    role: 'student',
+    roles: ['student'],
+    is_teacher: false,
+    subscription_plan: 'free',
+    subscription_status: 'none',
+    toObject() {
+      return {
+        _id: userId, email: 'student@x.com', role: 'student', roles: ['student'],
+        is_teacher: false, subscription_plan: 'free', subscription_status: 'none',
+      };
+    },
+  }));
+  stub(User, 'findById', () => q({ refresh_tokens: [] }));
+  stub(User, 'updateOne', async () => ({}));
+  stub(User, 'findByIdAndUpdate', () => ({ catch: () => Promise.resolve() }));
+  stub(bcrypt, 'compare', async () => true);
+  stub(session, 'signAccessToken', () => 'access-token');
+  stub(session, 'setSessionCookies', () => {});
+
+  const res = mockRes();
+  await authController.login({ body: { email: 'student@x.com', password: 'pw' }, headers: {} }, res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const locks = res.body.user.feature_locks;
+  assert.deepEqual(Object.keys(locks).sort(), ['ai_summary', 'ai_tutor', 'transcript']);
+  assert.equal(locks.transcript, null, 'free plan lists transcript');
+  assert.deepEqual(locks.ai_summary, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
+  assert.deepEqual(locks.ai_tutor, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
 });

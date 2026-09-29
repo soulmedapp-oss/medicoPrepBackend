@@ -198,3 +198,41 @@ test('featureLocksFor: one entry per catalogue feature', () => {
   assert.equal(locks.ai_summary, null);
   assert.equal(locks.ai_tutor.required_plan, 'premium');
 });
+
+// Final fix wave I2: a lock must never tell a student to BUY DOWN. Among the
+// plans that list the feature, prefer the cheapest one that is still at or
+// above the viewer's own tier; only when no such plan exists (the feature
+// genuinely only lives on a lower plan) fall back to the cheapest overall.
+const PLANS_TIERED = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, price: 0, is_active: true, features: [] },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, price: 199, is_active: true, features: ['ai_summary'] },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, price: 499, is_active: true, features: [] },
+  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, price: 999, is_active: true, features: ['ai_summary'] },
+];
+
+test('featureLock: a premium viewer whose feature lives on basic(1) and ultimate(3) is sent UP to ultimate, never down to basic', () => {
+  const premium = buildViewer({ subscription_plan: 'premium' }, PLANS_TIERED);
+  assert.deepEqual(featureLock('ai_summary', premium), { required_plan: 'ultimate', required_label: 'Ultimate', required_tier: 3 });
+  // A free viewer is below both, so the cheapest (basic) is still the answer.
+  const free = buildViewer({ subscription_plan: 'free' }, PLANS_TIERED);
+  assert.deepEqual(featureLock('ai_summary', free), { required_plan: 'basic', required_label: 'Basic', required_tier: 1 });
+});
+
+test('featureLock: when only a LOWER plan lists the feature, it is named anyway (fallback) rather than no lock at all', () => {
+  const noUltimate = PLANS_TIERED.filter((p) => p.plan_name !== 'ultimate');
+  const premium = buildViewer({ subscription_plan: 'premium' }, noUltimate);
+  assert.deepEqual(featureLock('ai_summary', premium), { required_plan: 'basic', required_label: 'Basic', required_tier: 1 });
+});
+
+test('featureLock: equal tiers tie-break on price, then on plan_name', () => {
+  const sameTier = [
+    { plan_name: 'free', display_name: 'Free', tier: 0, price: 0, is_active: true, features: [] },
+    { plan_name: 'zebra', display_name: 'Zebra', tier: 1, price: 299, is_active: true, features: ['ai_tutor'] },
+    { plan_name: 'yak', display_name: 'Yak', tier: 1, price: 199, is_active: true, features: ['ai_tutor'] },
+  ];
+  const free = buildViewer({ subscription_plan: 'free' }, sameTier);
+  assert.deepEqual(featureLock('ai_tutor', free), { required_plan: 'yak', required_label: 'Yak', required_tier: 1 }, 'the cheaper of two tier-1 plans wins');
+
+  const samePrice = sameTier.map((p) => (p.tier === 1 ? { ...p, price: 199 } : p));
+  assert.equal(featureLock('ai_tutor', buildViewer({ subscription_plan: 'free' }, samePrice)).required_plan, 'yak', 'identical price falls back to plan_name order');
+});

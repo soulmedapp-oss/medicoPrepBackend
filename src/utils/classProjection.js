@@ -24,6 +24,13 @@ const STUDENT_HIDDEN_CLASS_FIELDS = [
   'created_by',
   'updated_by',
   'updated_by_at',
+  // Final fix wave I3: a class transcript is plan-gated content, exactly like
+  // a lecture's — which only GET /videos/:id/transcript hands out, and only
+  // after a featureLock('transcript') check. The class list shipped both
+  // fields inline on every student row, so the whole transcript reached every
+  // student with no gate at all, on a locked class as readily as an open one.
+  'transcript_text',
+  'transcript_url',
 ];
 
 function sanitizeClassForStudent(liveClass) {
