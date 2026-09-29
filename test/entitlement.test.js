@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled, questionPlanClause, upgradeRefusal } = require('../src/utils/entitlement');
+const { normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled, questionPlanClause, upgradeRefusal, viewerFor, invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const SubscriptionPlan = require('../src/models/SubscriptionPlan');
 
 const PLANS = [
   { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
@@ -141,4 +142,35 @@ test('questionPlanClause: a mis-tiered paid plan is excluded from a free viewer 
   ];
   const clause = questionPlanClause(buildViewer({ subscription_plan: 'free' }, plans));
   assert.equal(clause.$in.includes('elite'), false, 'a priced tier-0 plan is not a free-tier plan');
+});
+
+// Final re-review residual 1: the price floor in tierOf only works at runtime
+// if getActivePlans() actually selects `price`. Every handler test stubs the
+// query and ignores the projection, so pin the projection here, through the
+// real loader, with a hand-edited tier-0 paid plan.
+test('viewerFor: the plans loader selects price, so a paid plan hand-edited to tier 0 still locks its content', async () => {
+  const original = SubscriptionPlan.find;
+  let selected;
+  SubscriptionPlan.find = () => {
+    const chain = {
+      select: (fields) => { selected = fields; return chain; },
+      lean: async () => [
+        { plan_name: 'free', display_name: 'Free', tier: 0, price: 0, is_active: true },
+        { plan_name: 'elite', display_name: 'Elite', tier: 0, price: 999, is_active: true },
+      ],
+    };
+    return chain;
+  };
+  try {
+    invalidateEntitlementPlans();
+    const freeViewer = await viewerFor({ subscription_plan: 'free' });
+    assert.match(selected, /\bprice\b/, 'getActivePlans must select price for the tierOf floor');
+    assert.deepEqual(lockState({ allowed_plans: ['elite'] }, freeViewer), { required_plan: 'elite', required_label: 'Elite', required_tier: 1 });
+    invalidateEntitlementPlans();
+    const eliteViewer = await viewerFor({ subscription_plan: 'elite' });
+    assert.equal(lockState({ allowed_plans: ['elite'] }, eliteViewer), null, 'the subscriber of that plan still opens it');
+  } finally {
+    SubscriptionPlan.find = original;
+    invalidateEntitlementPlans();
+  }
 });
