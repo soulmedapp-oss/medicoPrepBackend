@@ -54,6 +54,12 @@ const MIME_TO_EXT = {
 
 const INLINE_SAFE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp']);
 
+// Mimes that browsers would execute or that can carry script: svg (+xml),
+// html/xhtml, bare xml, javascript. Anchored on the subtype so vendor types
+// such as ...openxmlformats... (xlsx/docx) are not caught by a substring.
+const ACTIVE_CONTENT_MIME = /^(?:image\/svg\+xml|text\/html|application\/xhtml\+xml|text\/xml|application\/xml|(?:text|application)\/(?:x-)?(?:javascript|ecmascript))$/;
+const ACTIVE_CONTENT_EXTENSIONS = new Set(['svg', 'svgz', 'html', 'htm', 'xhtml', 'xml', 'js', 'mjs']);
+
 function getExtension(filename) {
   const name = String(filename || '').toLowerCase().trim();
   const idx = name.lastIndexOf('.');
@@ -78,8 +84,12 @@ function checkFileAllowed(kind, { originalname, mimetype } = {}) {
   const mime = String(mimetype || '').toLowerCase().split(';')[0].trim();
   const nameExt = getExtension(originalname);
 
-  // Never accept active content, whatever the upload type.
-  if (/svg|html|xml|javascript/.test(mime) || ['svg', 'svgz', 'html', 'htm', 'xhtml', 'xml', 'js', 'mjs'].includes(nameExt)) {
+  // Never accept active content, whatever the upload type. Matched on the
+  // mime's subtype boundaries, not as a substring: `.xlsx` files arrive as
+  // application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, whose
+  // "openxmlformats" is not XML and must not trip this (2026-09-29 bug: every
+  // Excel import was refused as "Only spreadsheet uploads are allowed").
+  if (ACTIVE_CONTENT_MIME.test(mime) || ACTIVE_CONTENT_EXTENSIONS.has(nameExt)) {
     return { ok: false, error: `Only ${rules.label} uploads are allowed` };
   }
 

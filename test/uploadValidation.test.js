@@ -27,6 +27,21 @@ test('detectImageType recognises jpg/png/gif/webp only', () => {
   assert.strictEqual(detectImageType(null), null);
 });
 
+test('checkFileAllowed accepts a real .xlsx (its vendor mime contains "xml" but is not XML)', () => {
+  const xlsx = checkFileAllowed('spreadsheet', {
+    originalname: 'question-bank-template (6).xlsx',
+    mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  assert.strictEqual(xlsx.ok, true, xlsx.error);
+  assert.strictEqual(xlsx.ext, 'xlsx');
+  const csv = checkFileAllowed('spreadsheet', { originalname: 'q.csv', mimetype: 'text/csv' });
+  assert.strictEqual(csv.ok, true);
+  // Still refused: genuine XML/HTML/JS by mime or by extension.
+  assert.strictEqual(checkFileAllowed('spreadsheet', { originalname: 'q.xlsx', mimetype: 'text/xml' }).ok, false);
+  assert.strictEqual(checkFileAllowed('spreadsheet', { originalname: 'q.xml', mimetype: 'text/csv' }).ok, false);
+  assert.strictEqual(checkFileAllowed('spreadsheet', { originalname: 'q.csv', mimetype: 'application/javascript' }).ok, false);
+});
+
 test('checkFileAllowed rejects svg/html regardless of kind', () => {
   assert.strictEqual(checkFileAllowed('image', { originalname: 'x.svg', mimetype: 'image/svg+xml' }).ok, false);
   assert.strictEqual(checkFileAllowed('image', { originalname: 'x.png', mimetype: 'image/svg+xml' }).ok, false);
