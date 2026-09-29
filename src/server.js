@@ -570,6 +570,7 @@ async function connectDb() {
     autoIndex: true,
   });
   await ensureDefaultSubscriptionPlans();
+  await ensurePlanTiers();
   await ensureDefaultRoles();
   // eslint-disable-next-line no-console
   logger.info({ db: mongoose.connection.name, host: mongoose.connection.host }, `MongoDB connected (db: ${mongoose.connection.name})`);
@@ -599,6 +600,15 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 0,
+      tier: 0,
+      pitch: {
+        headline: 'Start for free',
+        highlights: [
+          { icon: 'video', text: 'Sample recorded lectures' },
+          { icon: 'questions', text: 'Limited practice questions' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'basic',
@@ -622,6 +632,16 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 1,
+      tier: 1,
+      pitch: {
+        headline: 'Unlock premium tests and live classes.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'check', text: 'Notes access included' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'premium',
@@ -645,6 +665,17 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: true,
       is_active: true,
       sort_order: 2,
+      tier: 2,
+      pitch: {
+        headline: 'Everything in Basic, plus the full lecture library and live classes.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'live', text: 'Live classes every week with recordings' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'doubt', text: 'Ask doubts and get a teacher’s answer' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'ultimate',
@@ -668,10 +699,31 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 3,
+      tier: 3,
+      pitch: {
+        headline: 'Dedicated mentor with full access to everything.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'live', text: 'Unlimited live classes with recordings' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'doubt', text: 'Dedicated mentor doubt support' },
+          { icon: 'ai', text: 'AI-powered study plan' },
+          { icon: 'analytics', text: 'Deep performance analytics' },
+        ],
+        banner_url: '',
+      },
     },
   ];
 
   await SubscriptionPlan.insertMany(defaults);
+}
+
+// One-time, idempotent: plans created before `tier` existed order by sort_order.
+async function ensurePlanTiers() {
+  await SubscriptionPlan.updateMany(
+    { tier: { $exists: false } },
+    [{ $set: { tier: { $ifNull: ['$sort_order', 0] } } }]
+  );
 }
 
 async function ensureDefaultRoles() {
@@ -924,6 +976,12 @@ app.post('/uploads/playlists', authMiddleware, authorize.any('CanAddVideos', 'Ca
 // A lecture's own thumbnail image (Video.thumbnail_url), shown on the student
 // lecture list. Image validation, same gate as editing a lecture.
 app.post('/uploads/lecture-thumbnails', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image')
+);
+
+// The banner image for a plan's upgrade pitch (SubscriptionPlan.pitch.banner_url).
+// Same permission gate as writing a subscription plan.
+app.post('/uploads/plan-banners', authMiddleware, authorize.any('CanAddSubscriptionPlans', 'CanEditSubscriptionPlans'), upload.single('file'), (req, res) =>
   handleUpload(res, req.file, 'image')
 );
 

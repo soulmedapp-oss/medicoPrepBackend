@@ -7,6 +7,8 @@ const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
+const { validatePlanFields } = require('../utils/planPitch');
+const { invalidateEntitlementPlans } = require('../utils/entitlement');
 
 function createSubscriptionsController({
   createNotification,
@@ -58,8 +60,11 @@ function createSubscriptionsController({
       if (existing) {
         return res.status(409).json({ error: 'Plan already exists' });
       }
-      const plan = await SubscriptionPlan.create(data);
+      const checked = validatePlanFields(data);
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      const plan = await SubscriptionPlan.create(checked.value);
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.status(201).json({ plan });
     } catch (err) {
       reportError(req, err);
@@ -73,7 +78,9 @@ function createSubscriptionsController({
       if (!existing) {
         return res.status(404).json({ error: 'Plan not found' });
       }
-      const updates = req.body || {};
+      const checked = validatePlanFields(req.body || {});
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      const updates = checked.value;
       const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       const plan = await SubscriptionPlan.findByIdAndUpdate(
@@ -86,6 +93,7 @@ function createSubscriptionsController({
       }
       await recordActiveStateChange(req, { resource: 'subscription_plan', before: existing, after: plan, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.json({ plan });
     } catch (err) {
       reportError(req, err);
@@ -103,6 +111,7 @@ function createSubscriptionsController({
       await plan.save();
       await recordDeactivated(req, { resource: 'subscription_plan', targetId: plan._id, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.json({ ok: true, plan: plan.toObject() });
     } catch (err) {
       reportError(req, err);
