@@ -15,7 +15,7 @@ const { createTestsController } = require('../src/controllers/testsController');
 // that one query (there is no database here) and drop the 60 s plan cache
 // between tests so one test's fixture can never leak into the next.
 const SubscriptionPlan = require('../src/models/SubscriptionPlan');
-const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
+const { invalidateEntitlementPlans, questionPlanClause, buildViewer } = require('../src/utils/entitlement');
 const PLANS = [
   { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
   { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
@@ -172,4 +172,45 @@ test('getTestStats: CanViewAllAttempts alone does not unlock a draft/inactive te
   }, res);
 
   assert.equal(res.statusCode, 404);
+});
+
+// --- Fix round 1: the tier rule as the HANDLER actually applies it ---
+// The unit tests pin questionPlanClause; these pin that listTestQuestions hands
+// exactly that clause to Mongo, for a viewer at tier 0 and one at tier 2, so a
+// future edit cannot quietly widen or narrow what students are asked.
+function captureQuestionFilter(user) {
+  const testId = oid();
+  stub(Test, 'findById', () => q({ _id: testId, is_published: true, is_active: true }));
+  const seen = [];
+  stub(Question, 'find', (filter) => { seen.push(filter); return q([]); });
+  return { testId, seen, req: { params: { id: String(testId) }, userId: String(oid()), user } };
+}
+
+test('listTestQuestions: a free student is asked only for questions at tier 0', async () => {
+  const { seen, req } = captureQuestionFilter({ effective_permissions: ['CanAccessTests'], subscription_plan: 'free' });
+  const res = mockRes();
+  await controller().listTestQuestions(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].is_active, true);
+  assert.deepEqual(seen[0].required_plan, questionPlanClause(buildViewer({ subscription_plan: 'free' }, PLANS)));
+  assert.deepEqual(seen[0].required_plan, { $in: ['free', '', null] });
+});
+
+test('listTestQuestions: a premium student is asked for everything except the tiers above them', async () => {
+  const { seen, req } = captureQuestionFilter({ effective_permissions: ['CanAccessTests'], subscription_plan: 'premium' });
+  const res = mockRes();
+  await controller().listTestQuestions(req, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(seen[0].required_plan, questionPlanClause(buildViewer({ subscription_plan: 'premium' }, PLANS)));
+  assert.deepEqual(seen[0].required_plan.$nin.sort(), ['advance', 'ultimate'], 'only the tier-3 plan and its legacy alias');
+});
+
+// The staff bypass is untouched: no plan clause at all, and deactivated
+// questions stay visible to them.
+test('listTestQuestions: a CanViewQuestions holder gets no plan or is_active narrowing', async () => {
+  const { seen, req } = captureQuestionFilter({ effective_permissions: ['CanViewQuestions'], subscription_plan: 'free' });
+  await controller().listTestQuestions(req, mockRes());
+  assert.equal(seen[0].required_plan, undefined);
+  assert.equal(seen[0].is_active, undefined);
 });

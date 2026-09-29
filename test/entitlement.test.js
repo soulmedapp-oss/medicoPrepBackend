@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizePlanName, buildViewer, planTier, requiredPlanFor, lockState, isEntitled, upgradeRefusal } = require('../src/utils/entitlement');
+const { normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled, questionPlanClause, upgradeRefusal } = require('../src/utils/entitlement');
 
 const PLANS = [
   { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
@@ -51,4 +51,60 @@ test('lockState: a viewer on a deactivated/unknown plan is tier 0', () => {
 test('upgradeRefusal: the uniform 403 body', () => {
   assert.deepEqual(upgradeRefusal({ required_plan: 'elite', required_label: 'Elite', required_tier: 3 }),
     { error: 'Upgrade required', code: 'UPGRADE_REQUIRED', lock: { required_plan: 'elite', required_label: 'Elite', required_tier: 3 } });
+});
+
+// Fix round 1: questions are filtered in Mongo, so the tier rule has to be a
+// query. questionPlanClause must admit exactly what lockState would unlock.
+test('tierOf: reads the plan tier, coercing anything unusable to 0', () => {
+  assert.equal(tierOf({ tier: 3 }), 3);
+  assert.equal(tierOf({ tier: '2' }), 2);
+  assert.equal(tierOf({}), 0);
+  assert.equal(tierOf({ tier: -1 }), 0);
+  assert.equal(tierOf(undefined), 0);
+});
+
+test('questionPlanClause: a tier-0 viewer gets a whitelist of free/blank/absent plus every tier-0 plan', () => {
+  const clause = questionPlanClause(buildViewer({ subscription_plan: 'free' }, PLANS));
+  assert.deepEqual(clause, { $in: ['free', '', null] });
+  assert.equal(clause.$in.includes(undefined), false, 'undefined is not a stored value');
+  // A second tier-0 plan, stored raw-cased, appears in both spellings.
+  const withTrial = questionPlanClause(buildViewer({ subscription_plan: 'free' },
+    [...PLANS, { plan_name: 'Trial', display_name: 'Trial', tier: 0, is_active: true }]));
+  assert.deepEqual(withTrial, { $in: ['free', '', null, 'Trial', 'trial'] });
+});
+
+test('questionPlanClause: a paying viewer gets a blacklist of only the plans above them, in every stored spelling', () => {
+  const plans = [
+    { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true },
+    { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+    { plan_name: 'Gold', display_name: 'Gold', tier: 1, is_active: true },
+  ];
+  const clause = questionPlanClause(buildViewer({ subscription_plan: 'premium' }, plans));
+  assert.deepEqual(clause.$nin.sort(), ['advance', 'ultimate'], 'only the tier-3 plan, plus its legacy alias');
+  assert.equal(clause.$nin.includes('premium'), false, "the viewer's own tier is not excluded");
+  assert.equal(clause.$nin.includes('Gold'), false, 'a lower tier is included, raw case and all');
+});
+
+test('questionPlanClause: the raw stored case of an excluded plan is denied too', () => {
+  const plans = [
+    { plan_name: 'Basic', display_name: 'Basic', tier: 1, is_active: true },
+    { plan_name: 'Ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+  ];
+  const clause = questionPlanClause(buildViewer({ subscription_plan: 'Basic' }, plans));
+  assert.deepEqual(clause.$nin.sort(), ['Ultimate', 'advance', 'ultimate']);
+});
+
+// The counterpart of requiredPlanFor's tier-1 "a paid plan" fallback: a plan
+// name no active row defines cannot be enumerated, so a blacklist is what lets
+// it open from tier 1 up while still locking at tier 0.
+test('questionPlanClause: a question on an unknown or deactivated plan is reachable from tier 1, never at tier 0', () => {
+  const atTier1 = questionPlanClause(buildViewer({ subscription_plan: 'basic' }, PLANS));
+  assert.equal(atTier1.$nin.includes('platinum'), false, 'nothing excludes it, so the query matches it');
+  const atTier0 = questionPlanClause(buildViewer({ subscription_plan: 'free' }, PLANS));
+  assert.equal(atTier0.$in.includes('platinum'), false, 'the whitelist never admits it');
+});
+
+test('questionPlanClause: a viewer with no plans loaded is treated as tier 0', () => {
+  assert.deepEqual(questionPlanClause(undefined), { $in: ['free', '', null] });
+  assert.deepEqual(questionPlanClause({ tier: 0 }), { $in: ['free', '', null] });
 });

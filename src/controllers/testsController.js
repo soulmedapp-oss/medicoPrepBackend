@@ -8,7 +8,7 @@ const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { can, canAny } = require('../rbac/can');
-const { normalizePlanName, viewerFor } = require('../utils/entitlement');
+const { normalizePlanName, questionPlanClause, viewerFor } = require('../utils/entitlement');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { gradeAttempt, normalizeSubmittedAnswers } = require('../services/gradingService');
 const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
@@ -77,17 +77,10 @@ function buildQuestionFilter(testId, user, viewer) {
   const filter = { test_id: testId };
   if (!canAny(user, ['CanViewTests', 'CanViewQuestions'])) {
     filter.is_active = true;
-    // Questions at or below the viewer's tier: those whose required_plan is
-    // free/absent, or names an active plan with tier <= viewer.tier.
-    const plans = viewer?.plansByName instanceof Map ? [...viewer.plansByName.values()] : [];
-    const viewerTier = viewer?.tier || 0;
-    const allowedNames = ['free', '', null, undefined,
-      ...plans.filter((p) => Number(p.tier || 0) <= viewerTier).map((p) => p.plan_name)];
-    // Old questions may still store the legacy names; they mean their alias
-    // target, so they are allowed exactly when that target is.
-    if (allowedNames.includes('premium')) allowedNames.push('medium');
-    if (allowedNames.includes('ultimate')) allowedNames.push('advance');
-    filter.required_plan = { $in: allowedNames };
+    // Exactly the questions lockState would unlock for this viewer, expressed
+    // as a query — utils/entitlement owns the rule, including legacy and
+    // raw-cased plan spellings.
+    filter.required_plan = questionPlanClause(viewer);
   }
   return filter;
 }

@@ -60,6 +60,46 @@ function lockState(item, viewer) {
 
 const isEntitled = (item, viewer) => lockState(item, viewer) === null;
 
+// Every spelling of a plan a question's `required_plan` might have been
+// stored as: the row's raw case (API-created questions store it verbatim),
+// its normalized form, and the legacy alias that means it ("medium" for
+// premium, "advance" for ultimate).
+function planNameForms(plan) {
+  const raw = typeof plan?.plan_name === 'string' ? plan.plan_name.trim() : '';
+  const normalized = normalizePlanName(raw);
+  const forms = new Set();
+  if (raw) forms.add(raw);
+  if (normalized) forms.add(normalized);
+  Object.entries(ALIASES).forEach(([legacy, target]) => {
+    if (normalized && target === normalized) forms.add(legacy);
+  });
+  return [...forms];
+}
+
+// The Mongo condition for a question's `required_plan` that admits exactly the
+// questions lockState would unlock for this viewer — questions are filtered in
+// the database, so the rule has to be expressed as a query rather than run per
+// document.
+//
+// Tier 0 is a whitelist: free/blank/absent, plus every active tier-0 plan.
+// Tier 1+ is a blacklist of the plans ABOVE the viewer, which is what makes an
+// unknown or deactivated plan name open from tier 1 up — exactly like
+// requiredPlanFor's "a paid plan" (tier 1) fallback, since neither can be
+// enumerated as an allowed name.
+function questionPlanClause(viewer) {
+  const plans = viewer?.plansByName instanceof Map ? [...viewer.plansByName.values()] : [];
+  const tier = viewer?.tier || 0;
+  if (tier === 0) {
+    // `null` also matches a document with no required_plan at all.
+    const allowed = new Set(['free', '', null]);
+    plans.filter((p) => tierOf(p) === 0).forEach((p) => planNameForms(p).forEach((n) => allowed.add(n)));
+    return { $in: [...allowed] };
+  }
+  const denied = new Set();
+  plans.filter((p) => tierOf(p) > tier).forEach((p) => planNameForms(p).forEach((n) => denied.add(n)));
+  return { $nin: [...denied] };
+}
+
 function upgradeRefusal(lock) {
   return { error: 'Upgrade required', code: 'UPGRADE_REQUIRED', lock };
 }
@@ -80,6 +120,7 @@ async function viewerFor(user) {
 }
 
 module.exports = {
-  normalizePlanName, buildViewer, planTier, requiredPlanFor, lockState, isEntitled, upgradeRefusal,
+  normalizePlanName, buildViewer, tierOf, planTier, requiredPlanFor, lockState, isEntitled,
+  questionPlanClause, upgradeRefusal,
   getActivePlans, viewerFor, invalidateEntitlementPlans,
 };

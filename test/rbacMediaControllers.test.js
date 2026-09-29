@@ -226,6 +226,54 @@ test('listClasses: all=true — a class with an empty teacher_email never matche
   assert.equal(res.body.classes[0].zoom_start_url, undefined);
 });
 
+// --- Fix round 1: the tier rule as the class handlers actually apply it ---
+// A class restricted to `premium` (tier 2) is refused for a tier-1 viewer and
+// allowed for a tier-3 one — the old rule needed the plan name to match exactly,
+// so `ultimate` was refused here too. The 403 body is unchanged in this task.
+test('getClassRecording: a premium-only class refuses a basic viewer and admits an ultimate one (higher tier includes lower)', async () => {
+  const liveClass = {
+    _id: oid(), is_published: true, is_active: true, recording_url: 'https://rec',
+    youtube_url: '', zoom_recording_files: [], is_free: false, allowed_plans: ['premium'],
+  };
+  stub(LiveClass, 'findById', () => q(liveClass));
+  const basic = makeUser(['CanAccessLiveClasses'], { subscription_plan: 'basic' });
+  const ultimate = makeUser(['CanAccessLiveClasses'], { subscription_plan: 'ultimate' });
+
+  const resBasic = mockRes();
+  await classesController().getClassRecording(
+    { userId: String(basic._id), user: basic, params: { id: String(liveClass._id) } },
+    resBasic
+  );
+  assert.equal(resBasic.statusCode, 403);
+  assert.deepEqual(resBasic.body, { error: 'Upgrade required' });
+
+  const resUltimate = mockRes();
+  await classesController().getClassRecording(
+    { userId: String(ultimate._id), user: ultimate, params: { id: String(liveClass._id) } },
+    resUltimate
+  );
+  assert.equal(resUltimate.statusCode, 200, JSON.stringify(resUltimate.body));
+  assert.equal(resUltimate.body.url, 'https://rec');
+});
+
+test('listClasses: the student list hides a premium-only class from a basic viewer and shows it to an ultimate one', async () => {
+  const free = { _id: oid(), title: 'Free', scheduled_date: new Date(), is_published: true, is_active: true, is_free: true, allowed_plans: [], status: 'completed' };
+  const premium = { _id: oid(), title: 'Premium', scheduled_date: new Date(), is_published: true, is_active: true, is_free: false, allowed_plans: ['premium'], status: 'completed' };
+  stub(LiveClass, 'find', () => q([free, premium]));
+  stub(LiveClass, 'findByIdAndUpdate', () => q(null));
+
+  const basic = makeUser(['CanAccessLiveClasses'], { subscription_plan: 'basic' });
+  const resBasic = mockRes();
+  await classesController().listClasses({ userId: String(basic._id), user: basic, query: {} }, resBasic);
+  assert.equal(resBasic.statusCode, 200);
+  assert.deepEqual(resBasic.body.classes.map((c) => c.title), ['Free']);
+
+  const ultimate = makeUser(['CanAccessLiveClasses'], { subscription_plan: 'ultimate' });
+  const resUltimate = mockRes();
+  await classesController().listClasses({ userId: String(ultimate._id), user: ultimate, query: {} }, resUltimate);
+  assert.deepEqual(resUltimate.body.classes.map((c) => c.title), ['Free', 'Premium']);
+});
+
 // --- classesController.getClassRecording / getClassSummary ---
 
 test('getClassRecording: CanViewClasses bypasses the published check; plain CanAccessLiveClasses does not', async () => {

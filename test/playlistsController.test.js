@@ -11,6 +11,17 @@ const {
   requiresDeactivatePermission,
 } = require('../src/controllers/playlistsController');
 const { STUDENT_LECTURE_FIELDS, studentPlaylistView } = require('../src/utils/studentProjection');
+const { buildViewer } = require('../src/utils/entitlement');
+
+// Task 2: entitlement is decided from the plans' admin-set `tier`, so
+// playlistsForLecture takes a viewer. These stand in for the active
+// SubscriptionPlan rows a request would load.
+const PLANS = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true },
+];
+const viewer = (subscription_plan) => buildViewer({ subscription_plan }, PLANS);
 
 const user = (...perms) => ({ effective_permissions: perms });
 
@@ -79,27 +90,49 @@ test('playlistsForLecture keeps only the free, published, entitled playlist from
     { _id: 'gold-pl', name: 'Gold playlist', is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'] },
     { _id: 'draft-pl', name: 'Draft playlist', is_published: false, is_active: true, is_free: true, allowed_plans: [] },
   ];
-  const out = playlistsForLecture(playlists, 'free');
+  const out = playlistsForLecture(playlists, viewer('free'));
   assert.deepEqual(out, [{ _id: 'free-pl', name: 'Free playlist' }]);
+});
+
+// Task 2: "gold" is not an active plan here, so gold-pl falls to
+// requiredPlanFor's tier-1 "a paid plan" fallback — it stays hidden from a free
+// viewer (never silently unlocked) but any paying viewer may open it. The
+// unpublished playlist is still dropped whatever the viewer's tier.
+test('playlistsForLecture: a playlist gated on an undefined plan is hidden from a free viewer and shown to a paying one', () => {
+  const playlists = [
+    { _id: 'free-pl', name: 'Free playlist', is_published: true, is_active: true, is_free: true, allowed_plans: [] },
+    { _id: 'gold-pl', name: 'Gold playlist', is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'] },
+    { _id: 'draft-pl', name: 'Draft playlist', is_published: false, is_active: true, is_free: true, allowed_plans: [] },
+  ];
+  assert.deepEqual(playlistsForLecture(playlists, viewer('basic')).map((p) => p._id), ['free-pl', 'gold-pl']);
+});
+
+// And a playlist gated on a plan that IS defined follows the tier order.
+test('playlistsForLecture: a premium playlist is hidden from basic and shown to premium', () => {
+  const playlists = [
+    { _id: 'prem-pl', name: 'Premium playlist', is_published: true, is_active: true, is_free: false, allowed_plans: ['premium'] },
+  ];
+  assert.deepEqual(playlistsForLecture(playlists, viewer('basic')), []);
+  assert.deepEqual(playlistsForLecture(playlists, viewer('premium')), [{ _id: 'prem-pl', name: 'Premium playlist' }]);
 });
 
 test('playlistsForLecture drops an inactive playlist even if published and free', () => {
   const playlists = [
     { _id: 'inactive-pl', name: 'Retired', is_published: true, is_active: false, is_free: true, allowed_plans: [] },
   ];
-  assert.deepEqual(playlistsForLecture(playlists, 'free'), []);
+  assert.deepEqual(playlistsForLecture(playlists, viewer('free')), []);
 });
 
 test('playlistsForLecture projects only _id and name, nothing else', () => {
   const playlists = [
     { _id: 'p1', name: 'P1', is_published: true, is_active: true, is_free: true, allowed_plans: [], description: 'secret', items: [{ lecture_id: 'x' }] },
   ];
-  assert.deepEqual(Object.keys(playlistsForLecture(playlists, 'free')[0]).sort(), ['_id', 'name']);
+  assert.deepEqual(Object.keys(playlistsForLecture(playlists, viewer('free'))[0]).sort(), ['_id', 'name']);
 });
 
 test('playlistsForLecture handles an empty or missing list without throwing', () => {
-  assert.deepEqual(playlistsForLecture([], 'free'), []);
-  assert.deepEqual(playlistsForLecture(undefined, 'free'), []);
+  assert.deepEqual(playlistsForLecture([], viewer('free')), []);
+  assert.deepEqual(playlistsForLecture(undefined, viewer('free')), []);
 });
 
 // Fix round 1, Important 1 — permission parity with videos. updatePlaylist's
