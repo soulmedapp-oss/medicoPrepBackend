@@ -40,6 +40,10 @@ test('videos routes', () => {
   expectRule(routes, 'DELETE', '/videos/:id', 'permission', ['CanDeactivateVideos']);
   expectRule(routes, 'GET', '/videos/:id/deletion-impact', 'permission', ['CanDeleteVideos']);
   expectRule(routes, 'DELETE', '/videos/:id/permanent', 'permission', ['CanDeleteVideos']);
+  // Task 2: new transcript route — same marker as ai-summary/ai-chat (the
+  // feature gate itself runs inside the controller, after this permission
+  // check and the playback gate).
+  expectRule(routes, 'GET', '/videos/:id/transcript', 'permission', ['CanAccessVideos', 'CanViewVideos']);
 });
 
 test('video progress routes', () => {

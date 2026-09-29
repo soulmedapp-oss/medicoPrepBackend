@@ -4,7 +4,7 @@ const Playlist = require('../models/Playlist');
 const VideoProgress = require('../models/VideoProgress');
 const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
-const { viewerFor, lockState, upgradeRefusal } = require('../utils/entitlement');
+const { viewerFor, lockState, upgradeRefusal, featureLock } = require('../utils/entitlement');
 const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
@@ -655,6 +655,13 @@ function createVideosController() {
       if (!video) {
         return res.status(status || 404).json(body || { error });
       }
+      // Task 2 (spec §2/§4): the plan feature gate, after the playback gate
+      // and never for staff — the same shape (403 UPGRADE_REQUIRED + lock)
+      // as every other plan-gated refusal in this file.
+      if (!can(req.user, 'CanViewVideos')) {
+        const lock = featureLock('ai_summary', await viewerFor(req.user));
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
       const summary = await requestVideoSummary(video);
       return res.json({ summary });
     } catch (err) {
@@ -866,11 +873,38 @@ function createVideosController() {
       if (!video) {
         return res.status(status || 404).json(body || { error });
       }
+      if (!can(req.user, 'CanViewVideos')) {
+        const lock = featureLock('ai_tutor', await viewerFor(req.user));
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
       const answer = await requestVideoChat(message.trim(), video, req.body?.history);
       return res.json({ answer });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate response' });
+    }
+  }
+
+  // Task 2 (spec §2/§4): transcript is plan-gated exactly like ai-summary/
+  // ai-tutor — playback gate, then the feature gate (never for staff) — and
+  // ONLY THEN is transcript_text read, via its own narrow, single-field
+  // query. loadVideoForPlayback's own Video.findById (above, in the gate)
+  // is never widened to carry transcript_text out of this function.
+  async function getVideoTranscript(req, res) {
+    try {
+      const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
+      if (!video) {
+        return res.status(status || 404).json(body || { error });
+      }
+      if (!can(req.user, 'CanViewVideos')) {
+        const lock = featureLock('transcript', await viewerFor(req.user));
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
+      const doc = await Video.findById(req.params.id).select('transcript_text').lean();
+      return res.json({ transcript: doc?.transcript_text || '' });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load transcript' });
     }
   }
 
@@ -898,6 +932,7 @@ function createVideosController() {
     permanentlyDeleteVideo,
     getVideoSummary,
     chatAboutVideo,
+    getVideoTranscript,
     createUploadUrl,
     refreshVideoStatus,
     getPlayback,

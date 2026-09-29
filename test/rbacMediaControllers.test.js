@@ -32,11 +32,16 @@ const { createVideosController } = require('../src/controllers/videosController'
 // between tests so one test's fixture can never leak into the next.
 const SubscriptionPlan = require('../src/models/SubscriptionPlan');
 const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
+// Task 2: getVideoSummary/chatAboutVideo now also run the feature gate
+// (ai_summary/ai_tutor) after the playback gate. These fixtures carry every
+// catalogue feature on every plan so the pre-existing playback-gate tests
+// below keep testing exactly what they tested before Task 2 — feature-gate
+// refusals get their own fixtures and tests in test/videoFeatures.test.js.
 const PLANS = [
-  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
-  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
-  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true },
-  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true },
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
+  { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
+  { plan_name: 'ultimate', display_name: 'Ultimate', tier: 3, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
 ];
 
 

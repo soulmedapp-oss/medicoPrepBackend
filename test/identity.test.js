@@ -3,6 +3,9 @@ const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const { validateNickname, isValidAvatarId, AVATAR_IDS, DEFAULT_AVATAR_ID, displayNameFor, isDuplicateNicknameError } = require('../src/utils/identity');
 const User = require('../src/models/User');
+const Role = require('../src/models/Role');
+const SubscriptionPlan = require('../src/models/SubscriptionPlan');
+const { invalidateEntitlementPlans } = require('../src/utils/entitlement');
 const authController = require('../src/controllers/authController');
 
 const oid = () => new mongoose.Types.ObjectId();
@@ -37,6 +40,7 @@ test.afterEach(() => {
     const [obj, key, fn] = originals.pop();
     obj[key] = fn;
   }
+  invalidateEntitlementPlans();
 });
 
 test('validateNickname: trims, enforces 2-20 chars, letters/digits/single spaces', () => {
@@ -177,4 +181,47 @@ test('updateMe: a duplicate-key error from the write itself (lost the uniqueness
 
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.error, 'That nickname is already taken');
+});
+
+// --- authController.getMe: feature_locks (Task 2, spec §4) ---
+// The client reads feature_locks off /auth/me so a locked watch-page tab can
+// render without a second request. The lock shape/keys must exactly match
+// entitlement.featureLocksFor.
+
+const PLANS_F = [
+  { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true, features: ['transcript'] },
+  { plan_name: 'premium', display_name: 'Premium', tier: 2, is_active: true, features: ['ai_tutor', 'ai_summary', 'transcript'] },
+];
+
+test('getMe: a non-staff student gets feature_locks with exactly the three catalogue keys, each null|lock per their plan', async () => {
+  const userId = oid();
+  stub(SubscriptionPlan, 'find', () => q(PLANS_F));
+  stub(Role, 'find', () => q([]));
+  stub(User, 'findById', () => q({
+    _id: userId, role: 'student', roles: ['student'], is_teacher: false, subscription_plan: 'free',
+  }));
+
+  const res = mockRes();
+  await authController.getMe({ userId: String(userId) }, res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const locks = res.body.user.feature_locks;
+  assert.deepEqual(Object.keys(locks).sort(), ['ai_summary', 'ai_tutor', 'transcript']);
+  assert.equal(locks.transcript, null, 'free plan lists transcript');
+  assert.deepEqual(locks.ai_summary, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
+  assert.deepEqual(locks.ai_tutor, { required_plan: 'premium', required_label: 'Premium', required_tier: 2 });
+});
+
+test('getMe: staff (admin role, which carries CanViewVideos) gets all three feature_locks null regardless of plan', async () => {
+  const userId = oid();
+  stub(SubscriptionPlan, 'find', () => q(PLANS_F));
+  stub(User, 'findById', () => q({
+    _id: userId, role: 'admin', roles: ['admin'], is_teacher: false, subscription_plan: 'free',
+  }));
+
+  const res = mockRes();
+  await authController.getMe({ userId: String(userId) }, res);
+
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body.user.feature_locks, { ai_tutor: null, ai_summary: null, transcript: null });
 });

@@ -11,6 +11,8 @@ const { enqueueJob } = require('../utils/inMemoryQueue');
 const { normalizeTokenVersion } = require('../utils/security');
 const { validateNickname, isValidAvatarId, isDuplicateNicknameError } = require('../utils/identity');
 const { loadPermissions } = require('../rbac/loadPermissions');
+const { can } = require('../rbac/can');
+const { viewerFor, featureLocksFor } = require('../utils/entitlement');
 const { reportError } = require('../lib/errorReporter.js');
 const session = require('../auth/session');
 
@@ -137,6 +139,19 @@ async function attachEffectivePermissions(payload) {
   payload.roles = roleNames;
   payload.effective_permissions = permissions;
   return payload;
+}
+
+// Task 2 (spec §2/§4): the same three-key { ai_tutor, ai_summary, transcript }
+// lock object the video/transcript endpoints enforce, mirrored onto every
+// auth payload the browser receives, so a locked watch-page tab can render
+// without a second request. Staff (CanViewVideos) always get all three null
+// — must run AFTER attachEffectivePermissions, since can() reads
+// effective_permissions.
+async function withFeatureLocks(user) {
+  if (can(user, 'CanViewVideos')) {
+    return { ai_tutor: null, ai_summary: null, transcript: null };
+  }
+  return featureLocksFor(await viewerFor(user));
 }
 
 function getClientIp(req) {
@@ -363,6 +378,7 @@ async function login(req, res) {
     const updatedUser = await expireSubscriptionIfNeeded(user);
     const token = await issueSession(req, res, user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
+    payload.feature_locks = await withFeatureLocks(payload);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
   } catch (err) {
@@ -578,6 +594,7 @@ async function getMe(req, res) {
     const refreshed = await expireSubscriptionIfNeeded(user);
     const payload = sanitizeUser(refreshed || user);
     await attachEffectivePermissions(payload);
+    payload.feature_locks = await withFeatureLocks(payload);
     return res.json({ user: payload });
   } catch (err) {
     reportError(req, err);
@@ -764,6 +781,7 @@ async function googleAuth(req, res) {
 
     const token = await issueSession(req, res, user);
     const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
+    responsePayload.feature_locks = await withFeatureLocks(responsePayload);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: responsePayload, token });
   } catch (err) {

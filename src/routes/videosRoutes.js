@@ -44,6 +44,12 @@ function createVideosRoutes({ authMiddleware }) {
     controller.getPlayback
   );
   router.post('/videos/:id/ai-chat', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), aiChatLimiter, controller.chatAboutVideo);
+  router.get(
+    '/videos/:id/transcript',
+    authMiddleware,
+    authorize.any('CanAccessVideos', 'CanViewVideos'),
+    controller.getVideoTranscript
+  );
 
   return router;
 }
