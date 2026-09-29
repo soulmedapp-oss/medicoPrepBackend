@@ -3,14 +3,19 @@ const Video = require('../models/Video');
 const { isValidTextLength } = require('../utils/validation');
 const { isValidObjectId } = require('../utils/security');
 const { canAccessPlaylist, visibleItems, countVisibleItems } = require('../utils/playlistAccess');
-const { viewerFor } = require('../utils/entitlement');
+const { viewerFor, lockState } = require('../utils/entitlement');
 const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { can } = require('../rbac/can');
 // Final fix wave, B1/B6: the lecture allowlist used to live here as a local
 // constant while videosController's student list had no projection at all.
 // Both now share this one definition, so the two student reads cannot drift.
-const { STUDENT_LECTURE_FIELDS, studentPlaylistView } = require('../utils/studentProjection');
+const {
+  STUDENT_LECTURE_FIELDS,
+  STUDENT_TEASER_FIELDS,
+  studentPlaylistView,
+  teaserLectureView,
+} = require('../utils/studentProjection');
 const { reportError } = require('../lib/errorReporter.js');
 
 // Allowlist: created_by/updated_by/items can never be set through req.body —
@@ -413,21 +418,25 @@ function createPlaylistsController() {
     }
   }
 
-  // Student browsing: published + active, narrowed by subject in the query,
-  // then filtered in code by canAccessPlaylist for the caller's plan — see
-  // browseFilter's comment for why entitlement never becomes a Mongo filter.
+  // Student browsing: published + active, narrowed by subject in the query.
+  // Spec §1/§6 reversal: a playlist this viewer isn't entitled to is no
+  // longer dropped — every published, active playlist is returned, each
+  // carrying its own `lock` (null when the viewer may open it, otherwise the
+  // cheapest plan that would). The client renders the lock badge / upgrade
+  // prompt from that field; nothing is hidden any more.
   async function browsePlaylists(req, res) {
     try {
       const { subject_id: subjectId } = req.query;
       const filter = browseFilter(subjectId || null);
       const playlists = await Playlist.find(filter).sort({ created_date: -1 }).lean();
       const viewer = await viewerFor(req.user);
-      const visible = playlists.filter((playlist) => canAccessPlaylist(playlist, viewer));
 
       // lecture_count mirrors what the detail view (visibleItems) would
-      // render: only items whose lecture exists and is not deactivated.
-      // One query across every visible playlist's items, not one per card.
-      const lectureIds = visible.flatMap((playlist) =>
+      // render: only items whose lecture exists and is not deactivated. One
+      // query across EVERY playlist's items, not one per card — and, since
+      // nothing is filtered out any more, this now runs over every playlist
+      // returned above, locked or not.
+      const lectureIds = playlists.flatMap((playlist) =>
         (playlist.items || []).map((item) => item.lecture_id)
       );
       const activeLectureIds = lectureIds.length
@@ -443,41 +452,64 @@ function createPlaylistsController() {
       // rather than spread — the spread handed students `items` (every
       // lecture id on the playlist, reachable or not), staff provenance and
       // the curation flags. lecture_count is the only computed field that
-      // survives the projection.
-      const withCounts = visible.map((playlist) =>
-        studentPlaylistView(playlist, {
+      // survives the projection; `lock` is added alongside it, same
+      // projection either way (spec §6: locked rows are not thinner).
+      const rows = playlists.map((playlist) => ({
+        ...studentPlaylistView(playlist, {
           lecture_count: countVisibleItems(playlist, activeLectureIds),
-        })
-      );
+        }),
+        lock: lockState(playlist, viewer),
+      }));
 
-      return res.json({ playlists: withCounts });
+      return res.json({ playlists: rows });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlists' });
     }
   }
 
-  // Student single-playlist read. A playlist that is unpublished, inactive
-  // or not entitled to the caller's plan returns the SAME 404 as one that
-  // doesn't exist — a student must never learn a playlist exists that they
-  // cannot open. Lectures are loaded with one Video.find({_id:{$in}}) and
-  // filtered/ordered through visibleItems, so a deactivated lecture is
-  // absent from the response while its playlist item (and any VideoProgress
-  // row) is never touched — this handler never writes.
+  // Student single-playlist read. Spec §1/§2 reversal: a playlist that is
+  // unpublished or inactive still 404s exactly as one that doesn't exist —
+  // that part is unchanged. But a playlist the caller is simply not
+  // entitled to (a `lock` from lockState) is NO LONGER a 404: it opens as a
+  // teaser — `locked: true`, `playlist.lock` set, and `lectures` projected
+  // through STUDENT_TEASER_FIELDS (title/subtopic/duration/thumbnails only —
+  // no video_url, no provider, nothing that could play). A student must
+  // never learn a playlist exists that they cannot open used to be the
+  // rule; now the reverse is true by design — they must be able to see and
+  // want the locked playlist, just not play it. Lectures are loaded with one
+  // Video.find({_id:{$in}}) and filtered/ordered through visibleItems, so a
+  // deactivated lecture is absent from the response while its playlist item
+  // (and any VideoProgress row) is never touched — this handler never
+  // writes.
   async function getPlaylist(req, res) {
     try {
       const playlist = await Playlist.findById(req.params.id).lean();
       if (!playlist) {
         return res.status(404).json({ error: 'Playlist not found' });
       }
-      const viewer = await viewerFor(req.user);
-      const entitled =
-        playlist.is_published && playlist.is_active !== false && canAccessPlaylist(playlist, viewer);
-      if (!entitled) {
+      if (!playlist.is_published || playlist.is_active === false) {
         return res.status(404).json({ error: 'Playlist not found' });
       }
-
+      const viewer = await viewerFor(req.user);
+      const lock = lockState(playlist, viewer);
       const lectureIds = (playlist.items || []).map((item) => item.lecture_id);
+
+      if (lock) {
+        // Spec §2: a locked playlist is a teaser, never a 404 — titles only,
+        // never video_url/provider (STUDENT_TEASER_FIELDS, not
+        // STUDENT_LECTURE_FIELDS).
+        const teaserLectures = lectureIds.length
+          ? await Video.find({ _id: { $in: lectureIds } }).select(STUDENT_TEASER_FIELDS).lean()
+          : [];
+        const teasersById = new Map(teaserLectures.map((lecture) => [String(lecture._id), lecture]));
+        return res.json({
+          playlist: { ...studentPlaylistView(playlist), lock },
+          lectures: visibleItems(playlist, teasersById).map(teaserLectureView),
+          locked: true,
+        });
+      }
+
       // Fix round 1, Important 2: no projection meant students received the
       // full lecture document — bunny_video_id/bunny_library_id (internal
       // Bunny identifiers), created_by/updated_by (staff provenance) and
@@ -493,7 +525,11 @@ function createPlaylistsController() {
       // whole. The detail read needs no more of the playlist than the
       // browse read does — the lectures it carries arrive separately,
       // already filtered and ordered.
-      return res.json({ playlist: studentPlaylistView(playlist), lectures: visibleLectures });
+      return res.json({
+        playlist: { ...studentPlaylistView(playlist), lock: null },
+        lectures: visibleLectures,
+        locked: false,
+      });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load playlist' });

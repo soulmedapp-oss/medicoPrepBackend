@@ -4,7 +4,7 @@ const Playlist = require('../models/Playlist');
 const VideoProgress = require('../models/VideoProgress');
 const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
-const { viewerFor } = require('../utils/entitlement');
+const { viewerFor, lockState, upgradeRefusal } = require('../utils/entitlement');
 const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
@@ -170,21 +170,50 @@ function playbackResponse(video) {
   };
 }
 
+// Task 3 — pure: the cheapest lock among playlists that actually carry this
+// lecture. "Carry" mirrors isLecturePlayable's own membership test exactly —
+// published, active, and containing the lecture_id — minus the entitlement
+// check itself, which lockState decides. Returns null when no published,
+// active playlist carries the lecture at all: a lecture nobody can ever
+// reach isn't "upgrade to unlock", it simply isn't there — the caller's cue
+// to answer 404 rather than a lock. When several qualifying playlists carry
+// it at different tiers, the cheapest (lowest required_tier) wins, same as
+// requiredPlanFor picks the cheapest plan for a single item.
+function cheapestLockFor(lecture, playlists, viewer) {
+  const locks = (playlists || [])
+    .filter(
+      (playlist) =>
+        playlist.is_published &&
+        playlist.is_active !== false &&
+        (playlist.items || []).some((item) => String(item.lecture_id) === String(lecture._id))
+    )
+    .map((playlist) => lockState(playlist, viewer))
+    .filter(Boolean);
+  if (!locks.length) return null;
+  return locks.reduce((cheapest, lock) => (lock.required_tier < cheapest.required_tier ? lock : cheapest));
+}
+
 // Task 5 — pure: the playback entitlement decision, extracted so it is
 // testable without a database and so the handler below can call the exact
-// function pinned by tests (Review Focus #1). Its output shape
-// ({ error } or { error, status }) is what every handler behind this gate
-// expects, so the "no video -> res.status(status || 404)" handling in
-// getPlayback/getVideoSummary/chatAboutVideo needs no per-handler change.
+// function pinned by tests (Review Focus #1). Its output shape is either
+// { allowed: true }, a 404 { allowed: false, status: 404, error }, or (Task
+// 3) a 403 { allowed: false, status: 403, body } carrying the uniform
+// upgradeRefusal body — never a bare error string for the 403 case, so the
+// lock details (required_plan/required_label/required_tier) reach the
+// client instead of collapsing to "Upgrade required" text alone. Every
+// caller behind this gate sends "res.status(status).json(body || { error })"
+// — getPlayback/getVideoSummary/chatAboutVideo via loadVideoForPlayback
+// below.
 //
 // Staff (CanViewVideos) bypass is unchanged from today: they may preview any
 // active lecture regardless of playlists. Everyone else needs the lecture to
 // be active AND playable through at least one published, active playlist
 // they're entitled to (isLecturePlayable) — which is now the only
 // entitlement rule in the file; the lecture's own is_published/allowed_plans
-// decide nothing. A lecture in no playlist therefore falls through to the
-// same clean "Upgrade required" 403 an unentitled lecture gets today — never
-// a thrown error, never a token.
+// decide nothing. When it isn't playable, cheapestLockFor tells apart the
+// two different refusals: a real lock (403, upgrade prompt) versus a lecture
+// no published playlist carries at all (404, same as always) — never a
+// thrown error, never a token.
 function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff }) {
   if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
   if (lecture.is_active === false) {
@@ -194,7 +223,9 @@ function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff }) {
     return { allowed: true };
   }
   if (!isLecturePlayable(lecture, playlists, viewer)) {
-    return { allowed: false, status: 403, error: 'Upgrade required' };
+    const lock = cheapestLockFor(lecture, playlists, viewer);
+    if (!lock) return { allowed: false, status: 404, error: 'Video not found' };
+    return { allowed: false, status: 403, body: upgradeRefusal(lock) };
   }
   return { allowed: true };
 }
@@ -234,7 +265,12 @@ function createVideosController() {
     const viewer = isStaff ? null : await viewerFor(user);
     const decision = resolvePlaybackAccess({ lecture: video, playlists, viewer, isStaff });
     if (!decision.allowed) {
-      return { error: decision.error, status: decision.status };
+      // Task 3: `body` carries the uniform upgradeRefusal shape for a 403 —
+      // present alongside `error` for a 404 (there body is undefined and the
+      // caller falls back to { error }), so every caller can send the exact
+      // same "res.status(status).json(body || { error })" regardless of
+      // which refusal this was.
+      return { error: decision.error, status: decision.status, body: decision.body };
     }
     return { video };
   }
@@ -615,9 +651,9 @@ function createVideosController() {
       if (!value) {
         return res.status(400).json({ error: 'Tutor service is not configured' });
       }
-      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
+      const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) {
-        return res.status(status || 404).json({ error });
+        return res.status(status || 404).json(body || { error });
       }
       const summary = await requestVideoSummary(video);
       return res.json({ summary });
@@ -826,9 +862,9 @@ function createVideosController() {
       if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
         return res.status(400).json({ error: `message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less` });
       }
-      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
+      const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) {
-        return res.status(status || 404).json({ error });
+        return res.status(status || 404).json(body || { error });
       }
       const answer = await requestVideoChat(message.trim(), video, req.body?.history);
       return res.json({ answer });
@@ -840,8 +876,8 @@ function createVideosController() {
 
   async function getPlayback(req, res) {
     try {
-      const { video, error, status } = await loadVideoForPlayback(req.user, req.params.id);
-      if (!video) return res.status(status || 404).json({ error });
+      const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
+      if (!video) return res.status(status || 404).json(body || { error });
       const result = playbackResponse(video);
       return res.status(result.status).json(result.body);
     } catch (err) {

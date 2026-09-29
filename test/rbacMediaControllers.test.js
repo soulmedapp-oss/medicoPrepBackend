@@ -449,7 +449,11 @@ test('getVideoSummary: the CanViewVideos bypass reads req.user, not a fresh DB l
   assert.equal(resStaff.body.summary, 'video summary');
 });
 
-test('getVideoSummary: a student whose lecture sits in no playlist is refused with playbacks own 403', async () => {
+// Task 3: a lecture no published playlist carries at all is a clean 404
+// ("upgrade to unlock" only makes sense once a playlist actually carries the
+// lecture), not the 403 this test pinned before resolvePlaybackAccess told
+// the two refusals apart via cheapestLockFor.
+test('getVideoSummary: a student whose lecture sits in no playlist at all is refused with 404, not an upgrade prompt', async () => {
   const video = { _id: oid(), is_published: true, is_active: true, allowed_plans: [] };
   stub(Video, 'findById', () => q(video));
   stub(Playlist, 'find', () => q([]));
@@ -460,8 +464,8 @@ test('getVideoSummary: a student whose lecture sits in no playlist is refused wi
     { userId: String(studentReqUser._id), user: studentReqUser, params: { id: String(video._id) } },
     res
   );
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.body.error, 'Upgrade required');
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.body.error, 'Video not found');
 });
 
 test('getVideoSummary: an unpublished lecture inside a published, free playlist is answerable', async () => {
@@ -496,7 +500,12 @@ test('chatAboutVideo: the CanViewVideos bypass reads req.user, not a fresh DB lo
   assert.equal(resStaff.body.answer, 'video chat answer');
 });
 
-test('chatAboutVideo: a lecture whose only playlist was unpublished is refused, published lecture or not', async () => {
+// Task 3: an unpublished playlist doesn't count as "carrying" the lecture for
+// the lock computation either (cheapestLockFor applies the same
+// is_published/is_active filter as isLecturePlayable), so this is now the
+// same clean 404 a lecture in no playlist at all gets — not an upgrade
+// prompt for a playlist nobody can ever see.
+test('chatAboutVideo: a lecture whose only playlist was unpublished is refused with 404, published lecture or not', async () => {
   const video = { _id: oid(), is_published: true, is_active: true, allowed_plans: [] };
   stub(Video, 'findById', () => q(video));
   // The controller's own Mongo filter already excludes unpublished
@@ -512,8 +521,8 @@ test('chatAboutVideo: a lecture whose only playlist was unpublished is refused, 
     { userId: String(studentReqUser._id), user: studentReqUser, params: { id: String(video._id) }, body: { message: 'hi' } },
     res
   );
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.body.error, 'Upgrade required');
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.body.error, 'Video not found');
 });
 
 // --- videosController.listVideos: the student branch obeys the same gate ---

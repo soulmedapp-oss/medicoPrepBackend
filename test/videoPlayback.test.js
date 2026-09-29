@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { playbackResponse, resolvePlaybackAccess } = require('../src/controllers/videosController');
-const { buildViewer } = require('../src/utils/entitlement');
+const { buildViewer, upgradeRefusal } = require('../src/utils/entitlement');
 
 // Task 2: resolvePlaybackAccess takes a `viewer` (plan + tier) rather than a
 // bare plan name. These fixtures stand in for the active SubscriptionPlan rows.
@@ -89,6 +89,11 @@ test('a bunny video with no bunny_video_id yet returns 409 and does not throw, e
 
 // Review Focus #1: a lecture in no playlist is a clean refusal, never a
 // thrown error and never anything resembling a token.
+//
+// Task 3: "in no playlist at all" is now a 404, not the 403 upgrade prompt —
+// resolvePlaybackAccess tells apart "no playlist carries this lecture"
+// (nothing to upgrade INTO) from "a playlist carries it but this viewer
+// isn't entitled" (the 403 with a lock, pinned separately below).
 test('a lecture in no playlist is refused cleanly, not thrown, and carries no token', () => {
   assert.doesNotThrow(() => {
     const result = resolvePlaybackAccess({
@@ -98,8 +103,8 @@ test('a lecture in no playlist is refused cleanly, not thrown, and carries no to
       isStaff: false,
     });
     assert.equal(result.allowed, false);
-    assert.equal(result.status, 403);
-    assert.equal(result.error, 'Upgrade required');
+    assert.equal(result.status, 404);
+    assert.equal(result.error, 'Video not found');
     assert.equal(result.token, undefined);
   });
 });
@@ -114,13 +119,20 @@ test('a lecture in a published, entitled playlist is allowed', () => {
   assert.equal(result.error, undefined);
 });
 
-test('a lecture only in a playlist for another plan is refused with the same shape as an unentitled video', () => {
+// Task 3: the 403 body is now the uniform upgradeRefusal shape (a `lock`
+// naming the cheapest plan that would unlock it), not a bare error string —
+// the same body playlists' lockState would have produced for this playlist.
+test('a lecture only in a playlist for another plan is refused with the uniform UPGRADE_REQUIRED body', () => {
   const lecture = { _id: 'L1', is_active: true };
   const playlists = [
     { is_published: true, is_active: true, is_free: false, allowed_plans: ['gold'], items: [{ lecture_id: 'L1' }] },
   ];
   const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
-  assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
+  assert.deepEqual(result, {
+    allowed: false,
+    status: 403,
+    body: upgradeRefusal({ required_plan: 'gold', required_label: 'Gold', required_tier: 2 }),
+  });
 });
 
 // Staff bypass stays exactly as today: CanViewVideos may preview any active
@@ -167,13 +179,17 @@ test('a lecture with is_published:false is still playable when a published playl
   assert.equal(result.allowed, true);
 });
 
-test('a lecture whose only playlist was unpublished is refused, even though the lecture itself is published', () => {
+// Task 3: an unpublished playlist doesn't count as "carrying" the lecture
+// for the lock computation either, so this is now the same clean 404 a
+// lecture in no playlist at all gets — not an upgrade prompt for a playlist
+// nobody can ever see.
+test('a lecture whose only playlist was unpublished is refused with 404, even though the lecture itself is published', () => {
   const lecture = { _id: 'L1', is_active: true, is_published: true };
   const playlists = [
     { is_published: false, is_active: true, is_free: true, allowed_plans: [], items: [{ lecture_id: 'L1' }] },
   ];
   const result = resolvePlaybackAccess({ lecture, playlists, viewer: viewer('free'), isStaff: false });
-  assert.deepEqual(result, { allowed: false, status: 403, error: 'Upgrade required' });
+  assert.deepEqual(result, { allowed: false, status: 404, error: 'Video not found' });
 });
 
 // Task 2: the playlist gate is tier-based now, not an exact allowed_plans name

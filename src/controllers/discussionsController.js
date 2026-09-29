@@ -61,8 +61,12 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       if (!lecture) return { status: 404, error: 'Video not found' };
       return { lecture };
     }
-    const { video, error, status } = await loadVideoForPlayback(user, anchorId);
-    if (!video) return { status: status || 404, error: error || 'Not found' };
+    // Task 3: loadVideoForPlayback's 403 refusal now carries `body` (the
+    // uniform upgradeRefusal shape) instead of a bare `error` string —
+    // threaded through here so the discussions gate answers with the same
+    // lock details playback does, not a generic 'Not found'.
+    const { video, error, status, body } = await loadVideoForPlayback(user, anchorId);
+    if (!video) return { status: status || 404, error: error || 'Not found', body };
     return { lecture: video };
   }
 
@@ -103,8 +107,8 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
     try {
       const anchorType = String(req.query?.anchor_type || '');
       const anchorId = String(req.query?.anchor_id || '');
-      const { lecture, status, error } = await gate(req.user, anchorType, anchorId);
-      if (!lecture) return res.status(status).json({ error });
+      const { lecture, status, error, body } = await gate(req.user, anchorType, anchorId);
+      if (!lecture) return res.status(status).json(body || { error });
 
       const moderator = isModerator(req.user);
       const filter = { 'anchor.type': anchorType, 'anchor.id': anchorId };
@@ -176,8 +180,9 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
         }
       }
 
-      const { lecture, status, error } = await gate(req.user, anchorType, anchorId);
-      if (!lecture) return res.status(status).json({ error });
+      const gated = await gate(req.user, anchorType, anchorId);
+      if (!gated.lecture) return res.status(gated.status).json(gated.body || { error: gated.error });
+      const { lecture } = gated;
 
       // A timestamp past the end of the lecture would seek nowhere, so cap it
       // at the known duration rather than refusing the post over a rounding
@@ -259,7 +264,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
       const gated = await gateForPost(req.user, post);
-      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
+      if (!gated.lecture) return res.status(gated.status).json(gated.body || { error: gated.error });
       const userId = String(req.user._id);
       if (String(post.author_id) === userId) {
         return res.status(400).json({ error: 'You cannot upvote your own post' });
@@ -289,7 +294,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
       const gated = await gateForPost(req.user, post);
-      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
+      if (!gated.lecture) return res.status(gated.status).json(gated.body || { error: gated.error });
 
       // One report per user per post, and `report_count` in step with
       // `reports.length` — both in ONE conditional update, so two concurrent
@@ -347,7 +352,7 @@ function createDiscussionsController({ createNotification, loadVideoForPlayback 
       const post = await DiscussionPost.findById(req.params.id).lean();
       if (!post) return res.status(404).json({ error: 'Post not found' });
       const gated = await gateForPost(req.user, post);
-      if (!gated.lecture) return res.status(gated.status).json({ error: gated.error });
+      if (!gated.lecture) return res.status(gated.status).json(gated.body || { error: gated.error });
       const lectureTitle = gated.lecture.title || 'a lecture';
 
       const moderator = isModerator(req.user);
