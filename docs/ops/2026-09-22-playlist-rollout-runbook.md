@@ -433,3 +433,43 @@ Environments: **dev** uses the hand-made bucket `soulmed-uploads-thumbnails` (ad
 - The object appears in the bucket under `thumbnails/lectures/<year>/<month>/`.
 - Old thumbnails (migrated) still display; the browser console shows no CSP errors (`img-src https:` and `media-src` already allow the bucket for images; if class recordings are served from S3, add the bucket/CDN host to `media-src` in the frontend `vercel.json`/`index.html`).
 - Cost: images are tiny; a few thousand thumbnails cost cents per month. Recordings are the only thing worth watching.
+
+## Zoom recordings → transcript + Bunny lecture (added 2026-09-30)
+
+When Zoom sends `recording.completed` for a live class the API now, in the
+background (the webhook is answered first):
+
+1. downloads Zoom's transcript (VTT) with the recording's `download_token`,
+   stores it under `transcripts/classes/` and fills the class's
+   `transcript_text` (AI summary / chat for the class work from it);
+2. creates a Bunny Stream video and asks Bunny to fetch the MP4 straight
+   from Zoom, and creates a **Lecture** for it (title
+   "`<class> (<date>) — recording`", tagged *From live class* in Lecture
+   Library) linked to the class. When Bunny finishes encoding, students'
+   *Watch Recording* opens that lecture on the watch page (player, resume,
+   discussion, AI tabs, transcript). Until then the Zoom link is used.
+
+Rules: a class recording is playable by anyone who may open the class (its
+plan ticks), playlist or not; admins may also add it to playlists. The
+ingest runs once per class (`zoom_ingest_claimed_at`); a failed step
+releases the claim so a redelivered webhook retries only what is missing.
+
+### Requirements
+- Zoom app scopes: `recording:read` (cloud recording + transcript) in
+  addition to the meeting scopes already used; **cloud recording with audio
+  transcript enabled** in the Zoom account settings, otherwise no
+  TRANSCRIPT file is ever produced.
+- The Bunny library key already configured (BUNNY_STREAM_*) — the fetch
+  uses the same library and collections (by subject) as uploaded lectures.
+- Upload storage configured (S3 in production) for the VTT copy.
+
+### What to check after deploy
+- End a test Zoom class with cloud recording on → within minutes the class
+  shows a transcript (Manage Live Class → Recording & materials) and a
+  new lecture appears in Lecture Library with status *processing*, then
+  *ready*.
+- Student: Live Classes → Recordings → *Watch Recording* opens the watch
+  page; the Transcript tab shows the text; a student below the class's
+  plan gets the upgrade prompt.
+- Sentry/logs: `zoom transcript stored`, `zoom recording handed to Bunny`;
+  any `zoom … ingest failed` line names the class.
