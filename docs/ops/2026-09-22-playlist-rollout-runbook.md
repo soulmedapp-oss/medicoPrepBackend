@@ -371,6 +371,8 @@ folders with a `legacy-` prefix; unreferenced old files go to `misc/legacy/`.
 
 Prefer the Terraform module in `docs/terraform/uploads-s3` under `C:/SoulMedAi/myBranch` (README inside): one `terraform apply` creates everything below and prints the `.env` values. The manual steps are kept for reference.
 
+Environments: **dev** uses the hand-made bucket `soulmed-uploads-thumbnails` (adopted into Terraform via `terraform import`, see `dev.tfvars`); **prod** is `soulmed-uploads-thumbnails-prod`, created by `terraform apply -var-file=prod.tfvars` in the `prod` workspace. Each has its own IAM user and key; the prod values go only into the hosting provider's environment variables.
+
 1. **Bucket**: S3 → Create bucket, e.g. `soulmed-uploads`, region `ap-south-1`
    (Mumbai). Leave versioning off. Under *Block Public Access* untick
    "Block all public access" (objects must be readable by students' browsers)
