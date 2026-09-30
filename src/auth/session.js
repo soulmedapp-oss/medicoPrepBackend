@@ -75,6 +75,24 @@ function signAccessToken(user, normalizeTokenVersion) {
   );
 }
 
+// The AI service (FastAPI, its own origin — :8100 in dev, App Runner in prod)
+// cannot see the HttpOnly session cookie, so the page asks this API for a
+// short-lived bearer token and sends that instead. It is readable by scripts,
+// which is why it is minutes long and why authMiddleware refuses it here:
+// stolen, it reaches the AI service only, and not for long. The scope rides
+// in a private claim, not `aud` — PyJWT rejects an `aud` it was not told to
+// expect, and the AI service verifies with the shared JWT_SECRET alone.
+const AI_TOKEN_SCOPE = 'ai';
+const AI_TOKEN_TTL_SECONDS = 300;
+
+function signAiToken(user) {
+  return jwt.sign(
+    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE },
+    process.env.JWT_SECRET,
+    { expiresIn: AI_TOKEN_TTL_SECONDS }
+  );
+}
+
 /**
  * Pure: given the user's stored refresh tokens, produce the new list after
  * issuing `newHash` — expired entries dropped, capped at MAX_REFRESH_TOKENS.
@@ -162,6 +180,9 @@ module.exports = {
   hashToken,
   randomToken,
   signAccessToken,
+  AI_TOKEN_SCOPE,
+  AI_TOKEN_TTL_SECONDS,
+  signAiToken,
   addRefreshToken,
   rotateRefreshToken,
   setSessionCookies,

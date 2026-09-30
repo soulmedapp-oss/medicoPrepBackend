@@ -71,5 +71,8 @@ router.post('/google', publicRoute, googleLimiter, authController.googleAuth);
 // this route), so no bearer/authMiddleware — publicRoute is the marker.
 router.post('/refresh', publicRoute, authController.refreshSession);
 router.post('/logout', publicRoute, authController.logout);
+// The AI service is a separate origin the session cookies never reach; the
+// page trades its session for a minutes-long bearer token to send there.
+router.post('/ai-token', authMiddleware, selfService, authController.aiToken);
 
 module.exports = router;

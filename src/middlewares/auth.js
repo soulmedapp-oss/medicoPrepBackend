@@ -3,7 +3,7 @@ const User = require('../models/User');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { isTokenVersionCurrent } = require('../utils/security');
 const { loadPermissions } = require('../rbac/loadPermissions');
-const { COOKIE } = require('../auth/session');
+const { COOKIE, AI_TOKEN_SCOPE } = require('../auth/session');
 
 const { JWT_SECRET } = process.env;
 
@@ -19,6 +19,11 @@ async function authMiddleware(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    // A token minted for the AI service (POST /auth/ai-token) is readable by
+    // page scripts; it must never double as a session for this API.
+    if (payload.scope === AI_TOKEN_SCOPE) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
     req.userId = payload.sub;
     let user = await User.findById(req.userId).lean();
     if (!user || user.is_active === false) {
