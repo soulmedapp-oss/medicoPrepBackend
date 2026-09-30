@@ -369,6 +369,8 @@ folders with a `legacy-` prefix; unreferenced old files go to `misc/legacy/`.
 
 ### One-time AWS setup (owner)
 
+Prefer the Terraform module in `docs/terraform/uploads-s3` under `C:/SoulMedAi/myBranch` (README inside): one `terraform apply` creates everything below and prints the `.env` values. The manual steps are kept for reference.
+
 1. **Bucket**: S3 → Create bucket, e.g. `soulmed-uploads`, region `ap-south-1`
    (Mumbai). Leave versioning off. Under *Block Public Access* untick
    "Block all public access" (objects must be readable by students' browsers)
