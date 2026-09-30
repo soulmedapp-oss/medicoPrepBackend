@@ -1,6 +1,7 @@
 const Subject = require('../models/Subject');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function slugify(value) {
   return String(value || '')
@@ -40,7 +41,7 @@ function createSubjectsController() {
       const subjects = await Subject.find(filter).sort({ sort_order: 1, name: 1 }).lean();
       return res.json({ subjects });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load subjects' });
     }
   }
@@ -61,7 +62,7 @@ function createSubjectsController() {
       const subject = await Subject.create(data);
       return res.status(201).json({ subject });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create subject' });
     }
   }
@@ -89,7 +90,7 @@ function createSubjectsController() {
       await subject.save();
       return res.json({ subject: subject.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update subject' });
     }
   }
@@ -115,7 +116,7 @@ function createSubjectsController() {
       await subject.save();
       return res.status(201).json({ subject: subject.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create subtopic' });
     }
   }
@@ -146,7 +147,7 @@ function createSubjectsController() {
       await subject.save();
       return res.json({ subject: subject.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update subtopic' });
     }
   }
@@ -172,7 +173,7 @@ function createSubjectsController() {
       await subject.save();
       return res.json({ subject: subject.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update subject owners' });
     }
   }

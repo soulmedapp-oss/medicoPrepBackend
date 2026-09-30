@@ -4,11 +4,17 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
-const Role = require('../models/Role');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { sanitizeUser } = require('../utils/userUtils');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
 const { enqueueJob } = require('../utils/inMemoryQueue');
+const { normalizeTokenVersion } = require('../utils/security');
+const { validateNickname, isValidAvatarId, isDuplicateNicknameError } = require('../utils/identity');
+const { loadPermissions } = require('../rbac/loadPermissions');
+const { can } = require('../rbac/can');
+const { viewerFor, featureLocksFor } = require('../utils/entitlement');
+const { reportError } = require('../lib/errorReporter.js');
+const session = require('../auth/session');
 
 const {
   GOOGLE_CLIENT_ID,
@@ -54,32 +60,117 @@ function ensureEmailConfigured() {
   return from;
 }
 
-function signToken(userId) {
-  return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: tokenExpiry });
+function signToken(user) {
+  return session.signAccessToken(user, normalizeTokenVersion);
+}
+
+// Starts a browser session: short-lived access JWT + rotating refresh token
+// + CSRF token, all as cookies (src/auth/session.js). The access token is
+// ALSO returned in the body for non-browser clients; the web app ignores it
+// and never stores it.
+async function issueSession(req, res, user) {
+  const accessToken = signToken(user);
+  const refreshToken = session.randomToken();
+  const csrfToken = session.randomToken(16);
+  const current = await User.findById(user._id || user.id).select('refresh_tokens').lean();
+  const next = session.addRefreshToken(current?.refresh_tokens, session.hashToken(refreshToken));
+  await User.updateOne({ _id: user._id || user.id }, { $set: { refresh_tokens: next } });
+  session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
+  return accessToken;
+}
+
+// POST /auth/refresh — trades a valid refresh cookie for a new access cookie
+// and a NEW refresh cookie (rotation). An unknown or expired refresh token
+// ends the session: cookies cleared, 401.
+async function refreshSession(req, res) {
+  try {
+    const presented = req.cookies?.[session.COOKIE.refresh];
+    if (!presented) {
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    const presentedHash = session.hashToken(presented);
+    const user = await User.findOne({ 'refresh_tokens.hash': presentedHash }).select('+refresh_tokens');
+    if (!user || user.is_active === false) {
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    const refreshToken = session.randomToken();
+    const rotated = session.rotateRefreshToken(user.refresh_tokens, presentedHash, session.hashToken(refreshToken));
+    if (!rotated.ok) {
+      await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
+      session.clearSessionCookies(req, res);
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
+    const accessToken = signToken(user);
+    const csrfToken = session.randomToken(16);
+    session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
+    return res.json({ ok: true, expires_in: Math.floor(session.accessTtlMs() / 1000) });
+  } catch (err) {
+    reportError(req, err);
+    return res.status(500).json({ error: 'Failed to refresh session' });
+  }
+}
+
+// POST /auth/logout — forgets this browser's refresh token and clears the
+// cookies. Idempotent: works with or without a live session.
+async function logout(req, res) {
+  try {
+    const presented = req.cookies?.[session.COOKIE.refresh];
+    if (presented) {
+      await User.updateOne(
+        { 'refresh_tokens.hash': session.hashToken(presented) },
+        { $pull: { refresh_tokens: { hash: session.hashToken(presented) } } }
+      );
+    }
+    session.clearSessionCookies(req, res);
+    return res.json({ ok: true });
+  } catch (err) {
+    reportError(req, err);
+    session.clearSessionCookies(req, res);
+    return res.json({ ok: true });
+  }
 }
 
 async function attachEffectivePermissions(payload) {
   if (!payload) return payload;
-  if (Array.isArray(payload.permissions) && payload.permissions.length > 0) {
-    return payload;
-  }
-  const roleNames = Array.isArray(payload.roles) && payload.roles.length > 0
-    ? payload.roles
-    : (payload.role ? [payload.role] : []);
-  const normalized = roleNames
-    .map((role) => String(role || '').toLowerCase())
-    .filter(Boolean);
-  if (normalized.length === 0 || normalized.includes('admin')) {
-    return payload;
-  }
-  const roles = await Role.find({ name: { $in: normalized }, is_active: true }).lean();
-  const merged = roles
-    .flatMap((role) => role.permissions || [])
-    .filter(Boolean);
-  if (merged.length > 0) {
-    payload.effective_permissions = Array.from(new Set(merged));
-  }
+  const { roleNames, permissions } = await loadPermissions(payload);
+  payload.roles = roleNames;
+  payload.effective_permissions = permissions;
   return payload;
+}
+
+// Fix round 1: if viewerFor/featureLocksFor throws (e.g. SubscriptionPlan.find
+// fails), login/getMe/googleAuth must not 500 over a display-only field. Every
+// non-staff key degrades to this — the same "a paid plan" tier-1 fallback
+// featureLock itself returns when no plan lists a feature — so the client
+// shows every tab locked rather than trusting a possibly-wrong unlocked
+// state; the real gate is still the server-side featureLock check on each
+// endpoint, which runs its own viewerFor and fails the request (never silently
+// opens) if the same lookup is failing.
+const FEATURE_LOCK_FALLBACK = Object.freeze({ required_plan: '', required_label: 'a paid plan', required_tier: 1 });
+
+// Task 2 (spec §2/§4): the same three-key { ai_tutor, ai_summary, transcript }
+// lock object the video/transcript endpoints enforce, mirrored onto every
+// auth payload the browser receives, so a locked watch-page tab can render
+// without a second request. Staff (CanViewVideos) always get all three null
+// — must run AFTER attachEffectivePermissions, since can() reads
+// effective_permissions.
+async function withFeatureLocks(user, req) {
+  if (can(user, 'CanViewVideos')) {
+    return { ai_tutor: null, ai_summary: null, transcript: null };
+  }
+  try {
+    return featureLocksFor(await viewerFor(user));
+  } catch (err) {
+    reportError(req, err, 'withFeatureLocks failed; degrading fail-closed');
+    return {
+      ai_tutor: { ...FEATURE_LOCK_FALLBACK },
+      ai_summary: { ...FEATURE_LOCK_FALLBACK },
+      transcript: { ...FEATURE_LOCK_FALLBACK },
+    };
+  }
 }
 
 function getClientIp(req) {
@@ -271,7 +362,7 @@ async function register(req, res) {
       message: 'Verification email has been sent.',
     });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Registration failed' });
   }
 }
@@ -304,12 +395,13 @@ async function login(req, res) {
     }
 
     const updatedUser = await expireSubscriptionIfNeeded(user);
-    const token = signToken(user.id);
+    const token = await issueSession(req, res, user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
+    payload.feature_locks = await withFeatureLocks(payload, req);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: payload, token });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Login failed' });
   }
 }
@@ -359,7 +451,7 @@ async function verifyEmail(req, res) {
     }
     return res.json({ ok: true, message });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to verify email' });
   }
 }
@@ -408,7 +500,7 @@ async function resendVerification(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to resend verification email' });
   }
 }
@@ -439,7 +531,7 @@ async function forgotPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to send password reset email' });
   }
 }
@@ -472,11 +564,14 @@ async function resetPassword(req, res) {
     user.password_reset_token = undefined;
     user.password_reset_expires = undefined;
     user.password_reset_requested_at = undefined;
+    // Revoke every JWT issued before this reset.
+    user.token_version = normalizeTokenVersion(user.token_version) + 1;
+    user.refresh_tokens = []; // and every browser's refresh cookie with them
     await user.save();
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to reset password' });
   }
 }
@@ -504,7 +599,7 @@ async function validateResetToken(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to validate reset link' });
   }
 }
@@ -518,9 +613,10 @@ async function getMe(req, res) {
     const refreshed = await expireSubscriptionIfNeeded(user);
     const payload = sanitizeUser(refreshed || user);
     await attachEffectivePermissions(payload);
+    payload.feature_locks = await withFeatureLocks(payload, req);
     return res.json({ user: payload });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Failed to load user' });
   }
 }
@@ -534,8 +630,11 @@ async function updateMe(req, res) {
       'year_of_study',
       'target_exam',
       'profile_image',
+      'notify_live_classes',
       'last_login_date',
       'last_seen_date',
+      'nickname',
+      'avatar_id',
     ];
     const forbiddenFields = [
       'subscription_plan',
@@ -572,17 +671,68 @@ async function updateMe(req, res) {
     if (updates.phone && !isValidPhone(String(updates.phone))) {
       return res.status(400).json({ error: 'Invalid phone number' });
     }
+    for (const field of ['college', 'target_exam', 'year_of_study']) {
+      if (updates[field] && !isValidTextLength(String(updates[field]), 0, 120)) {
+        return res.status(400).json({ error: `${field} must be 120 characters or less` });
+      }
+    }
+    // Fix round 2, Minor: `null` is how the UI says "back to the default
+    // avatar"; normalise it to '' BEFORE validation so the stored value is the
+    // '' the schema defaults to, not a null the readers don't expect.
+    if (updates.avatar_id === null) updates.avatar_id = '';
+    if (Object.prototype.hasOwnProperty.call(updates, 'avatar_id') && !isValidAvatarId(String(updates.avatar_id ?? ''))) {
+      return res.status(400).json({ error: 'Unknown avatar' });
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'nickname')) {
+      const raw = String(updates.nickname ?? '').trim();
+      if (raw === '') {
+        updates.nickname = '';
+        updates.nickname_lc = undefined; // $unset below keeps the sparse index clean
+      } else {
+        const check = validateNickname(raw);
+        if (!check.ok) return res.status(400).json({ error: check.error });
+        const taken = await User.exists({ nickname_lc: check.lc, _id: { $ne: req.userId } });
+        if (taken) return res.status(409).json({ error: 'That nickname is already taken' });
+        updates.nickname = check.value;
+        updates.nickname_lc = check.lc;
+      }
+    }
+
+    const updateOps = { $set: updates };
+    if (Object.prototype.hasOwnProperty.call(updates, 'nickname_lc') && updates.nickname_lc === undefined) {
+      delete updates.nickname_lc;
+      updateOps.$unset = { nickname_lc: '' };
+    }
 
     const user = await User.findByIdAndUpdate(
       req.userId,
-      { $set: updates },
+      updateOps,
       { new: true }
     );
 
     return res.json({ user: sanitizeUser(user) });
   } catch (err) {
-    console.error(err);
+    reportError(req, err);
+    // Fix round 1, Important 3: the pre-write uniqueness check above is a
+    // read-then-write race — a concurrent request can win the unique index
+    // between the check and this write. Turn that into the same 409 the
+    // pre-check would have given, not a 500.
+    if (isDuplicateNicknameError(err)) {
+      return res.status(409).json({ error: 'That nickname is already taken' });
+    }
     return res.status(500).json({ error: 'Failed to update user' });
+  }
+}
+
+async function nicknameAvailable(req, res) {
+  try {
+    const check = validateNickname(String(req.query.nickname || ''));
+    if (!check.ok) return res.json({ available: false, reason: check.error });
+    const taken = await User.exists({ nickname_lc: check.lc, _id: { $ne: req.userId } });
+    return res.json({ available: !taken, value: check.value });
+  } catch (err) {
+    reportError(req, err);
+    return res.status(500).json({ error: 'Failed to check nickname' });
   }
 }
 
@@ -610,20 +760,33 @@ async function googleAuth(req, res) {
     if (!email) {
       return res.status(400).json({ error: 'Google account has no email' });
     }
+    // Only a Google-verified email may be linked to (or create) an account.
+    if (googlePayload.email_verified !== true) {
+      return res.status(403).json({ error: 'Google email is not verified' });
+    }
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
+    // Prefer the account already linked to this Google identity; otherwise link by email.
+    let user = await User.findOne({ googleId });
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user && user.googleId && user.googleId !== googleId) {
+        return res.status(409).json({ error: 'This email is linked to a different Google account' });
+      }
+    }
     if (user && user.is_active === false) {
       return res.status(403).json({ error: 'Account is inactive' });
     }
     if (user) {
       user.googleId = googleId;
-      user.email = email;
+      // Never overwrite an existing account's email with the Google one.
       user.full_name = name || user.full_name;
       user.profile_image = picture || user.profile_image;
-      user.email_verified = true;
-      user.email_verified_at = user.email_verified_at || new Date();
-      user.email_verification_token = undefined;
-      user.email_verification_expires = undefined;
+      if (String(user.email).toLowerCase() === String(email).toLowerCase()) {
+        user.email_verified = true;
+        user.email_verified_at = user.email_verified_at || new Date();
+        user.email_verification_token = undefined;
+        user.email_verification_expires = undefined;
+      }
       await user.save();
     } else {
       user = await User.create({
@@ -636,18 +799,21 @@ async function googleAuth(req, res) {
       });
     }
 
-    const token = signToken(user.id);
+    const token = await issueSession(req, res, user);
     const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
+    responsePayload.feature_locks = await withFeatureLocks(responsePayload, req);
     enqueueJob(() => updateLoginMeta(user.id, req));
     return res.json({ user: responsePayload, token });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error(err);
+    reportError(req, err);
     return res.status(500).json({ error: 'Login failed' });
   }
 }
 
 module.exports = {
+  refreshSession,
+  logout,
   register,
   login,
   verifyEmail,
@@ -657,5 +823,6 @@ module.exports = {
   validateResetToken,
   getMe,
   updateMe,
+  nicknameAvailable,
   googleAuth,
 };

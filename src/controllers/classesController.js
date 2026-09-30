@@ -1,12 +1,90 @@
 const LiveClass = require('../models/LiveClass');
+const Video = require('../models/Video');
 const LiveClassNote = require('../models/LiveClassNote');
 const User = require('../models/User');
+const { attachActorNames } = require('../utils/actorNames');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
-const { getZoomAccessToken, pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
+const { pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
 const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
-const { sendEmail } = require('../services/emailService');
+const { sendEmail, emailConfigured } = require('../services/emailService');
+const ClassNotificationRun = require('../models/ClassNotificationRun');
+const { notifyClass } = require('../services/classNotifier');
+const { runDueReminders } = require('../services/classReminderScheduler');
+const { getActivePlans } = require('../utils/entitlement');
+const { can } = require('../rbac/can');
+const { lockState, upgradeRefusal, viewerFor, featureLock } = require('../utils/entitlement');
+// Final fix wave C2: the student class projection now lives in utils so the
+// student dashboard's upcoming_classes goes through exactly the same one.
+const { studentClassRow } = require('../utils/classProjection');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
+const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
+const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
+
+// Fields staff may change via PATCH /classes/:id. Zoom URLs, recording files and
+// passcodes are server-managed (Zoom API / webhook) and never client-writable.
+const UPDATABLE_CLASS_FIELDS = [
+  'title',
+  'description',
+  'topic_covered',
+  'subject',
+  'teacher_name',
+  'teacher_email',
+  'scheduled_date',
+  'duration_minutes',
+  'meeting_link',
+  'youtube_url',
+  'recording_url',
+  'transcript_url',
+  'transcript_text',
+  'thumbnail_url',
+  'zoom_meeting_id',
+  'zoom_meeting_uuid',
+  'is_published',
+  'is_active',
+  'status',
+  'allowed_plans',
+  'notify_students',
+];
+
+function pickFields(source, fields) {
+  const out = {};
+  fields.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(source || {}, field)) {
+      out[field] = source[field];
+    }
+  });
+  return out;
+}
+
+// Whether `user` is the Zoom host of `liveClass` (by email, trimmed +
+// lower-cased; false if either side is empty). Used only to decide whether
+// the Zoom host link (zoom_start_url) is included in the all=true class
+// list — NOT an authorization gate. create/update/delete rely solely on
+// route-level authorize(); no ownership check is reintroduced there.
+function isClassTeacher(user, liveClass) {
+  const teacherEmail = String(liveClass?.teacher_email || '').trim().toLowerCase();
+  const userEmail = String(user?.email || '').trim().toLowerCase();
+  return Boolean(teacherEmail) && Boolean(userEmail) && teacherEmail === userEmail;
+}
+
+// Who may open the Zoom HOST link: the class's own teacher (by email) or a
+// CanHostAnyClass holder. Pure; used by the row flag and the host-link route.
+function canHostClass(user, liveClass) {
+  return isClassTeacher(user, liveClass) || can(user, 'CanHostAnyClass');
+}
+
+// The host may start early (Zoom itself allows it) — 30 minutes before the
+// scheduled time until the scheduled end. Pure, for tests.
+const HOST_EARLY_MINUTES = 30;
+function hostWindow(liveClass, now = new Date()) {
+  const start = new Date(liveClass.scheduled_date);
+  const end = new Date(start.getTime() + (liveClass.duration_minutes || 60) * 60000);
+  const opensAt = new Date(start.getTime() - HOST_EARLY_MINUTES * 60000);
+  return { opensAt, end, open: now >= opensAt && now <= end };
+}
 
 function buildClassInviteIcs(liveClass) {
   const start = new Date(liveClass.scheduled_date);
@@ -32,29 +110,40 @@ function buildClassInviteIcs(liveClass) {
   return lines.join('\r\n');
 }
 
-function createClassesController({ createNotification }) {
-  function canAccessClass(liveClass, planName) {
-    if (liveClass.is_free) return true;
-    const allowed = Array.isArray(liveClass.allowed_plans) ? liveClass.allowed_plans : [];
-    if (allowed.length === 0) return true;
-    return allowed.includes(planName);
+// Which of these classes' Bunny recordings have finished encoding — one
+// query for the whole page.
+async function readyRecordingLectureIds(classes) {
+  const ids = classes.map((c) => c.recording_video_id).filter(Boolean);
+  if (!ids.length) return new Set();
+  const ready = await Video.find({ _id: { $in: ids }, processing_status: 'ready', is_active: { $ne: false } }).select('_id').lean();
+  return new Set(ready.map((v) => String(v._id)));
+}
+
+function createClassesController({ createNotification, appBaseUrl = process.env.APP_BASE_URL || process.env.CORS_ORIGIN || '' }) {
+  // Students are told in the background so publishing stays instant; every
+  // send lands on a ClassNotificationRun the admin can inspect and retry.
+  const notifierDeps = {
+    User, ClassNotificationRun, getActivePlans, createNotification, sendEmail, emailConfigured,
+    buildIcs: buildClassInviteIcs, appBaseUrl, reportError,
+  };
+  function notifyStudents(liveClass, kind, req, extra = {}) {
+    if (liveClass.notify_students === false) return Promise.resolve(null);
+    const plain = typeof liveClass.toObject === 'function' ? liveClass.toObject() : liveClass;
+    return notifyClass({ liveClass: plain, kind, triggeredBy: req?.user?.email || 'system', ...extra }, notifierDeps)
+      .catch((err) => reportError(req, err, 'class notification failed', { liveClassId: String(plain._id), kind }));
   }
 
   async function listClasses(req, res) {
     try {
       const { all } = req.query;
       const filter = {};
-      let userPlan = 'free';
+      let viewer = null;
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
+        if (!can(req.user, 'CanViewClasses')) {
           return res.status(403).json({ error: 'Staff access required' });
         }
       } else {
-        const user = await User.findById(req.userId).lean();
-        if (user?.subscription_plan) {
-          userPlan = user.subscription_plan;
-        }
+        viewer = await viewerFor(req.user);
         filter.is_published = true;
         filter.is_active = { $ne: false };
       }
@@ -96,21 +185,50 @@ function createClassesController({ createNotification }) {
           )
         );
       }
-      let visibleClasses = all === 'true'
-        ? classes
-        : classes.filter((liveClass) => canAccessClass(liveClass, userPlan));
-
-      if (all !== 'true') {
-        visibleClasses = visibleClasses.map((liveClass) => {
-          const sanitized = { ...liveClass };
-          delete sanitized.zoom_join_url;
+      let visibleClasses;
+      if (all === 'true') {
+        // zoom_start_url is the Zoom HOST link — the one exception to "no
+        // ownership rules" (spec section 2: handing every CanEditClasses
+        // holder every class's host link would re-open the 2026-09-19 leak).
+        // Kept only for the class's own teacher or a CanHostAnyClass holder.
+        // `lock: null` on every row keeps the same shape as the student list.
+        const canHostAny = can(req.user, 'CanHostAnyClass');
+        // Scheduled-by / last-modified-by columns (spec §2/§4): one User.find
+        // over the distinct created_by/updated_by ids, then the same pure
+        // attachActorNames helper videosController's staff list uses.
+        const userIds = new Set();
+        classes.forEach((liveClass) => {
+          if (liveClass.created_by) userIds.add(String(liveClass.created_by));
+          if (liveClass.updated_by) userIds.add(String(liveClass.updated_by));
+        });
+        const users = userIds.size
+          ? await User.find({ _id: { $in: Array.from(userIds) } }).select('_id full_name').lean()
+          : [];
+        const userMap = new Map(users.map((user) => [String(user._id), user]));
+        const withNames = attachActorNames(classes, userMap);
+        visibleClasses = withNames.map((liveClass) => {
+          if (canHostAny || isClassTeacher(req.user, liveClass)) return { ...liveClass, lock: null, can_host: Boolean(liveClass.zoom_start_url || liveClass.meeting_link) };
+          const sanitized = { ...liveClass, lock: null, can_host: false };
           delete sanitized.zoom_start_url;
           return sanitized;
         });
+      } else {
+        // Locked classes stay in the list (with `lock` set) instead of being
+        // dropped — the student sees what exists and what it takes to open
+        // it. A locked row is stripped of join/recording hints on top of the
+        // usual student sanitizer, since neither is usable without the plan.
+        const readyRecordings = await readyRecordingLectureIds(classes);
+        visibleClasses = classes.map((liveClass) => ({
+          ...studentClassRow(liveClass, lockState(liveClass, viewer), {
+            recordingLectureReady: readyRecordings.has(String(liveClass.recording_video_id || '')),
+          }),
+          // The assigned teacher sees "Start class" on their own card.
+          can_host: canHostClass(req.user, liveClass),
+        }));
       }
       return res.json({ classes: visibleClasses });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load classes' });
     }
   }
@@ -176,6 +294,10 @@ function createClassesController({ createNotification }) {
             waiting_room: false,
             approval_type: 2,
             auto_recording: 'cloud',
+            // When the teacher is a user on our Zoom account, Zoom shows them
+            // as host and the class appears in their own Zoom app. Zoom
+            // refuses unknown emails, so zoomService retries without it.
+            ...(data.teacher_email ? { alternative_hosts: String(data.teacher_email).trim(), alternative_hosts_email_notification: true } : {}),
           },
         });
       }
@@ -202,6 +324,9 @@ function createClassesController({ createNotification }) {
         is_published: Boolean(data.is_published),
         status: data.status || 'scheduled',
         allowed_plans: allowedPlans,
+        created_by: req.userId,
+        updated_by: req.userId,
+        updated_by_at: new Date(),
       });
 
       if (liveClass.teacher_email) {
@@ -210,9 +335,18 @@ function createClassesController({ createNotification }) {
           await sendEmail({
             to: liveClass.teacher_email,
             subject: `Class scheduled: ${liveClass.title}`,
-            text: `A class has been scheduled.\n\nTitle: ${liveClass.title}\nDate: ${new Date(
-              liveClass.scheduled_date
-            ).toLocaleString()}\nDuration: ${liveClass.duration_minutes} mins\n`,
+            text: [
+              'A class has been scheduled for you.',
+              '',
+              `Title: ${liveClass.title}`,
+              `Date: ${new Date(liveClass.scheduled_date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
+              `Duration: ${liveClass.duration_minutes} mins`,
+              '',
+              'How to start: log in to the app up to 30 minutes before the class and press "Start class" on it.',
+              liveClass.zoom_start_url
+                ? `Backup host link (do not share — it makes whoever opens it the host): ${liveClass.zoom_start_url}`
+                : '',
+            ].filter((line) => line !== undefined).join('\n'),
             attachments: [
               {
                 filename: 'class-invite.ics',
@@ -222,28 +356,26 @@ function createClassesController({ createNotification }) {
             ],
           });
         } catch (err) {
-          console.error('Failed to send class invite:', err);
+          reportError(req, err, 'Failed to send class invite');
         }
       }
 
       if (liveClass.is_published) {
-        await createNotification({
-          userEmail: 'students',
-          title: 'New class scheduled',
-          message: liveClass.title || 'A new class is available.',
-          type: 'class_reminder',
-        });
+        setImmediate(() => notifyStudents(liveClass, 'published', req));
       }
       return res.status(201).json({ liveClass });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create class' });
     }
   }
 
   async function updateClass(req, res) {
     try {
-      const updates = req.body || {};
+      const updates = pickFields(req.body, UPDATABLE_CLASS_FIELDS);
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'No updatable fields provided' });
+      }
       if (updates.title && !isValidTextLength(String(updates.title), 2, 200)) {
         return res.status(400).json({ error: 'title must be between 2 and 200 characters' });
       }
@@ -287,6 +419,16 @@ function createClassesController({ createNotification }) {
         updates.is_free = updates.allowed_plans.includes('free');
       }
       const existing = await LiveClass.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditClasses', deactivate: 'CanDeactivateClasses' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
+      // Stamped on every write regardless of which fields changed — never
+      // client-writable (not in UPDATABLE_CLASS_FIELDS) and applied after the
+      // permission check, so it can't affect which permission is required.
+      updates.updated_by = req.userId;
+      updates.updated_by_at = new Date();
       const liveClass = await LiveClass.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
@@ -297,19 +439,17 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
+      await recordActiveStateChange(req, { resource: 'class', before: existing, after: liveClass, targetLabel: liveClass.title });
+
       const justPublished = !existing?.is_published && liveClass.is_published;
-      const scheduleChanged = existing?.scheduled_date?.toString() !== liveClass.scheduled_date?.toString();
-      if (justPublished || scheduleChanged) {
-        await createNotification({
-          userEmail: 'students',
-          title: justPublished ? 'Class published' : 'Class updated',
-          message: liveClass.title || 'A class was updated.',
-          type: 'class_reminder',
-        });
-      }
+      const unpublished = existing?.is_published && (!liveClass.is_published || liveClass.is_active === false);
+      const scheduleChanged = liveClass.is_published && existing?.is_published
+        && new Date(existing.scheduled_date).getTime() !== new Date(liveClass.scheduled_date).getTime();
+      const kind = justPublished ? 'published' : unpublished ? 'cancelled' : scheduleChanged ? 'rescheduled' : null;
+      if (kind) setImmediate(() => notifyStudents(liveClass, kind, req));
       return res.json({ liveClass });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update class' });
     }
   }
@@ -322,10 +462,14 @@ function createClassesController({ createNotification }) {
       }
       liveClass.is_active = false;
       liveClass.is_published = false;
+      liveClass.updated_by = req.userId;
+      liveClass.updated_by_at = new Date();
       await liveClass.save();
+      await recordDeactivated(req, { resource: 'class', targetId: liveClass._id, targetLabel: liveClass.title });
+      if (liveClass.is_published) setImmediate(() => notifyStudents(liveClass, 'cancelled', req));
       return res.json({ ok: true, liveClass: liveClass.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate class' });
     }
   }
@@ -340,7 +484,7 @@ function createClassesController({ createNotification }) {
 
       return res.json({ notes });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load notes' });
     }
   }
@@ -352,36 +496,41 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
-      if (!isStaff) {
+      if (!can(req.user, 'CanViewClasses')) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const user = await User.findById(req.userId).lean();
-        const planName = user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const viewer = await viewerFor(req.user);
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
+      // Never hand out the Zoom S2S access token (it grants account-wide API
+      // access). Clients get the Zoom web player URL plus the recording passcode.
       const recording = pickRecording(liveClass.zoom_recording_files);
-      let url = recording?.play_url || liveClass.recording_url || liveClass.youtube_url || '';
-      if (recording?.download_url) {
-        const token = await getZoomAccessToken().catch(() => null);
-        if (token) {
-          url = `${recording.download_url}?access_token=${encodeURIComponent(token)}`;
-        } else if (!url) {
-          url = recording.download_url;
-        }
-      }
+      const url = recording?.play_url || liveClass.recording_url || liveClass.youtube_url || '';
 
       if (!url) {
         return res.status(404).json({ error: 'Recording not available' });
       }
 
-      return res.json({ url, recording });
+      const payload = {
+        url,
+        recording: recording
+          ? {
+            file_type: recording.file_type,
+            recording_start: recording.recording_start,
+            recording_end: recording.recording_end,
+            play_url: recording.play_url,
+          }
+          : null,
+      };
+      if (recording?.play_url && url === recording.play_url && liveClass.zoom_recording_password) {
+        payload.passcode = liveClass.zoom_recording_password;
+      }
+      return res.json(payload);
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load recording' });
     }
   }
@@ -404,11 +553,9 @@ function createClassesController({ createNotification }) {
         return res.status(400).json({ error: 'Class is not live yet' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const planName = user?.subscription_plan || 'free';
-      if (!canAccessClass(liveClass, planName)) {
-        return res.status(403).json({ error: 'Upgrade required' });
-      }
+      const viewer = await viewerFor(req.user);
+      const lock = lockState(liveClass, viewer);
+      if (lock) return res.status(403).json(upgradeRefusal(lock));
 
       const url = liveClass.zoom_join_url || liveClass.meeting_link || '';
       if (!url) {
@@ -416,8 +563,93 @@ function createClassesController({ createNotification }) {
       }
       return res.json({ url });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load join link' });
+    }
+  }
+
+  // The Zoom HOST link for the assigned teacher (or CanHostAnyClass). Opening
+  // it starts the meeting with them as host — no Zoom login needed. Audited,
+  // because whoever holds this link controls the class.
+  async function getClassHostLink(req, res) {
+    try {
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass || liveClass.is_active === false) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+      if (!canHostClass(req.user, liveClass)) {
+        return res.status(403).json({ error: 'Only the class teacher can start this class' });
+      }
+      const window = hostWindow(liveClass);
+      if (!window.open) {
+        return res.status(400).json({
+          error: `The class can be started from ${window.opensAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
+          opens_at: window.opensAt,
+        });
+      }
+      const url = liveClass.zoom_start_url || liveClass.meeting_link || '';
+      if (!url) {
+        return res.status(404).json({ error: 'This class has no Zoom meeting to start' });
+      }
+      await recordAudit(req, {
+        action: 'class.host_link_opened',
+        target_type: 'live_class',
+        target_id: liveClass._id,
+        target_label: liveClass.title,
+      });
+      return res.json({ url });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load host link' });
+    }
+  }
+
+  // What was sent for this class and to whom it failed (Manage Live Class →
+  // Notifications).
+  async function listClassNotifications(req, res) {
+    try {
+      const runs = await ClassNotificationRun.find({ live_class_id: req.params.id }).sort({ started_at: -1 }).limit(50).lean();
+      return res.json({ runs, email_configured: emailConfigured() });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load notifications' });
+    }
+  }
+
+  // Re-send the failed emails of one run (or the whole publish email when
+  // `all: true`, e.g. after SMTP was fixed).
+  async function retryClassNotifications(req, res) {
+    try {
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass) return res.status(404).json({ error: 'Class not found' });
+      const { run_id: runId, all } = req.body || {};
+      let onlyEmails = null;
+      if (!all) {
+        const run = runId ? await ClassNotificationRun.findById(runId).lean() : null;
+        if (!run || String(run.live_class_id) !== String(liveClass._id)) return res.status(404).json({ error: 'Run not found' });
+        onlyEmails = (run.failures || []).map((f) => f.email);
+        if (!onlyEmails.length) return res.status(400).json({ error: 'Nothing failed in that run' });
+      }
+      const result = await notifyClass({ liveClass, kind: all ? 'published' : 'retry', triggeredBy: req.user?.email || 'admin', onlyEmails, skipInApp: true }, notifierDeps);
+      return res.json({ result });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to retry notifications' });
+    }
+  }
+
+  // Cron entry point for serverless hosts (a long-lived server also runs
+  // this on an interval, see server.js).
+  async function runDueClassReminders(req, res) {
+    try {
+      const result = await runDueReminders({
+        LiveClass, ClassNotificationRun, logger: req.log, reportError,
+        notifyClass: (args) => notifyClass(args, notifierDeps),
+      });
+      return res.json(result);
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to run reminders' });
     }
   }
 
@@ -432,22 +664,26 @@ function createClassesController({ createNotification }) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
-      if (!isStaff) {
+      if (!can(req.user, 'CanViewClasses')) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const user = await User.findById(req.userId).lean();
-        const planName = user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const viewer = await viewerFor(req.user);
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+        // Final fix wave (Rec 3): the same plan feature the watch page gates
+        // a lecture's AI Summary tab on. Without this a free student could
+        // read an AI summary of a free class while the identical tab on a
+        // lecture was locked. Runs before the AI call, so a locked feature
+        // never spends a token.
+        const featureRefusal = featureLock('ai_summary', viewer);
+        if (featureRefusal) return res.status(403).json(upgradeRefusal(featureRefusal));
       }
 
       const summary = await requestClassSummary(liveClass);
       return res.json({ summary });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate summary' });
     }
   }
@@ -459,30 +695,34 @@ function createClassesController({ createNotification }) {
         return res.status(400).json({ error: 'Tutor service is not configured' });
       }
       const { message } = req.body || {};
-      if (!message || typeof message !== 'string') {
+      if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ error: 'message is required' });
+      }
+      if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+        return res.status(400).json({ error: `message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less` });
       }
       const liveClass = await LiveClass.findById(req.params.id).lean();
       if (!liveClass) {
         return res.status(404).json({ error: 'Class not found' });
       }
 
-      const isStaff = req.user?.role === 'admin' || req.user?.role === 'teacher' || req.user?.is_teacher;
-      if (!isStaff) {
+      if (!can(req.user, 'CanViewClasses')) {
         if (!liveClass.is_published || liveClass.is_active === false) {
           return res.status(404).json({ error: 'Class not found' });
         }
-        const user = await User.findById(req.userId).lean();
-        const planName = user?.subscription_plan || 'free';
-        if (!canAccessClass(liveClass, planName)) {
-          return res.status(403).json({ error: 'Upgrade required' });
-        }
+        const viewer = await viewerFor(req.user);
+        const lock = lockState(liveClass, viewer);
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+        // Final fix wave (Rec 3): the AI Tutor feature, gated exactly as it is
+        // on a lecture, before the AI call.
+        const featureRefusal = featureLock('ai_tutor', viewer);
+        if (featureRefusal) return res.status(403).json(upgradeRefusal(featureRefusal));
       }
 
       const answer = await requestClassChat(message.trim(), liveClass);
       return res.json({ answer });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to generate response' });
     }
   }
@@ -506,7 +746,7 @@ function createClassesController({ createNotification }) {
 
       return res.status(201).json({ note });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create note' });
     }
   }
@@ -525,7 +765,7 @@ function createClassesController({ createNotification }) {
       await note.save();
       return res.json({ ok: true });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to delete note' });
     }
   }
@@ -540,9 +780,18 @@ function createClassesController({ createNotification }) {
     deleteClassNote,
     getClassRecording,
     getClassJoinLink,
+    getClassHostLink,
+    listClassNotifications,
+    retryClassNotifications,
+    runDueClassReminders,
+    notifierDeps,
     getClassSummary,
     chatAboutClass,
   };
 }
 
-module.exports = { createClassesController };
+// Exported for test/classRecordingAccess.test.js: which recordings count as
+// "ready" decides whether a student row advertises a watchable lecture at all.
+module.exports = {
+  canHostClass,
+  hostWindow, createClassesController, readyRecordingLectureIds };

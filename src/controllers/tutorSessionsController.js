@@ -1,13 +1,15 @@
 const TestAttempt = require('../models/TestAttempt');
-const User = require('../models/User');
 const TutorSession = require('../models/TutorSession');
 const { enqueueTutorSession, requestChatResponse } = require('../services/tutorService');
 const { getOpenAiKey } = require('../services/settingsService');
+const { MAX_CHAT_MESSAGE_LENGTH, MAX_CHAT_CONTEXT_CHARS } = require('../utils/security');
+const { can } = require('../rbac/can');
 
-async function ensureAccess(req, attempt) {
+// Allowed for the attempt owner, or a caller holding CanViewAllAttempts (mirrors
+// GET /attempts/:id/review in testsController).
+function ensureAccess(req, attempt) {
   if (String(attempt.user_id) === String(req.userId)) return true;
-  const user = await User.findById(req.userId).lean();
-  return Boolean(user && (user.role === 'admin' || user.role === 'teacher' || user.is_teacher));
+  return can(req.user, 'CanViewAllAttempts');
 }
 
 function attachLogContext(res, err) {
@@ -30,7 +32,7 @@ function createTutorSessionsController() {
       if (attempt.status !== 'completed') {
         return res.status(400).json({ error: 'Attempt is not completed yet' });
       }
-      const hasAccess = await ensureAccess(req, attempt);
+      const hasAccess = ensureAccess(req, attempt);
       if (!hasAccess) {
         return res.status(403).json({ error: 'Not authorized' });
       }
@@ -49,7 +51,7 @@ function createTutorSessionsController() {
       if (!attempt) {
         return res.status(404).json({ error: 'Attempt not found' });
       }
-      const hasAccess = await ensureAccess(req, attempt);
+      const hasAccess = ensureAccess(req, attempt);
       if (!hasAccess) {
         return res.status(403).json({ error: 'Not authorized' });
       }
@@ -78,6 +80,20 @@ function createTutorSessionsController() {
       const { message, context } = req.body || {};
       if (!message || typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ error: 'message is required' });
+      }
+      if (message.length > MAX_CHAT_MESSAGE_LENGTH) {
+        return res.status(400).json({ error: `message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less` });
+      }
+      if (context !== undefined && context !== null) {
+        let contextSize = 0;
+        try {
+          contextSize = JSON.stringify(context).length;
+        } catch (err) {
+          contextSize = Infinity;
+        }
+        if (typeof context !== 'object' || contextSize > MAX_CHAT_CONTEXT_CHARS) {
+          return res.status(400).json({ error: 'context is invalid or too large' });
+        }
       }
       const response = await requestChatResponse(message.trim(), context);
       return res.json({ reply: response });

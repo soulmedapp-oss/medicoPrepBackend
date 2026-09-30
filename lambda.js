@@ -3,6 +3,7 @@
 const serverlessExpress = require('@codegenie/serverless-express');
 
 const { rawApp, ensureDbConnected } = require('./src/server');
+const errorReporter = require('./src/lib/errorReporter');
 
 // Build the serverless-express handler once (module scope = reused warm).
 const proxy = serverlessExpress({ app: rawApp });
@@ -14,12 +15,19 @@ exports.handler = async (event, context) => {
   try {
     await ensureDbConnected();
   } catch (err) {
-    console.error('DB connection failed:', err);
+    errorReporter.reportError(null, err, 'DB connection failed');
+    await errorReporter.flush();
     return {
       statusCode: 503,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ error: 'Service unavailable' }),
     };
   }
-  return proxy(event, context);
+  try {
+    return await proxy(event, context);
+  } finally {
+    // Lambda may freeze the process right after the response; make sure any
+    // error report queued during this invocation has left the building.
+    await errorReporter.flush();
+  }
 };

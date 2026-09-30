@@ -1,7 +1,14 @@
 const SubscriptionPlan = require('../models/SubscriptionPlan');
+const { capLimit } = require('../utils/security');
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
+const { can } = require('../rbac/can');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { computeSubscriptionEndDate } = require('../utils/subscriptionUtils');
+const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
+const { validatePlanFields } = require('../utils/planPitch');
+const { invalidateEntitlementPlans } = require('../utils/entitlement');
 
 function createSubscriptionsController({
   createNotification,
@@ -21,7 +28,7 @@ function createSubscriptionsController({
       setPlansCache('public', plans);
       return res.json({ plans });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load plans' });
     }
   }
@@ -38,7 +45,7 @@ function createSubscriptionsController({
       setPlansCache('all', plans);
       return res.json({ plans });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load plans' });
     }
   }
@@ -53,18 +60,35 @@ function createSubscriptionsController({
       if (existing) {
         return res.status(409).json({ error: 'Plan already exists' });
       }
-      const plan = await SubscriptionPlan.create(data);
+      // `null`: nothing to merge onto, so absent fields take their schema
+      // defaults — which is how a paid plan with no tier is caught (C1).
+      const checked = validatePlanFields(data, null);
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      const plan = await SubscriptionPlan.create(checked.value);
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.status(201).json({ plan });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create plan' });
     }
   }
 
   async function updatePlan(req, res) {
     try {
-      const updates = req.body || {};
+      const existing = await SubscriptionPlan.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Plan not found' });
+      }
+      // Authorisation before validation: an unauthorised caller must get 403,
+      // not a 400 that tells them which field they got wrong. Both read the
+      // same key set (validatePlanFields only coerces tier/pitch), so the
+      // order is safe.
+      const missing = missingUpdatePermissions(req.user, req.body || {}, existing, { edit: 'CanEditSubscriptionPlans', deactivate: 'CanDeactivateSubscriptionPlans' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
+      const checked = validatePlanFields(req.body || {}, existing);
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      const updates = checked.value;
       const plan = await SubscriptionPlan.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
@@ -73,10 +97,12 @@ function createSubscriptionsController({
       if (!plan) {
         return res.status(404).json({ error: 'Plan not found' });
       }
+      await recordActiveStateChange(req, { resource: 'subscription_plan', before: existing, after: plan, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.json({ plan });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update plan' });
     }
   }
@@ -89,10 +115,12 @@ function createSubscriptionsController({
       }
       plan.is_active = false;
       await plan.save();
+      await recordDeactivated(req, { resource: 'subscription_plan', targetId: plan._id, targetLabel: plan.display_name || plan.plan_name });
       clearPlansCache();
+      invalidateEntitlementPlans();
       return res.json({ ok: true, plan: plan.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate plan' });
     }
   }
@@ -105,16 +133,15 @@ function createSubscriptionsController({
       if (plan) filter.plan = plan;
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || user.role !== 'admin') {
-          return res.status(403).json({ error: 'Admin access required' });
+        if (!can(req.user, 'CanViewAllSubscriptions')) {
+          return res.status(403).json({ error: 'Permission denied', required: ['CanViewAllSubscriptions'] });
         }
       } else {
         filter.user_id = req.userId;
         filter.is_active = true;
       }
 
-      const max = Number(limit) || 100;
+      const max = capLimit(limit, 100, 200);
       const subscriptions = await Subscription.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
@@ -122,7 +149,7 @@ function createSubscriptionsController({
 
       return res.json({ subscriptions });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load subscriptions' });
     }
   }
@@ -132,11 +159,6 @@ function createSubscriptionsController({
       const data = req.body || {};
       if (!data.plan) {
         return res.status(400).json({ error: 'plan is required' });
-      }
-
-      const adminUser = req.user || await User.findById(req.userId).lean();
-      if (!adminUser || adminUser.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
       }
 
       const plan = await SubscriptionPlan.findOne({ plan_name: data.plan, is_active: true }).lean();
@@ -181,7 +203,7 @@ function createSubscriptionsController({
 
       return res.status(201).json({ subscription });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create subscription' });
     }
   }
@@ -191,12 +213,6 @@ function createSubscriptionsController({
       const subscription = await Subscription.findById(req.params.id);
       if (!subscription) {
         return res.status(404).json({ error: 'Subscription not found' });
-      }
-
-      const user = req.user || await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Not authorized' });
       }
 
       const updates = req.body || {};
@@ -220,7 +236,7 @@ function createSubscriptionsController({
 
       return res.json({ subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update subscription' });
     }
   }
@@ -231,17 +247,13 @@ function createSubscriptionsController({
       if (!subscription) {
         return res.status(404).json({ error: 'Subscription not found' });
       }
-      const user = req.user || await User.findById(req.userId).lean();
-      const isAdmin = user?.role === 'admin';
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
       subscription.is_active = false;
       subscription.status = 'cancelled';
       await subscription.save();
+      await recordDeactivated(req, { resource: 'subscription', targetId: subscription._id, targetLabel: subscription.user_email || subscription.plan });
       return res.json({ ok: true, subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate subscription' });
     }
   }
@@ -252,10 +264,6 @@ function createSubscriptionsController({
       const days = Number(extend_days);
       if (!days || Number.isNaN(days) || days <= 0) {
         return res.status(400).json({ error: 'extend_days must be a positive number' });
-      }
-      const user = await User.findById(req.userId).lean();
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
       }
       const subscription = await Subscription.findById(req.params.id);
       if (!subscription) {
@@ -278,7 +286,7 @@ function createSubscriptionsController({
 
       return res.json({ subscription: subscription.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to extend subscription' });
     }
   }

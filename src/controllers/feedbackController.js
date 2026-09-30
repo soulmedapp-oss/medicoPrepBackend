@@ -1,7 +1,8 @@
 const Feedback = require('../models/Feedback');
-const User = require('../models/User');
-const { hasPermission } = require('../middlewares/auth');
+const { capLimit } = require('../utils/security');
+const { can } = require('../rbac/can');
 const { isValidEmail, isValidPhone, isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
 
 function createFeedbackController({ createNotification, sendSupportEmail, broadcastFeedback }) {
   async function listFeedback(req, res) {
@@ -12,25 +13,21 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
       if (category) filter.category = category;
 
       if (all === 'true') {
-        const user = await User.findById(req.userId).lean();
-        if (!user || (user.role !== 'admin' && user.role !== 'teacher' && !user.is_teacher)) {
-          return res.status(403).json({ error: 'Staff access required' });
-        }
-        if (user.role === 'admin' && !hasPermission(user, 'manage_feedback')) {
-          return res.status(403).json({ error: 'Feedback access required' });
+        if (!can(req.user, 'CanViewAllFeedback')) {
+          return res.status(403).json({ error: 'Permission denied', required: ['CanViewAllFeedback'] });
         }
       } else {
         filter.student_id = req.userId;
       }
 
-      const max = Number(limit) || 100;
+      const max = capLimit(limit, 100, 200);
       const feedback = await Feedback.find(filter)
         .sort({ created_date: -1 })
         .limit(max)
         .lean();
       return res.json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load feedback' });
     }
   }
@@ -48,10 +45,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
         return res.status(400).json({ error: 'subject must be between 2 and 200 characters' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
+      const user = req.user;
 
       const contactEmail = data.contact_email || user.email || '';
       const contactPhone = data.contact_phone || '';
@@ -100,7 +94,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.status(201).json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create feedback' });
     }
   }
@@ -169,7 +163,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.status(201).json({ feedback });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create feedback' });
     }
   }
@@ -181,16 +175,11 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
         return res.status(404).json({ error: 'Feedback not found' });
       }
 
-      const user = await User.findById(req.userId).lean();
-      const isStaff = user?.role === 'admin' || user?.role === 'teacher' || user?.is_teacher;
-      const isOwner = String(feedback.student_id) === String(req.userId);
-      if (!isStaff && !isOwner) {
-        return res.status(403).json({ error: 'Not authorized' });
-      }
-      if (user?.role === 'admin' && isStaff && !hasPermission(user, 'manage_feedback')) {
-        return res.status(403).json({ error: 'Feedback access required' });
-      }
-
+      // The route requires CanEditFeedback to reach this handler at all
+      // (authorize('CanEditFeedback'), a single permission — no selfService/
+      // any() fallback), so every caller here is staff; the 2026-09-19
+      // "own open feedback" owner-edit branch is unreachable and removed
+      // (spec 5.2: ownership checks for editing content are removed).
       const updates = req.body || {};
       if (updates.message && !isValidTextLength(String(updates.message), 1, 4000)) {
         return res.status(400).json({ error: 'message must be between 1 and 4000 characters' });
@@ -199,32 +188,24 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
         return res.status(400).json({ error: 'subject must be between 2 and 200 characters' });
       }
 
-      if (isStaff) {
-        const allowed = ['status', 'admin_response', 'responded_by'];
-        allowed.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(updates, field)) {
-            feedback[field] = updates[field];
-          }
-        });
-        if (updates.admin_response) {
-          feedback.responded_at = new Date();
+      const allowed = ['status', 'admin_response', 'responded_by'];
+      if (updates.admin_response && !isValidTextLength(String(updates.admin_response), 1, 4000)) {
+        return res.status(400).json({ error: 'admin_response must be 4000 characters or less' });
+      }
+      allowed.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(updates, field)) {
+          feedback[field] = updates[field];
         }
-      } else if (isOwner && feedback.status === 'open') {
-        const allowed = ['category', 'subject', 'message', 'rating'];
-        allowed.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(updates, field)) {
-            feedback[field] = updates[field];
-          }
-        });
+      });
+      if (updates.admin_response) {
+        feedback.responded_at = new Date();
       }
 
       await feedback.save();
 
-      if (isStaff) {
-        broadcastFeedback(feedback.toObject());
-      }
+      broadcastFeedback(feedback.toObject());
 
-      if (isStaff && updates.admin_response) {
+      if (updates.admin_response) {
         await createNotification({
           userEmail: feedback.student_email,
           title: 'Feedback response',
@@ -235,7 +216,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       return res.json({ feedback: feedback.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update feedback' });
     }
   }

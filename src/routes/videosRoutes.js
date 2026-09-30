@@ -1,16 +1,57 @@
 const express = require('express');
 const { createVideosController } = require('../controllers/videosController');
+const { validateObjectIdParams } = require('../middlewares/validateObjectId');
+const { createRateLimiter, userOrIpKey } = require('../middlewares/rateLimit');
+const { authorize } = require('../rbac/authorize');
 
-function createVideosRoutes({ authMiddleware, requireStaff }) {
+function createVideosRoutes({ authMiddleware }) {
   const router = express.Router();
+  validateObjectIdParams(router, ['id']);
   const controller = createVideosController();
+  const aiChatLimiter = createRateLimiter({
+    name: 'video-ai-chat',
+    windowMs: 60 * 1000,
+    max: 10,
+    keyGenerator: userOrIpKey,
+    message: 'Too many AI questions. Please wait a minute.',
+  });
 
-  router.get('/videos', authMiddleware, controller.listVideos);
-  router.post('/videos', authMiddleware, requireStaff, controller.createVideo);
-  router.patch('/videos/:id', authMiddleware, requireStaff, controller.updateVideo);
-  router.delete('/videos/:id', authMiddleware, requireStaff, controller.deleteVideo);
-  router.get('/videos/:id/ai-summary', authMiddleware, controller.getVideoSummary);
-  router.post('/videos/:id/ai-chat', authMiddleware, controller.chatAboutVideo);
+  router.get('/videos', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.listVideos);
+  router.post('/videos', authMiddleware, authorize('CanAddVideos'), controller.createVideo);
+  router.post(
+    '/videos/:id/upload-url',
+    authMiddleware,
+    authorize.any('CanAddVideos', 'CanEditVideos'),
+    controller.createUploadUrl
+  );
+  router.post(
+    '/videos/:id/refresh-status',
+    authMiddleware,
+    authorize.any('CanAddVideos', 'CanEditVideos'),
+    controller.refreshVideoStatus
+  );
+  router.patch('/videos/:id', authMiddleware, authorize.any('CanEditVideos', 'CanDeactivateVideos'), controller.updateVideo);
+  router.delete('/videos/:id', authMiddleware, authorize('CanDeactivateVideos'), controller.deleteVideo);
+  // Hard delete: its own permission (admin-only by default), and the
+  // controller additionally requires the lecture to be deactivated first.
+  router.get('/videos/:id/deletion-impact', authMiddleware, authorize('CanDeleteVideos'), controller.deletionImpact);
+  router.delete('/videos/:id/permanent', authMiddleware, authorize('CanDeleteVideos'), controller.permanentlyDeleteVideo);
+  router.get('/videos/:id/ai-summary', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getVideoSummary);
+  router.get(
+    '/videos/:id/playback',
+    authMiddleware,
+    authorize.any('CanAccessVideos', 'CanViewVideos'),
+    controller.getPlayback
+  );
+  router.post('/videos/:id/ai-chat', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), aiChatLimiter, controller.chatAboutVideo);
+  router.get(
+    '/videos/:id/transcript',
+    authMiddleware,
+    authorize.any('CanAccessVideos', 'CanViewVideos'),
+    controller.getVideoTranscript
+  );
+  // A lecture on its own (no playlist): live-class recordings, deep links.
+  router.get('/lectures/:id', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getLectureForStudent);
 
   return router;
 }

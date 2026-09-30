@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { safeCompare } = require('../utils/security');
 
 const {
   ZOOM_WEBHOOK_SECRET_TOKEN,
@@ -23,7 +24,8 @@ function verifyZoomWebhookSignature(rawBody, headers = {}) {
     .update(message)
     .digest('hex');
   const expected = `v0=${hash}`;
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // Length-checked constant-time compare (timingSafeEqual throws on length mismatch).
+  return safeCompare(expected, typeof signature === 'string' ? signature : '');
 }
 
 function buildZoomValidationResponse(plainToken) {
@@ -86,12 +88,54 @@ async function createZoomMeeting(payload) {
   });
   if (!response.ok) {
     const body = await response.text();
+    // The teacher is not a user on this Zoom account (error 1114 / "alternative
+    // host"): create the meeting without them — the start link still works.
+    if (payload?.settings?.alternative_hosts && /1114|alternative host/i.test(body)) {
+      const { alternative_hosts, alternative_hosts_email_notification, ...settings } = payload.settings;
+      return createZoomMeeting({ ...payload, settings });
+    }
     throw new Error(`Zoom meeting create failed: ${body}`);
   }
   return response.json();
 }
 
+// Zoom cloud-recording files are authorised with a token on the URL
+// (?access_token=), never an Authorization header: Zoom answers a download
+// with a 302 to a CDN host, and fetch drops the Authorization header across
+// that redirect — so the header approach 401s for files Zoom redirects, and
+// works only by accident for the ones it doesn't.
+//
+// `recording.completed` carries its own short-lived `download_token` (a
+// sibling of `payload`, scoped to exactly that recording's files). Prefer it;
+// fall back to the S2S account token only when the webhook did not carry one.
+async function resolveDownloadToken(token) {
+  if (token) return token;
+  const accountToken = await getZoomAccessToken();
+  if (!accountToken) throw new Error('Zoom credentials are not configured');
+  return accountToken;
+}
+
+async function tokenedDownloadUrl(downloadUrl, { token } = {}) {
+  const resolved = await resolveDownloadToken(token);
+  const sep = downloadUrl.includes('?') ? '&' : '?';
+  return `${downloadUrl}${sep}access_token=${encodeURIComponent(resolved)}`;
+}
+
+async function downloadRecordingFile(file, { maxBytes = 5 * 1024 * 1024, token } = {}) {
+  const url = await tokenedDownloadUrl(file.download_url, { token });
+  const response = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw new Error(`Zoom recording download failed (${response.status})`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > maxBytes) throw new Error(`Zoom recording file too large (${buffer.length} bytes)`);
+  return buffer;
+}
+
 module.exports = {
+  tokenedDownloadUrl,
+  downloadRecordingFile,
   verifyZoomWebhookSignature,
   buildZoomValidationResponse,
   getZoomAccessToken,

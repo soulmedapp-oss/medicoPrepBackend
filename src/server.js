@@ -1,6 +1,17 @@
 require('dotenv').config();
 
+const { logger } = require('./lib/logger');
+const errorReporter = require('./lib/errorReporter');
+
+errorReporter.init();
+const { reportError } = errorReporter;
+
 const express = require('express');
+const pinoHttp = require('pino-http');
+const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const { csrfProtection } = require('./middlewares/csrf');
+const { COOKIE } = require('./auth/session');
 const http = require('http');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
@@ -13,9 +24,13 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const WebSocket = require('ws');
 const { enqueueJob } = require('./utils/inMemoryQueue');
+const { syncPermissions } = require('./rbac/syncPermissions');
+const { defaultRoleUpserts } = require('./rbac/defaultRoles');
+const { authorize, selfService, publicRoute } = require('./rbac/authorize');
 const authRoutes = require('./routes/authRoutes');
 const createTestsRoutes = require('./routes/testsRoutes');
 const createDoubtsRoutes = require('./routes/doubtsRoutes');
+const createDiscussionsRoutes = require('./routes/discussionsRoutes');
 const createFeedbackRoutes = require('./routes/feedbackRoutes');
 const createConnectionsRoutes = require('./routes/connectionsRoutes');
 const createGroupsRoutes = require('./routes/groupsRoutes');
@@ -24,11 +39,14 @@ const createNotificationsRoutes = require('./routes/notificationsRoutes');
 const createTeacherRequestsRoutes = require('./routes/teacherRequestsRoutes');
 const createUsersRoutes = require('./routes/usersRoutes');
 const createVideosRoutes = require('./routes/videosRoutes');
+const createPlaylistsRoutes = require('./routes/playlistsRoutes');
 const createVideoProgressRoutes = require('./routes/videoProgressRoutes');
 const createClassesRoutes = require('./routes/classesRoutes');
 const createSubjectsRoutes = require('./routes/subjectsRoutes');
 const createTutorSessionsRoutes = require('./routes/tutorSessionsRoutes');
 const createRolesRoutes = require('./routes/rolesRoutes');
+const createPermissionsRoutes = require('./routes/permissionsRoutes');
+const createAuditLogRoutes = require('./routes/auditLogRoutes');
 const createSettingsRoutes = require('./routes/settingsRoutes');
 const createPaymentsRoutes = require('./routes/paymentsRoutes');
 const createCouponsRoutes = require('./routes/couponsRoutes');
@@ -36,32 +54,52 @@ const createDashboardRoutes = require('./routes/dashboardRoutes');
 // removed: engagement routes (case of day, precision review, boss week)
 const { handleZoomWebhook } = require('./controllers/zoomController');
 const { createPaymentsController } = require('./controllers/paymentsController');
-const {
-  authMiddleware,
-  requireAdmin,
-  requireStaff,
-  hasPermission,
-} = require('./middlewares/auth');
+const { createVideosController } = require('./controllers/videosController');
+const { authMiddleware } = require('./middlewares/auth');
 const { getRateLimitStats } = require('./middlewares/rateLimit');
-const swaggerUi = require('swagger-ui-express');
-const swaggerDocument = require('./docs/swagger');
+const { errorHandler, createCorsError } = require('./middlewares/errorHandler');
+const { bodyLimits } = require('./middlewares/bodyLimits');
+const {
+  createFileFilter,
+  validateUploadedFile,
+  isInlineSafeExtension,
+  getExtension,
+} = require('./utils/uploadValidation');
+const { isTokenVersionCurrent } = require('./utils/security');
+const { assignMissingTiers } = require('./utils/planPitch');
+const { defaultFeaturesFor } = require('./utils/defaultPlanFeatures');
 const User = require('./models/User');
 const SubscriptionPlan = require('./models/SubscriptionPlan');
 const Notification = require('./models/Notification');
 const ConnectionRequest = require('./models/ConnectionRequest');
 const Role = require('./models/Role');
+const Video = require('./models/Video');
 const { enqueueTutorSession } = require('./services/tutorService');
+const { verifyBunnySignature } = require('./utils/bunnyWebhook');
+const { applyBunnyStatusTransition } = require('./services/video/statusTransition');
+const { getStatus } = require('./services/video/bunnyProvider');
 
 const runningOnVercel = Boolean(process.env.VERCEL);
 const runningOnLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
 const runningServerless = runningOnVercel || runningOnLambda;
+const isProduction = String(process.env.NODE_ENV || '').toLowerCase() === 'production' || runningOnLambda;
 const app = express();
 let server;
 
-const corsEnabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
-if (corsEnabled) {
-  app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+// req.ip / rate limiting. On Lambda + API Gateway (HTTP API), serverless-express
+// sets the socket address from requestContext.http.sourceIp, which the client
+// cannot spoof, so X-Forwarded-For must NOT be trusted there. Locally, trust
+// only loopback proxies. Override with TRUST_PROXY (e.g. "1" behind CloudFront).
+function resolveTrustProxy() {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === '') return runningOnLambda ? false : 'loopback';
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
 }
+app.set('trust proxy', resolveTrustProxy());
+
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'soulmedapp@gmail.com';
 let supportTransport;
 const plansCacheTtlMs = Math.max(0, Number(process.env.PLANS_CACHE_TTL_MS || 60000));
@@ -125,7 +163,7 @@ async function sendSupportEmail({ subject, text }) {
       text,
     });
   } catch (err) {
-    console.error('Failed to send support email:', err);
+    reportError(null, err, 'failed to send support email');
   }
 }
 
@@ -134,8 +172,19 @@ function scheduleSupportEmail(payload) {
 }
 
 function resolveCorsOrigins() {
+  const enabled = String(process.env.CORS_ENABLED || 'true').toLowerCase() === 'true';
+  if (!enabled) return false;
   const raw = process.env.CORS_ORIGIN;
-  if (!raw) return true;
+  if (!raw) {
+    if (isProduction) {
+      // Never reflect arbitrary origins with credentials in production.
+      process.stderr.write(
+        'WARNING: CORS_ORIGIN is not set in production; cross-origin requests will be denied.\n'
+      );
+      return false;
+    }
+    return true;
+  }
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   try {
@@ -154,11 +203,12 @@ function resolveCorsOrigins() {
 const corsOrigins = resolveCorsOrigins();
 const corsOptions = {
   origin: (origin, cb) => {
+    if (corsOrigins === false) return cb(null, false);
     if (!origin || corsOrigins === true) return cb(null, true);
     if (Array.isArray(corsOrigins) && corsOrigins.includes(origin)) {
       return cb(null, true);
     }
-    return cb(new Error('Not allowed by CORS'));
+    return cb(createCorsError());
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
@@ -167,22 +217,54 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
-app.post('/webhooks/zoom', express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
-const paymentsController = createPaymentsController();
-app.get('/webhooks/razorpay', (req, res) => {
-  res.json({ ok: true });
-});
-app.post('/webhooks/razorpay', express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
-app.use(express.json({ limit: '1mb' }));
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+// API-only security headers. The SPA's own CSP lives with the SPA (Vercel
+// headers); these cover JSON responses, uploads and swagger.
+app.use(helmet({
+  contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'none'"], formAction: ["'none'"] } },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // /uploads images are embedded by the SPA on another origin in dev
+  referrerPolicy: { policy: 'no-referrer' },
+  hsts: isProduction ? { maxAge: 15552000, includeSubDomains: true } : false,
+}));
+app.use(cookieParser());
 
+// One JSON line per request (method, url, status, duration, correlationId,
+// userId once auth has run). Bodies and Authorization headers are never
+// logged. The correlation id is honoured from X-Correlation-Id /
+// X-Request-Id when a caller sends one, minted otherwise, and echoed back so
+// a student can read it to you from an error toast.
+app.use(
+  pinoHttp({
+    logger,
+    genReqId: (req) =>
+      req.headers['x-correlation-id'] ||
+      req.headers['x-request-id'] ||
+      (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')),
+    customLogLevel: (req, res, err) => {
+      if (err || res.statusCode >= 500) return 'error';
+      if (res.statusCode >= 400) return 'warn';
+      return 'info';
+    },
+    customSuccessMessage: (req, res) => `${req.method} ${req.originalUrl || req.url} ${res.statusCode}`,
+    customErrorMessage: (req, res) => `${req.method} ${req.originalUrl || req.url} ${res.statusCode}`,
+    quietReqLogger: true,
+    customAttributeKeys: { reqId: 'correlationId' },
+    customProps: (req, res) => ({
+      userId: req.userId ? String(req.userId) : undefined,
+      plan: req.user?.subscription_plan,
+      errorMessage: res.locals.errorMessage,
+    }),
+    serializers: {
+      req: (req) => ({ method: req.method, url: req.url }),
+      res: (res) => ({ statusCode: res.statusCode }),
+    },
+    autoLogging: { ignore: (req) => req.url === '/health' },
+  })
+);
 app.use((req, res, next) => {
-  const headerId = req.headers['x-correlation-id'] || req.headers['x-request-id'];
-  const correlationId = headerId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
-  req.correlationId = correlationId;
-  res.setHeader('X-Correlation-Id', correlationId);
-
+  req.correlationId = req.id;
+  res.setHeader('X-Correlation-Id', req.id);
+  // Keep the API's own error string on the request log line without ever
+  // logging the body.
   const originalJson = res.json.bind(res);
   res.json = (body) => {
     if (body && typeof body.error === 'string' && !res.locals.errorMessage) {
@@ -190,33 +272,43 @@ app.use((req, res, next) => {
     }
     return originalJson(body);
   };
-
-  res.on('finish', () => {
-    if (res.statusCode < 400) return;
-    const level = res.statusCode >= 500 ? 'error' : 'warn';
-    const userName =
-      req.user?.email ||
-      req.user?.full_name ||
-      req.body?.email ||
-      req.query?.email ||
-      'unknown';
-    const logErrorMessage =
-      res.locals.logErrorMessage ||
-      res.locals.errorMessage ||
-      `HTTP ${res.statusCode} ${req.method} ${req.originalUrl}`;
-    const logErrorStack = res.locals.logErrorStack;
-
-    logMessage(level, {
-      userName,
-      correlationId,
-      errorMessage: logErrorMessage,
-      statusCode: res.statusCode,
-      errorStack: logErrorStack,
-    });
-  });
-
   next();
 });
+app.options(/.*/, publicRoute, cors(corsOptions));
+app.post('/webhooks/zoom', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), handleZoomWebhook);
+const paymentsController = createPaymentsController();
+app.get('/webhooks/razorpay', publicRoute, (req, res) => {
+  res.json({ ok: true });
+});
+app.post('/webhooks/razorpay', publicRoute, express.raw({ type: '*/*', limit: '2mb' }), paymentsController.handleWebhook);
+app.use(
+  express.json({
+    limit: '1mb',
+    // Bunny webhook signatures are computed over the raw bytes; keep a copy
+    // before the body is parsed away.
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+// Safety net under the per-field checks in controllers: no string field
+// over 20,000 characters anywhere in a JSON body, except the few that are
+// legitimately long (a lecture transcript, rich-text question explanations).
+app.use(bodyLimits({ overrides: { transcript_text: 200000, explanation: 50000, question_text: 50000 } }));
+// Cookie sessions need CSRF protection on every state-changing request;
+// bearer-header clients and public webhooks are exempt by construction
+// (see checkCsrf). Same origin allow-list as CORS.
+app.use(csrfProtection({ allowedOrigins: Array.isArray(corsOrigins) ? corsOrigins : [] }));
+const apiDocsEnabled =
+  String(process.env.ENABLE_API_DOCS || '').toLowerCase() === 'true' || !isProduction;
+if (apiDocsEnabled) {
+  // Loaded lazily so production cold starts skip swagger entirely.
+  // eslint-disable-next-line global-require
+  const swaggerUi = require('swagger-ui-express');
+  // eslint-disable-next-line global-require
+  const swaggerDocument = require('./docs/swagger');
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+}
 
 function resolveUploadsDir() {
   const configured = process.env.UPLOADS_DIR;
@@ -240,7 +332,20 @@ function resolveUploadsDir() {
 }
 
 const uploadsDir = resolveUploadsDir();
-app.use('/uploads', express.static(uploadsDir));
+app.use(
+  '/uploads',
+  express.static(uploadsDir, {
+    dotfiles: 'deny',
+    index: false,
+    setHeaders: (res, filePath) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (!isInlineSafeExtension(getExtension(filePath))) {
+        // Anything that is not a raster image is downloaded, never rendered.
+        res.setHeader('Content-Disposition', 'attachment');
+      }
+    },
+  })
+);
 
 // Serverless (Lambda) has no persistent/shared filesystem, so uploads are held
 // in memory and pushed to S3. Local dev with no S3 bucket configured still
@@ -248,91 +353,50 @@ app.use('/uploads', express.static(uploadsDir));
 const uploadStorage = multer.memoryStorage();
 
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { createUploadStorage, setDefaultStorage, UPLOAD_FOLDERS } = require('./lib/uploadStorage');
+const { transcriptToPlainText } = require('./utils/transcriptText');
 const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
 const uploadsS3Region =
   process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : null;
 
-function makeUploadKey(originalname) {
-  const safeName = String(originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const unique = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  return `${unique}_${safeName}`;
-}
-
-// Persists an in-memory multer file and returns its public path ("/uploads/<key>").
-async function storeUpload(file) {
-  const key = makeUploadKey(file.originalname);
-  if (s3Client) {
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: uploadsBucket,
-        Key: `uploads/${key}`,
-        Body: file.buffer,
-        ContentType: file.mimetype || 'application/octet-stream',
-      })
-    );
-  } else {
-    fs.writeFileSync(path.join(uploadsDir, key), file.buffer);
-  }
-  return `/uploads/${key}`;
-}
+// Storage backend (S3 or local disk) and the readable key scheme live in
+// src/lib/uploadStorage.js; every upload route names its UPLOAD_FOLDERS entry.
+const fileStore = createUploadStorage({
+  uploadsDir,
+  bucket: uploadsBucket,
+  region: uploadsS3Region,
+  publicBaseUrl: process.env.UPLOADS_PUBLIC_BASE_URL || '',
+  s3Client,
+  PutObjectCommand,
+  isInlineSafeExtension,
+});
+const storeUpload = fileStore.storeUpload;
+setDefaultStorage(fileStore);
+logger.info({ mode: fileStore.mode, bucket: uploadsBucket || undefined, dir: fileStore.mode === 'disk' ? uploadsDir : undefined }, 'uploads storage');
 
 const upload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('image'),
 });
 
 const csvUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const isCsv =
-      file.mimetype === 'text/csv' ||
-      file.mimetype === 'application/vnd.ms-excel' ||
-      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.originalname.toLowerCase().endsWith('.csv') ||
-      file.originalname.toLowerCase().endsWith('.xls') ||
-      file.originalname.toLowerCase().endsWith('.xlsx');
-    if (!isCsv) {
-      return cb(new Error('Only CSV or Excel uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('spreadsheet'),
 });
 
 const transcriptUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const name = file.originalname.toLowerCase();
-    const ok =
-      file.mimetype === 'text/vtt' ||
-      file.mimetype === 'text/plain' ||
-      name.endsWith('.vtt') ||
-      name.endsWith('.srt') ||
-      name.endsWith('.txt');
-    if (!ok) {
-      return cb(new Error('Only VTT, SRT, or TXT files are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('transcript'),
 });
 
 const videoUpload = multer({
   storage: uploadStorage,
   limits: { fileSize: 200 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('video/')) {
-      return cb(new Error('Only video uploads are allowed'));
-    }
-    return cb(null, true);
-  },
+  fileFilter: createFileFilter('video'),
 });
 
 function initRealtime(serverInstance) {
@@ -349,7 +413,15 @@ function initRealtime(serverInstance) {
 
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      const token = url.searchParams.get('token');
+      // Browsers send the session cookie on the upgrade request; the ?token=
+      // query form remains for non-browser clients.
+      const cookieHeader = String(req.headers.cookie || '');
+      const cookieToken = cookieHeader
+        .split(';')
+        .map((c) => c.trim())
+        .filter((c) => c.startsWith(`${COOKIE.access}=`))
+        .map((c) => decodeURIComponent(c.slice(COOKIE.access.length + 1)))[0];
+      const token = url.searchParams.get('token') || cookieToken;
       if (!token) {
         closeUnauthorized();
         return;
@@ -357,7 +429,7 @@ function initRealtime(serverInstance) {
       const payload = jwt.verify(token, JWT_SECRET);
       User.findById(payload.sub).lean()
         .then((user) => {
-          if (!user) {
+          if (!user || user.is_active === false || !isTokenVersionCurrent(payload, user)) {
             closeUnauthorized();
             return;
           }
@@ -379,10 +451,6 @@ const {
   MONGODB_URI,
   PORT,
   JWT_SECRET,
-  LOG_DIR,
-  LOG_FILE_PREFIX,
-  LOG_ENV_NAME,
-  LOG_APP_NAME,
 } = process.env;
 
 function requireEnv(name, value) {
@@ -394,145 +462,26 @@ function requireEnv(name, value) {
 requireEnv('MONGODB_URI', MONGODB_URI);
 requireEnv('JWT_SECRET', JWT_SECRET);
 
-const logAppName = LOG_APP_NAME || 'SOULMED';
-const logEnvName = (LOG_ENV_NAME || process.env.NODE_ENV || 'DEV').toUpperCase();
-let logDir = LOG_DIR || path.join(__dirname, '..', 'logs');
-const logFilePrefix = LOG_FILE_PREFIX || `${logAppName}_LOG`;
-const maxLogFileSize = 5 * 1024 * 1024;
-const LOG_LEVELS = {
-  info: 1,
-  warn: 2,
-  error: 3,
-};
-const devEnvs = new Set(['DEV', 'LOCAL', 'DEVELOPMENT']);
-const isDevEnv = devEnvs.has(logEnvName);
-const consoleLevelName = String(
-  process.env.LOG_CONSOLE_LEVEL || (isDevEnv ? 'info' : 'error')
-).toLowerCase();
-const fileLevelName = String(process.env.LOG_FILE_LEVEL || 'info').toLowerCase();
-const consoleLevel = LOG_LEVELS[consoleLevelName] || LOG_LEVELS.info;
-const fileLevel = LOG_LEVELS[fileLevelName] || LOG_LEVELS.info;
-
-function ensureLogDir() {
-  try {
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
-    }
-    return true;
-  } catch (err) {
-    const fallback = path.join(os.tmpdir(), 'logs');
-    try {
-      if (!fs.existsSync(fallback)) {
-        fs.mkdirSync(fallback, { recursive: true });
-      }
-      logDir = fallback;
-      return true;
-    } catch (fallbackErr) {
-      return false;
-    }
+// Every controller's own try/catch reports through reportError. This catches
+// what doesn't: an error thrown outside any try/catch (a fire-and-forget
+// async task, a WebSocket handler, a timer), which would otherwise only hit
+// Node's default stderr and never reach the logs or the error tracker. On
+// exit, flush so a report is not lost with the process.
+process.on('uncaughtException', (err) => {
+  reportError(null, err, 'uncaught exception');
+  // Node's own guidance: the process is in an undefined state afterwards
+  // and should exit, letting the process manager (nodemon locally, PM2/
+  // systemd in prod) restart it cleanly. Not safe inside a single Lambda
+  // invocation — that would tear down the execution environment for
+  // unrelated concurrent invocations — so Lambda logs and keeps running.
+  if (!runningOnLambda) {
+    errorReporter.flush(1500).finally(() => process.exit(1));
   }
-}
+});
 
-function getLogFilePath() {
-  if (!ensureLogDir()) return null;
-  const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const base = `${logFilePrefix}_${dateStamp}_${logEnvName}`;
-  const files = fs.readdirSync(logDir).filter((name) =>
-    name.startsWith(base) && name.endsWith('.log')
-  );
-
-  const indices = files.map((name) => {
-    const match = name.match(/_(\d{3})\.log$/);
-    return match ? Number(match[1]) : 1;
-  });
-
-  let index = indices.length ? Math.max(...indices) : 1;
-  let fileName = `${base}_${String(index).padStart(3, '0')}.log`;
-  let filePath = path.join(logDir, fileName);
-
-  if (fs.existsSync(filePath)) {
-    const size = fs.statSync(filePath).size;
-    if (size >= maxLogFileSize) {
-      index += 1;
-      fileName = `${base}_${String(index).padStart(3, '0')}.log`;
-      filePath = path.join(logDir, fileName);
-    }
-  }
-
-  return filePath;
-}
-
-function redactSensitive(value) {
-  if (!value) return value;
-  return String(value).replace(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
-    '[redacted-email]'
-  );
-}
-
-function formatLogEntry(
-  { logType, userName, correlationId, errorMessage, statusCode, errorStack },
-  redact
-) {
-  const safeUser = redact ? '[redacted]' : (userName || 'unknown');
-  const safeMessage = redact ? redactSensitive(errorMessage) : (errorMessage || '-');
-  const safeStack = redact ? undefined : errorStack;
-  return [
-    '------------------',
-    `APP Name: ${logAppName}`,
-    `Log Type: ${logType}`,
-    `Environment: ${logEnvName}`,
-    `Date Time: ${new Date().toISOString()}`,
-    `User Name: ${safeUser}`,
-    `Status Code: ${statusCode || '-'}`,
-    `Correlationid: ${correlationId || 'unknown'}`,
-    `Error Message: ${safeMessage}`,
-    safeStack ? `Stack Trace: ${safeStack}` : '',
-    '',
-  ].join('\n');
-}
-
-function writeLogEntry(entry) {
-  const payload = formatLogEntry(entry, false);
-
-  try {
-    const filePath = getLogFilePath();
-    if (!filePath) return;
-    fs.appendFileSync(filePath, `${payload}\n`, 'utf8');
-  } catch (err) {
-    try {
-      process.stderr.write(`Failed to write log file: ${err.message || err}\n`);
-    } catch (innerErr) {
-      // ignore logging failures
-    }
-  }
-}
-
-function writeConsoleEntry(entry, level) {
-  const payload = formatLogEntry(entry, !isDevEnv);
-  const stream = level === 'error' ? process.stderr : process.stdout;
-  stream.write(`${payload}\n`);
-}
-
-function logMessage(level, { userName, correlationId, errorMessage, statusCode, errorStack }) {
-  const logType = level.charAt(0).toUpperCase() + level.slice(1);
-  const entry = { logType, userName, correlationId, errorMessage, statusCode, errorStack };
-  const levelValue = LOG_LEVELS[level] || LOG_LEVELS.info;
-  if (levelValue >= fileLevel) {
-    writeLogEntry(entry);
-  }
-  if (levelValue >= consoleLevel) {
-    writeConsoleEntry(entry, level);
-  }
-}
-
-console.error = (...args) => {
-  const errorArg = args.find((arg) => arg instanceof Error);
-  const message = args
-    .map((arg) => (arg instanceof Error ? (arg.stack || arg.message) : String(arg)))
-    .join(' ');
-  logMessage('error', { errorMessage: message, errorStack: errorArg?.stack });
-};
+process.on('unhandledRejection', (reason) => {
+  reportError(null, reason instanceof Error ? reason : new Error(String(reason)), 'unhandled promise rejection');
+});
 
 const wsClients = new Set();
 
@@ -618,9 +567,11 @@ async function connectDb() {
     autoIndex: true,
   });
   await ensureDefaultSubscriptionPlans();
+  await ensurePlanTiers();
+  await ensurePlanFeatures();
   await ensureDefaultRoles();
   // eslint-disable-next-line no-console
-  console.log('MongoDB connected');
+  logger.info({ db: mongoose.connection.name, host: mongoose.connection.host }, `MongoDB connected (db: ${mongoose.connection.name})`);
 }
 
 async function ensureDefaultSubscriptionPlans() {
@@ -647,6 +598,16 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 0,
+      tier: 0,
+      features: ['transcript'],
+      pitch: {
+        headline: 'Start for free',
+        highlights: [
+          { icon: 'video', text: 'Sample recorded lectures' },
+          { icon: 'questions', text: 'Limited practice questions' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'basic',
@@ -670,6 +631,17 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 1,
+      tier: 1,
+      features: ['transcript', 'ai_summary'],
+      pitch: {
+        headline: 'Unlock premium tests and live classes.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'check', text: 'Notes access included' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'premium',
@@ -693,6 +665,18 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: true,
       is_active: true,
       sort_order: 2,
+      tier: 2,
+      features: ['ai_tutor', 'ai_summary', 'transcript'],
+      pitch: {
+        headline: 'Everything in Basic, plus the full lecture library and live classes.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'live', text: 'Live classes every week with recordings' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'doubt', text: 'Ask doubts and get a teacher’s answer' },
+        ],
+        banner_url: '',
+      },
     },
     {
       plan_name: 'ultimate',
@@ -716,83 +700,106 @@ async function ensureDefaultSubscriptionPlans() {
       is_popular: false,
       is_active: true,
       sort_order: 3,
+      tier: 3,
+      features: ['ai_tutor', 'ai_summary', 'transcript'],
+      pitch: {
+        headline: 'Dedicated mentor with full access to everything.',
+        highlights: [
+          { icon: 'video', text: 'All recorded lectures, organised by subject' },
+          { icon: 'live', text: 'Unlimited live classes with recordings' },
+          { icon: 'questions', text: 'Full question bank and mock tests' },
+          { icon: 'doubt', text: 'Dedicated mentor doubt support' },
+          { icon: 'ai', text: 'AI-powered study plan' },
+          { icon: 'analytics', text: 'Deep performance analytics' },
+        ],
+        banner_url: '',
+      },
     },
   ];
 
   await SubscriptionPlan.insertMany(defaults);
 }
 
-async function ensureDefaultRoles() {
-  const defaults = [
-    {
-      name: 'student',
-      description: 'Default student role',
-      permissions: [
-        'view_dashboard',
-        'view_tests',
-        'view_live_classes',
-        'view_videos',
-        'view_doubts',
-        'view_progress',
-        'view_subscription',
-        'view_payments',
-        'view_feedback',
-        'view_community',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'teacher',
-      description: 'Default teacher role',
-      permissions: [
-        'manage_tests',
-        'manage_questions',
-        'manage_classes',
-        'manage_doubts',
-        'manage_students',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'content_writer',
-      description: 'Creates and reviews question banks for teacher approval',
-      permissions: [
-        'manage_questions',
-      ],
-      is_active: true,
-    },
-    {
-      name: 'admin',
-      description: 'Default admin role',
-      permissions: [],
-      is_active: true,
-    },
-  ];
+// One-time, idempotent: plans created before `tier` existed order by sort_order.
+// Final fix wave C1. This used to copy `sort_order` into `tier`, which put
+// every plan sharing the default sort_order 0 at tier 0 — including PAID
+// plans, which then unlocked all their gated content for every free student.
+// assignMissingTiers (utils/planPitch, unit-tested) ranks instead: free plans
+// (price <= 0) get 0, paid plans get 1, 2, 3… by (sort_order, then price). Any
+// plan that already has a tier is preserved, so this stays idempotent.
+async function ensurePlanTiers() {
+  const plans = await SubscriptionPlan.find({})
+    .select('plan_name price sort_order tier is_active')
+    .lean();
+  const assignments = assignMissingTiers(plans);
+  if (assignments.length > 0) {
+    await Promise.all(
+      assignments.map(({ _id, tier }) => SubscriptionPlan.updateOne({ _id }, { $set: { tier } }))
+    );
+  }
+  // `tier` carries a schema default of 0, so a paid plan can still be sitting
+  // at tier 0 from before the API refusal landed, or from a hand-edited
+  // document. entitlement.tierOf floors those at 1 so nothing fails open, but
+  // an operator has to fix the ladder — say so loudly at every start.
+  const byId = new Map(assignments.map(({ _id, tier }) => [String(_id), tier]));
+  const misTiered = plans
+    .filter((plan) => plan && plan.is_active !== false && Number(plan.price) > 0)
+    .filter((plan) => Number(byId.has(String(plan._id)) ? byId.get(String(plan._id)) : plan.tier) === 0)
+    .map((plan) => ({ plan_name: plan.plan_name, price: plan.price, tier: 0 }));
+  if (misTiered.length > 0) {
+    logger.warn(
+      { plans: misTiered },
+      `${misTiered.length} active paid plan(s) sit at tier 0 — their content is treated as tier 1 so it does not unlock for free students, but set a real tier in Plans`
+    );
+  }
+}
+
+// One-time, idempotent, like ensurePlanTiers: a plan created before `features`
+// existed has the field absent (the schema default is `undefined`, not `[]`,
+// precisely so this can tell "never set" apart from "admin cleared it to
+// none"). Seeds src/utils/defaultPlanFeatures.js's defaults so a fresh deploy
+// does not lock every existing student out of everything the moment this
+// ships. Any plan that already has a `features` array — even an empty one —
+// is left alone.
+//
+// Final fix wave I1: driven off the plans that actually need seeding rather
+// than off the default table's keys, so each plan's STORED plan_name is run
+// through normalizePlanName first — "medium" gets premium's set, "advance"
+// gets ultimate's, and case no longer decides whether a plan is seeded at
+// all. A name the table does not recognize is still left untouched.
+async function ensurePlanFeatures() {
+  const unseeded = await SubscriptionPlan.find({ features: { $exists: false } }).select('plan_name').lean();
   await Promise.all(
-    defaults.map((role) => {
-      const { permissions, ...roleBase } = role;
-      const update = { $setOnInsert: roleBase };
-      if (role.permissions && role.permissions.length > 0) {
-        update.$addToSet = { permissions: { $each: role.permissions } };
-      }
-      return Role.updateOne({ name: role.name }, update, { upsert: true });
+    unseeded.map((plan) => {
+      const features = defaultFeaturesFor(plan.plan_name);
+      if (!features) return null;
+      return SubscriptionPlan.updateOne({ _id: plan._id, features: { $exists: false } }, { $set: { features } });
     })
   );
 }
 
-app.get('/health', (req, res) => {
+async function ensureDefaultRoles() {
+  await syncPermissions();
+  // Insert-only (fix round 1, item B): defaultRoleUpserts() puts everything,
+  // including `permissions`, in $setOnInsert, so an admin's edits on the
+  // Roles page are never overwritten by a later server start.
+  await Promise.all(
+    defaultRoleUpserts().map(({ filter, update }) => Role.updateOne(filter, update, { upsert: true }))
+  );
+  await Role.updateMany({ name: { $in: ['admin', 'student'] } }, { $set: { is_system: true } });
+}
+
+app.get('/health', publicRoute, (req, res) => {
   res.json({ ok: true });
 });
 
 app.use('/auth', authRoutes);
-app.get('/admin/debug/rate-limit', authMiddleware, requireAdmin, (req, res) => {
+app.get('/admin/debug/rate-limit', authMiddleware, authorize('CanViewSettings'), (req, res) => {
   return res.json({ ok: true, stats: getRateLimitStats() });
 });
 app.use(
   createTestsRoutes({
     authMiddleware,
-    requireStaff,
-    hasPermission,
     csvUpload,
     createNotification,
     broadcastUserEvent,
@@ -803,6 +810,18 @@ app.use(
   createDoubtsRoutes({
     authMiddleware,
     createNotification,
+  })
+);
+// A lecture discussion is gated by the lecture, so it reuses the ONE
+// playback gate (spec 6) instead of a second copy of the entitlement rule.
+// createVideosController() is stateless, so this instance is equivalent to
+// the one videosRoutes builds for itself.
+const { loadVideoForPlayback } = createVideosController();
+app.use(
+  createDiscussionsRoutes({
+    authMiddleware,
+    createNotification,
+    loadVideoForPlayback,
   })
 );
 app.use(
@@ -831,7 +850,6 @@ app.use(
 app.use(
   createSubscriptionsRoutes({
     authMiddleware,
-    requireAdmin,
     createNotification,
     getPlansCache,
     setPlansCache,
@@ -841,7 +859,6 @@ app.use(
 app.use(
   createNotificationsRoutes({
     authMiddleware,
-    requireAdmin,
     createNotification,
   })
 );
@@ -854,46 +871,53 @@ app.use(
 app.use(
   createUsersRoutes({
     authMiddleware,
-    requireAdmin,
+    createNotification,
   })
 );
 app.use(
   createSubjectsRoutes({
     authMiddleware,
-    requireStaff,
-    requireAdmin,
-    hasPermission,
   })
 );
 app.use(
   createClassesRoutes({
     authMiddleware,
-    requireStaff,
     createNotification,
   })
 );
 app.use(
   createVideosRoutes({
     authMiddleware,
-    requireStaff,
+  })
+);
+app.use(
+  createPlaylistsRoutes({
+    authMiddleware,
   })
 );
 app.use(
   createRolesRoutes({
     authMiddleware,
-    requireAdmin,
+  })
+);
+app.use(
+  createPermissionsRoutes({
+    authMiddleware,
+  })
+);
+app.use(
+  createAuditLogRoutes({
+    authMiddleware,
   })
 );
 app.use(
   createPaymentsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 app.use(
   createCouponsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 app.use(
@@ -914,76 +938,136 @@ app.use(
 app.use(
   createSettingsRoutes({
     authMiddleware,
-    requireAdmin,
   })
 );
 
-async function handleUpload(res, file) {
+async function handleUpload(res, file, kind, folder) {
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
+  const validated = validateUploadedFile(kind, file);
+  if (!validated.ok) {
+    return res.status(400).json({ error: validated.error });
+  }
   try {
-    const url = await storeUpload(file);
+    const url = await storeUpload(file, validated, folder);
     return res.json({ url });
   } catch (err) {
-    console.error('Upload failed:', err);
+    reportError(null, err, 'upload failed');
     return res.status(500).json({ error: 'Upload failed' });
   }
 }
 
-app.post('/uploads/questions', authMiddleware, (req, res, next) => {
-  if (hasPermission && hasPermission(req.user, 'manage_questions')) {
-    return next();
+app.post('/webhooks/bunny/video-status', publicRoute, async (req, res) => {
+  const signature = req.get('X-BunnyStream-Signature');
+  const secret = process.env.BUNNY_STREAM_READONLY_API_KEY || '';
+  if (!verifyBunnySignature(req.rawBody, signature, secret)) {
+    return res.status(401).json({ error: 'Invalid signature' });
   }
-  return requireStaff(req, res, next);
-}, upload.single('file'), (req, res) => handleUpload(res, req.file));
+  const { VideoGuid: guid, Status: status } = req.body || {};
+  if (!guid || typeof guid !== 'string') {
+    // Mongoose strips `undefined` filter values, so `findOne({ bunny_video_id:
+    // undefined })` below would silently become `findOne({})` and apply the
+    // transition to whatever document sorts first — an unrelated row. 200 (not
+    // 400) so Bunny doesn't retry a callback we will never be able to use.
+    return res.status(200).json({ ok: true });
+  }
+  const video = await Video.findOne({ bunny_video_id: guid });
+  // 200 on an unknown guid so Bunny stops retrying a webhook we cannot use.
+  if (!video) return res.status(200).json({ ok: true });
 
-app.post('/uploads/classes', authMiddleware, requireStaff, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+  // Persist the status transition (and any transcript_status bookkeeping) on
+  // its own first, via the same logic the admin refresh-status endpoint uses.
+  // Bunny already told us encoding finished, so that fact must not be lost -
+  // a duration lookup failure below must never leave a ready video stuck
+  // pre-ready forever.
+  const next = await applyBunnyStatusTransition(video, status);
+  if (next === 'ready') {
+    // Best-effort metadata only: getStatus can throw (bad key, network error,
+    // video deleted upstream, its own timeout). The ready transition above is
+    // already saved, so a failure here just skips the duration and logs -
+    // it must not hold the webhook response hostage or roll back readiness.
+    try {
+      const { duration_seconds: duration } = await getStatus(guid);
+      video.duration_seconds = duration;
+      await video.save();
+    } catch (err) {
+      reportError(req, err, 'bunny getStatus failed while fetching video duration');
+    }
+  }
+  return res.json({ ok: true });
+});
+
+app.post(
+  '/uploads/questions',
+  authMiddleware,
+  authorize.any('CanAddQuestions', 'CanEditQuestions', 'CanAddQuestionBank', 'CanEditQuestionBank'),
+  upload.single('file'),
+  (req, res) => handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.questionImage)
 );
 
-app.post('/uploads/recordings', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/classes', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.classThumbnail)
 );
 
-app.post('/uploads/videos', authMiddleware, requireStaff, videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/recordings', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'video', UPLOAD_FOLDERS.classRecording)
 );
 
-app.post('/uploads/transcripts', authMiddleware, requireStaff, transcriptUpload.single('file'), async (req, res) => {
+app.post('/uploads/videos', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), videoUpload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'video', UPLOAD_FOLDERS.lectureVideo)
+);
+
+// The playlist's own thumbnail image — distinct from /uploads/videos above,
+// which is the video FILE upload path (videoUpload, 'video' validation).
+// Same permission gate as writing a playlist (playlistsRoutes.js).
+app.post('/uploads/playlists', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.playlistThumbnail)
+);
+
+// A lecture's own thumbnail image (Video.thumbnail_url), shown on the student
+// lecture list. Image validation, same gate as editing a lecture.
+app.post('/uploads/lecture-thumbnails', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.lectureThumbnail)
+);
+
+// The banner image for a plan's upgrade pitch (SubscriptionPlan.pitch.banner_url).
+// Same permission gate as writing a subscription plan.
+app.post('/uploads/plan-banners', authMiddleware, authorize.any('CanAddSubscriptionPlans', 'CanEditSubscriptionPlans'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.planBanner)
+);
+
+app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), transcriptUpload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
+  const validated = validateUploadedFile('transcript', file);
+  if (!validated.ok) {
+    return res.status(400).json({ error: validated.error });
+  }
   let text = '';
   let url;
   try {
-    url = await storeUpload(file);
-    const raw = file.buffer.toString('utf8');
-    text = raw
-      .replace(/\uFEFF/g, '')
-      .replace(/^\d+\s*$/gm, '')
-      .replace(/\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*/g, '')
-      .replace(/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}.*/g, '')
-      .replace(/WEBVTT/g, '')
-      .replace(/\r/g, '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join(' ');
+    url = await storeUpload(file, validated, UPLOAD_FOLDERS.classTranscript);
+    text = transcriptToPlainText(file.buffer.toString('utf8'));
   } catch (err) {
     return res.status(500).json({ error: 'Failed to read transcript' });
   }
   return res.json({ url, text });
 });
 
-app.post('/uploads/doubts', authMiddleware, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/doubts', authMiddleware, authorize.any('CanAccessDoubts', 'CanAnswerDoubts'), upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.doubtImage)
 );
 
-app.post('/uploads/profile', authMiddleware, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file)
+app.post('/uploads/profile', authMiddleware, selfService, upload.single('file'), (req, res) =>
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.profilePhoto)
 );
+
+// Final JSON error handler: multer (413/400), CORS (403), body-parser (400/413)
+// and unexpected errors (500, generic message; never leaks err.message/stack).
+app.use(errorHandler);
 
 const port = Number(PORT) || 4000;
 
@@ -992,25 +1076,50 @@ async function startLocalServer() {
   initRealtime(server);
   await connectDb();
   server.listen(port, process.env.HOST || undefined, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Server listening on http://localhost:${port}`);
+    logger.info({ port }, `Server listening on http://localhost:${port}`);
   });
+  startClassReminderLoop();
+}
+
+// Live-class reminders (1 hour before + at start). Every 5 minutes on a
+// long-lived server; serverless hosts call POST /classes/notifications/run-due
+// from a cron instead. Send-once is guaranteed by ClassNotificationRun rows,
+// so an overlapping run or a restart cannot double-send.
+function startClassReminderLoop() {
+  const { createClassesController } = require('./controllers/classesController');
+  const { runDueReminders } = require('./services/classReminderScheduler');
+  const { notifyClass } = require('./services/classNotifier');
+  const ClassNotificationRun = require('./models/ClassNotificationRun');
+  const LiveClass = require('./models/LiveClass');
+  const { notifierDeps } = createClassesController({ createNotification });
+  const tick = () => runDueReminders({
+    LiveClass, ClassNotificationRun, logger, reportError,
+    notifyClass: (args) => notifyClass(args, notifierDeps),
+  }).catch((err) => reportError(null, err, 'class reminder loop failed'));
+  const timer = setInterval(tick, 5 * 60 * 1000);
+  timer.unref?.();
+  setTimeout(tick, 15 * 1000).unref?.();
 }
 
 if (!runningOnVercel && require.main === module) {
   startLocalServer().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error('Failed to start server:', err);
+    reportError(null, err, 'failed to start server');
     process.exit(1);
   });
 }
 
-let dbReady;
+let dbReady = null;
 async function ensureDbConnected() {
   if (!dbReady) {
     dbReady = connectDb();
   }
-  await dbReady;
+  try {
+    await dbReady;
+  } catch (err) {
+    // Reset so the next invocation retries instead of reusing a rejected promise.
+    dbReady = null;
+    throw err;
+  }
 }
 
 module.exports = async (req, res) => {
@@ -1018,7 +1127,7 @@ module.exports = async (req, res) => {
     try {
       await ensureDbConnected();
     } catch (err) {
-      console.error('DB connection failed:', err);
+      reportError(null, err, 'DB connection failed');
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Service unavailable' }));

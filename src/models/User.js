@@ -43,6 +43,33 @@ const userSchema = new mongoose.Schema(
     password_reset_expires: { type: Date },
     password_reset_requested_at: { type: Date },
     is_active: { type: Boolean, default: true },
+    // Profile → Notifications: emails about live classes (publish, reschedule, reminder).
+    notify_live_classes: { type: Boolean, default: true },
+    // Bumped on password reset/change; JWTs carry it as `tv` so older tokens are rejected.
+    token_version: { type: Number, default: 0 },
+    // Cookie sessions (src/auth/session.js): one entry per signed-in browser,
+    // hash of the opaque refresh token only — the raw value lives in the
+    // HttpOnly cookie. Rotated on every refresh; cleared on password change.
+    refresh_tokens: {
+      type: [{ hash: { type: String, required: true }, created_at: { type: Date }, expires_at: { type: Date } }],
+      default: [],
+      select: false,
+    },
+    // Public identity for discussions (spec §4). nickname_lc backs the
+    // case-insensitive uniqueness.
+    //
+    // Fix round 2, Minor: a `sparse` unique index only skips MISSING values —
+    // an explicit `null` is a value, so two users whose nickname_lc was ever
+    // written as null would collide on it. The partial filter indexes only
+    // string values instead, which is what a nickname clear leaves behind
+    // ($unset). On an existing database the old `nickname_lc_1` index must be
+    // dropped once so Mongoose can recreate it (see the Discussions section of
+    // docs/ops/2026-09-22-playlist-rollout-runbook.md).
+    nickname: { type: String, default: '' },
+    nickname_lc: { type: String, index: { unique: true, partialFilterExpression: { nickname_lc: { $type: 'string' } } } },
+    avatar_id: { type: String, default: '' },
+    // Set when a moderator hides a third post within 30 days (spec §6).
+    discussion_muted_until: { type: Date },
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );

@@ -1,5 +1,6 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const { safeCompare } = require('../utils/security');
 
 const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET } = process.env;
 
@@ -31,7 +32,7 @@ function verifyPaymentSignature({ orderId, paymentId, signature }) {
   if (!RAZORPAY_KEY_SECRET) return false;
   const payload = `${orderId}|${paymentId}`;
   const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(payload).digest('hex');
-  return expected === signature;
+  return safeCompare(expected, typeof signature === 'string' ? signature : '');
 }
 
 function verifyWebhookSignature(rawBody, signature) {
@@ -40,7 +41,7 @@ function verifyWebhookSignature(rawBody, signature) {
     .createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
     .update(rawBody)
     .digest('hex');
-  return expected === signature;
+  return safeCompare(expected, typeof signature === 'string' ? signature : '');
 }
 
 async function fetchPayment(paymentId) {

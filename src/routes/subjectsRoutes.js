@@ -1,31 +1,25 @@
 const express = require('express');
 const { createSubjectsController } = require('../controllers/subjectsController');
+const { validateObjectIdParams } = require('../middlewares/validateObjectId');
+const { authorize, selfService } = require('../rbac/authorize');
 
-function createSubjectsRoutes({ authMiddleware, requireStaff, requireAdmin, hasPermission }) {
+function createSubjectsRoutes({ authMiddleware }) {
   const router = express.Router();
+  validateObjectIdParams(router, ["id","subtopicId"]);
   const controller = createSubjectsController();
-  const requirePermissionOrStaff = (permission) => (req, res, next) => {
-    if (hasPermission && hasPermission(req.user, permission)) {
-      return next();
-    }
-    if (requireStaff) {
-      return requireStaff(req, res, next);
-    }
-    return res.status(403).json({ error: 'Staff access required' });
-  };
 
-  router.get('/subjects', authMiddleware, controller.listSubjects);
-  router.post('/subjects', authMiddleware, requirePermissionOrStaff('manage_questions'), controller.createSubject);
-  router.patch('/subjects/:id', authMiddleware, requirePermissionOrStaff('manage_questions'), controller.updateSubject);
-  router.post('/subjects/:id/subtopics', authMiddleware, requirePermissionOrStaff('manage_questions'), controller.createSubtopic);
+  router.get('/subjects', authMiddleware, selfService, controller.listSubjects);
+  router.post('/subjects', authMiddleware, authorize('CanAddSubjects'), controller.createSubject);
+  router.patch('/subjects/:id', authMiddleware, authorize('CanEditSubjects'), controller.updateSubject);
+  router.post('/subjects/:id/subtopics', authMiddleware, authorize('CanAddSubjects'), controller.createSubtopic);
   router.patch(
     '/subjects/:id/subtopics/:subtopicId',
     authMiddleware,
-    requirePermissionOrStaff('manage_questions'),
+    authorize('CanEditSubjects'),
     controller.updateSubtopic
   );
   // Assign the teachers allowed to run AI ingestion/generation for a subject.
-  router.put('/subjects/:id/owners', authMiddleware, requireAdmin, controller.setSubjectOwners);
+  router.put('/subjects/:id/owners', authMiddleware, authorize('CanManageSubjectOwners'), controller.setSubjectOwners);
 
   return router;
 }

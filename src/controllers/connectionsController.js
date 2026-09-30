@@ -1,6 +1,21 @@
+const mongoose = require('mongoose');
 const ConnectionRequest = require('../models/ConnectionRequest');
 const User = require('../models/User');
-const { isValidEmail, isValidTextLength } = require('../utils/validation');
+const { isValidTextLength } = require('../utils/validation');
+const { reportError } = require('../lib/errorReporter.js');
+
+function serializeConnectionRequest(request) {
+  return {
+    _id: request._id,
+    requester_id: request.requester_id,
+    requester_name: request.requester_name || 'Student',
+    target_id: request.target_id,
+    target_name: request.target_name || 'Student',
+    status: request.status,
+    created_date: request.created_date,
+    updated_date: request.updated_date,
+  };
+}
 
 function createConnectionsController({ createNotification, isStudentUser }) {
   async function listRequests(req, res) {
@@ -20,29 +35,29 @@ function createConnectionsController({ createNotification, isStudentUser }) {
       const requests = await ConnectionRequest.find(filter)
         .sort({ created_date: -1 })
         .lean();
-      return res.json({ requests });
+      return res.json({ requests: requests.map(serializeConnectionRequest) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load connection requests' });
     }
   }
 
   async function createRequest(req, res) {
     try {
-      const { target_email: targetEmail } = req.body || {};
-      if (!targetEmail) {
-        return res.status(400).json({ error: 'target_email is required' });
-      }
-      if (!isValidEmail(String(targetEmail))) {
-        return res.status(400).json({ error: 'Invalid target_email format' });
+      const { target_user_id: targetUserId } = req.body || {};
+      if (!mongoose.isValidObjectId(targetUserId)) {
+        return res.status(400).json({ error: 'Valid target_user_id is required' });
       }
 
-      const requester = await User.findById(req.userId).lean();
-      if (!requester || !isStudentUser(requester)) {
-        return res.status(403).json({ error: 'Student access required' });
-      }
+      // The route's authorize('CanAccessCommunity') is now the only access
+      // decision for the caller; the isStudentUser check below still applies
+      // to the TARGET user (identity of the other person, not the caller).
+      const requester = req.user;
 
-      const target = await User.findOne({ email: targetEmail }).lean();
+      const target = await User.findOne({
+        _id: targetUserId,
+        is_active: { $ne: false },
+      }).lean();
       if (!target || !isStudentUser(target)) {
         return res.status(404).json({ error: 'Student not found' });
       }
@@ -78,9 +93,9 @@ function createConnectionsController({ createNotification, isStudentUser }) {
         type: 'info',
       });
 
-      return res.status(201).json({ request });
+      return res.status(201).json({ request: serializeConnectionRequest(request.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create connection request' });
     }
   }
@@ -111,9 +126,9 @@ function createConnectionsController({ createNotification, isStudentUser }) {
         type: 'info',
       });
 
-      return res.json({ request: request.toObject() });
+      return res.json({ request: serializeConnectionRequest(request.toObject()) });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update connection request' });
     }
   }
@@ -130,25 +145,22 @@ function createConnectionsController({ createNotification, isStudentUser }) {
         return {
           id: request._id,
           user_id: isRequester ? request.target_id : request.requester_id,
-          user_email: isRequester ? request.target_email : request.requester_email,
           user_name: isRequester ? request.target_name : request.requester_name,
         };
       });
 
       return res.json({ connections });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load connections' });
     }
   }
 
   async function listStudents(req, res) {
     try {
-      const user = await User.findById(req.userId).lean();
-      if (!user || !isStudentUser(user)) {
-        return res.status(403).json({ error: 'Student access required' });
-      }
-
+      // The route's authorize('CanAccessCommunity') is now the only access
+      // decision for the caller.
+      const user = req.user;
       const { q, limit } = req.query;
       if (q && !isValidTextLength(String(q), 1, 100)) {
         return res.status(400).json({ error: 'q must be between 1 and 100 characters' });
@@ -156,25 +168,26 @@ function createConnectionsController({ createNotification, isStudentUser }) {
 
       const filter = {
         _id: { $ne: user._id },
+        is_active: { $ne: false },
         is_teacher: { $ne: true },
         $or: [{ role: 'student' }, { role: { $exists: false } }],
       };
 
       if (q) {
-        const regex = new RegExp(q, 'i');
-        filter.$and = [{ $or: [{ full_name: regex }, { email: regex }] }];
+        const escaped = String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.full_name = new RegExp(escaped, 'i');
       }
 
       const max = Math.min(Number(limit) || 50, 200);
       const students = await User.find(filter)
-        .select('full_name email role')
+        .select('full_name profile_image role')
         .sort({ created_date: -1 })
         .limit(max)
         .lean();
 
       return res.json({ students });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load students' });
     }
   }

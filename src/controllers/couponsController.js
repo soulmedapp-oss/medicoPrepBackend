@@ -2,6 +2,9 @@ const Coupon = require('../models/Coupon');
 const CouponRedemption = require('../models/CouponRedemption');
 const SubscriptionPlan = require('../models/SubscriptionPlan');
 const { isValidTextLength } = require('../utils/validation');
+const { missingUpdatePermissions } = require('../rbac/updatePermissions');
+const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { reportError } = require('../lib/errorReporter.js');
 
 function percentDiscount(amount, percent) {
   const discount = Math.round((amount * percent) / 100);
@@ -63,7 +66,7 @@ function createCouponsController() {
         final_amount: finalAmount,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to validate coupon' });
     }
   }
@@ -73,7 +76,7 @@ function createCouponsController() {
       const coupons = await Coupon.find({}).sort({ created_date: -1 }).lean();
       return res.json({ coupons });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load coupons' });
     }
   }
@@ -99,14 +102,20 @@ function createCouponsController() {
       });
       return res.status(201).json({ coupon });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to create coupon' });
     }
   }
 
   async function updateCoupon(req, res) {
     try {
+      const existing = await Coupon.findById(req.params.id).lean();
+      if (!existing) {
+        return res.status(404).json({ error: 'Coupon not found' });
+      }
       const updates = req.body || {};
+      const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditCoupons', deactivate: 'CanDeactivateCoupons' });
+      if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
       if (updates.code) {
         updates.code = String(updates.code).trim().toUpperCase();
       }
@@ -125,9 +134,10 @@ function createCouponsController() {
       if (!coupon) {
         return res.status(404).json({ error: 'Coupon not found' });
       }
+      await recordActiveStateChange(req, { resource: 'coupon', before: existing, after: coupon, targetLabel: coupon.code });
       return res.json({ coupon });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to update coupon' });
     }
   }
@@ -140,9 +150,10 @@ function createCouponsController() {
       }
       coupon.is_active = false;
       await coupon.save();
+      await recordDeactivated(req, { resource: 'coupon', targetId: coupon._id, targetLabel: coupon.code });
       return res.json({ ok: true, coupon: coupon.toObject() });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to deactivate coupon' });
     }
   }

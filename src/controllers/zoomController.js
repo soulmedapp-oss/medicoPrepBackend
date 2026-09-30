@@ -1,9 +1,18 @@
 const LiveClass = require('../models/LiveClass');
+const { reportError } = require('../lib/errorReporter.js');
+const Video = require('../models/Video');
+const { logger } = require('../lib/logger');
 const {
   verifyZoomWebhookSignature,
   buildZoomValidationResponse,
   pickRecording,
+  tokenedDownloadUrl,
+  downloadRecordingFile,
 } = require('../services/zoomService');
+const { createUpload, fetchFromUrl, deleteVideo } = require('../services/video/bunnyProvider');
+const { getDefaultStorage } = require('../lib/uploadStorage');
+const { ingestZoomRecording } = require('../services/classRecordingIngest');
+const { resolveSubjectForWrite } = require('../utils/subjects');
 
 async function handleZoomWebhook(req, res) {
   try {
@@ -80,16 +89,48 @@ async function handleZoomWebhook(req, res) {
       };
 
       const byMeetingId = meetingId
-        ? await LiveClass.findOneAndUpdate({ zoom_meeting_id: meetingId }, { $set: update }, { new: true })
+        ? await LiveClass.findOneAndUpdate({ zoom_meeting_id: meetingId }, { $set: update }, { new: true }).lean()
         : null;
-      if (!byMeetingId && meetingUuid) {
-        await LiveClass.findOneAndUpdate({ zoom_meeting_uuid: meetingUuid }, { $set: update });
+      const byUuid = !byMeetingId && meetingUuid
+        ? await LiveClass.findOneAndUpdate({ zoom_meeting_uuid: meetingUuid }, { $set: update }, { new: true }).lean()
+        : null;
+      const liveClass = byMeetingId || byUuid;
+
+      // Transcript + Bunny copy. Answered FIRST: downloading a transcript and
+      // talking to Bunny takes far longer than Zoom's delivery timeout, and a
+      // 200 Zoom never sees becomes a redelivery — which is why the ingest
+      // claims the class before doing anything (see classRecordingIngest).
+      // Best effort from here on: logs and continues, never fails the webhook.
+      if (liveClass) {
+        // `download_token` is a sibling of `payload`, not inside it, and is
+        // scoped to exactly this recording's files.
+        const downloadToken = typeof payload?.download_token === 'string' ? payload.download_token : '';
+        res.json({ ok: true });
+        setImmediate(() => {
+          ingestZoomRecording(liveClass, {
+            downloadRecordingFile,
+            tokenedDownloadUrl,
+            storeUpload: (file, validated, folder) => getDefaultStorage().storeUpload(file, validated, folder),
+            createUpload,
+            fetchFromUrl,
+            deleteVideo,
+            resolveSubjectForWrite,
+            Video,
+            LiveClass,
+            logger,
+            reportError,
+            downloadToken,
+          }).catch((err) => {
+            reportError(null, err, 'zoom recording ingest crashed', { liveClassId: String(liveClass._id) });
+          });
+        });
+        return;
       }
     }
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error('Zoom webhook error:', err);
+    reportError(req, err, 'Zoom webhook error');
     return res.status(500).json({ error: 'Webhook processing failed' });
   }
 }

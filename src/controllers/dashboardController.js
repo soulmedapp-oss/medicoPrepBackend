@@ -6,6 +6,12 @@ const Test = require('../models/Test');
 const TestAttempt = require('../models/TestAttempt');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const { reportError } = require('../lib/errorReporter.js');
+// Final fix wave C2 + I3: the dashboard is a student read like any other, so
+// it uses the same projection as classesController.listClasses and the same
+// entitlement rule as every other gated surface.
+const { studentClassRow } = require('../utils/classProjection');
+const { viewerFor, lockState } = require('../utils/entitlement');
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -58,28 +64,9 @@ async function buildDailyCounts(Model, match, dateField) {
 function createDashboardController() {
   async function getAdminDashboard(req, res) {
     try {
-      const user = await User.findById(req.userId).lean();
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      const hasAdminRole = user.role === 'admin' || (Array.isArray(user.roles) && user.roles.includes('admin'));
-      if (!hasAdminRole) {
-        return res.status(403).json({ error: 'Admin access required' });
-      }
-
-      const totalStudents = await User.countDocuments({
-        role: { $nin: ['admin', 'teacher'] },
-        is_teacher: { $ne: true },
-      });
-      const activeSubscribers = await Subscription.countDocuments({
-        status: 'active',
-        plan: { $ne: 'free' },
-      });
-      const totalTests = await Test.countDocuments({});
-      const publishedTests = await Test.countDocuments({ is_published: true });
-      const pendingDoubts = await Doubt.countDocuments({ status: 'pending' });
-      const totalClasses = await LiveClass.countDocuments({});
-
+      // The inline admin check used to live here; the route now gates on
+      // authorize('CanViewAdminDashboard'), so this is covered before the
+      // handler ever runs.
       const now = new Date();
       const todayStart = startOfDay(now);
       const todayEnd = endOfDay(now);
@@ -93,93 +80,118 @@ function createDashboardController() {
         is_teacher: { $ne: true },
       };
 
-      const newStudentsToday = await User.countDocuments({
-        ...studentFilter,
-        created_date: { $gte: todayStart, $lte: todayEnd },
-      });
-      const newStudentsMonth = await User.countDocuments({
-        ...studentFilter,
-        created_date: { $gte: monthStart, $lte: todayEnd },
-      });
-      const activeUsersNow = await User.countDocuments({
-        ...studentFilter,
-        $or: [
-          { last_seen_date: { $gte: activeWindow } },
-          { last_login_date: { $gte: activeWindow } },
-        ],
-      });
-      const activeUsersWeek = await User.countDocuments({
-        ...studentFilter,
-        $or: [
-          { last_seen_date: { $gte: weekStart, $lte: todayEnd } },
-          { last_login_date: { $gte: weekStart, $lte: todayEnd } },
-        ],
-      });
-      const activeUsersMonth = await User.countDocuments({
-        ...studentFilter,
-        $or: [
-          { last_seen_date: { $gte: monthStart, $lte: todayEnd } },
-          { last_login_date: { $gte: monthStart, $lte: todayEnd } },
-        ],
-      });
-      const dau = await User.countDocuments({
-        ...studentFilter,
-        $or: [
-          { last_seen_date: { $gte: todayStart, $lte: todayEnd } },
-          { last_login_date: { $gte: todayStart, $lte: todayEnd } },
-        ],
-      });
+      // All of these are independent, so they run concurrently instead of serially.
+      const [
+        totalStudents,
+        activeSubscribers,
+        totalTests,
+        publishedTests,
+        pendingDoubts,
+        totalClasses,
+        newStudentsToday,
+        newStudentsMonth,
+        activeUsersNow,
+        activeUsersWeek,
+        activeUsersMonth,
+        dau,
+        testsToday,
+        testsWeek,
+        paidTodayAgg,
+        subscriptionDistributionRaw,
+        dailyRegistrations,
+        dailyAttempts,
+        recentDoubtsRaw,
+        recentAttemptsRaw,
+      ] = await Promise.all([
+        User.countDocuments(studentFilter),
+        Subscription.countDocuments({ status: 'active', plan: { $ne: 'free' } }),
+        Test.countDocuments({}),
+        Test.countDocuments({ is_published: true }),
+        Doubt.countDocuments({ status: 'pending' }),
+        LiveClass.countDocuments({}),
+        User.countDocuments({
+          ...studentFilter,
+          created_date: { $gte: todayStart, $lte: todayEnd },
+        }),
+        User.countDocuments({
+          ...studentFilter,
+          created_date: { $gte: monthStart, $lte: todayEnd },
+        }),
+        User.countDocuments({
+          ...studentFilter,
+          $or: [
+            { last_seen_date: { $gte: activeWindow } },
+            { last_login_date: { $gte: activeWindow } },
+          ],
+        }),
+        User.countDocuments({
+          ...studentFilter,
+          $or: [
+            { last_seen_date: { $gte: weekStart, $lte: todayEnd } },
+            { last_login_date: { $gte: weekStart, $lte: todayEnd } },
+          ],
+        }),
+        User.countDocuments({
+          ...studentFilter,
+          $or: [
+            { last_seen_date: { $gte: monthStart, $lte: todayEnd } },
+            { last_login_date: { $gte: monthStart, $lte: todayEnd } },
+          ],
+        }),
+        User.countDocuments({
+          ...studentFilter,
+          $or: [
+            { last_seen_date: { $gte: todayStart, $lte: todayEnd } },
+            { last_login_date: { $gte: todayStart, $lte: todayEnd } },
+          ],
+        }),
+        TestAttempt.countDocuments({
+          status: 'completed',
+          created_date: { $gte: todayStart, $lte: todayEnd },
+        }),
+        TestAttempt.countDocuments({
+          status: 'completed',
+          created_date: { $gte: weekStart, $lte: todayEnd },
+        }),
+        Payment.aggregate([
+          {
+            $match: {
+              status: 'paid',
+              subscription_activated: true,
+              paid_at: { $gte: todayStart, $lte: todayEnd },
+            },
+          },
+          { $group: { _id: '$user_id' } },
+          { $count: 'total' },
+        ]),
+        Subscription.aggregate([
+          { $group: { _id: '$plan', value: { $sum: 1 } } },
+        ]),
+        buildDailyCounts(User, {}, 'created_date'),
+        buildDailyCounts(TestAttempt, {}, 'created_date'),
+        Doubt.find({})
+          .sort({ created_date: -1 })
+          .limit(20)
+          .select('topic subject student_name status created_date')
+          .lean(),
+        TestAttempt.find({ status: 'completed' })
+          .sort({ created_date: -1 })
+          .limit(20)
+          .select('user_name percentage created_date')
+          .lean(),
+      ]);
+
       const mau = activeUsersMonth;
       const dauMauRatio = mau ? Math.round((dau / mau) * 1000) / 10 : 0;
-
-      const testsToday = await TestAttempt.countDocuments({
-        status: 'completed',
-        created_date: { $gte: todayStart, $lte: todayEnd },
-      });
-      const testsWeek = await TestAttempt.countDocuments({
-        status: 'completed',
-        created_date: { $gte: weekStart, $lte: todayEnd },
-      });
-
-      const paidTodayAgg = await Payment.aggregate([
-        {
-          $match: {
-            status: 'paid',
-            subscription_activated: true,
-            paid_at: { $gte: todayStart, $lte: todayEnd },
-          },
-        },
-        { $group: { _id: '$user_id' } },
-        { $count: 'total' },
-      ]);
       const paidSubscribersToday = paidTodayAgg[0]?.total || 0;
-
-      const subscriptionDistributionRaw = await Subscription.aggregate([
-        { $group: { _id: '$plan', value: { $sum: 1 } } },
-      ]);
       const subscriptionDistribution = subscriptionDistributionRaw.map((row) => ({
         name: row._id ? String(row._id).charAt(0).toUpperCase() + String(row._id).slice(1) : 'Unknown',
         value: row.value,
       }));
-
-      const dailyRegistrations = await buildDailyCounts(User, {}, 'created_date');
-      const dailyAttempts = await buildDailyCounts(TestAttempt, {}, 'created_date');
-
-      const recentDoubtsRaw = await Doubt.find({})
-        .sort({ created_date: -1 })
-        .limit(20)
-        .select('topic subject student_name status created_date')
-        .lean();
       const recentDoubts = recentDoubtsRaw.map((doubt) => ({
         ...doubt,
         id: String(doubt._id),
       }));
-
-      const recentAttemptsRaw = await TestAttempt.find({ status: 'completed' })
-        .sort({ created_date: -1 })
-        .limit(20)
-        .select('user_name percentage created_date')
-        .lean();
       const recentAttempts = recentAttemptsRaw.map((attempt) => ({
         ...attempt,
         id: String(attempt._id),
@@ -214,7 +226,7 @@ function createDashboardController() {
         },
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load admin dashboard' });
     }
   }
@@ -337,8 +349,13 @@ function createDashboardController() {
           'zoom_recording_started_at',
         ])
         .lean();
+      // C2: these rows used to be returned raw — meeting_link, recording_url
+      // and every zoom_* field included — which handed a free student the join
+      // link for a plan-gated class straight off their home page. They now go
+      // through exactly the projection listClasses uses, and carry `lock`.
+      const viewer = await viewerFor(req.user);
       const upcomingClasses = upcomingClassesRaw.map((liveClass) => ({
-        ...liveClass,
+        ...studentClassRow(liveClass, lockState(liveClass, viewer)),
         id: String(liveClass._id),
       }));
 
@@ -370,10 +387,27 @@ function createDashboardController() {
           },
         },
       ]);
-      const recentAttempts = recentAttemptsRaw.map((attempt) => ({
-        ...attempt,
-        id: String(attempt._id),
-      }));
+      // I3: `test_lock` per attempt, so the Retake affordance follows the same
+      // rule as everything else instead of the frontend re-deriving plan
+      // ranks. The aggregate above only projects test_required_plan, and
+      // `is_free` is half of the rule, so the tests are resolved once in a
+      // single $in rather than per row. A test that no longer exists reports
+      // no lock — unjudgeable, and createAttempt is the real gate anyway.
+      const attemptTestIds = [...new Set(
+        recentAttemptsRaw.map((attempt) => attempt.test_id).filter(Boolean).map(String)
+      )];
+      const lockableTests = attemptTestIds.length > 0
+        ? await Test.find({ _id: { $in: attemptTestIds } }).select('is_free required_plan').lean()
+        : [];
+      const testsById = new Map(lockableTests.map((row) => [String(row._id), row]));
+      const recentAttempts = recentAttemptsRaw.map((attempt) => {
+        const resolved = testsById.get(String(attempt.test_id));
+        return {
+          ...attempt,
+          id: String(attempt._id),
+          test_lock: resolved ? lockState(resolved, viewer) : null,
+        };
+      });
 
       const subjectProgressRaw = await TestAttempt.aggregate([
         { $match: { user_id: userId, status: 'completed' } },
@@ -415,7 +449,7 @@ function createDashboardController() {
         micro_win: microWin,
       });
     } catch (err) {
-      console.error(err);
+      reportError(req, err);
       return res.status(500).json({ error: 'Failed to load student dashboard' });
     }
   }
