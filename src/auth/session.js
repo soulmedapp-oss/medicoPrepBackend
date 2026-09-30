@@ -85,9 +85,11 @@ function signAccessToken(user, normalizeTokenVersion) {
 const AI_TOKEN_SCOPE = 'ai';
 const AI_TOKEN_TTL_SECONDS = 300;
 
-function signAiToken(user) {
+function signAiToken(user, normalizeTokenVersion = (v) => (Number.isInteger(Number(v)) && Number(v) >= 0 ? Number(v) : 0)) {
+  // `tv` lets the AI service honour revocation (password reset, forced
+  // logout) the same way authMiddleware does, instead of waiting for expiry.
   return jwt.sign(
-    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE },
+    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE, tv: normalizeTokenVersion(user.token_version) },
     process.env.JWT_SECRET,
     { expiresIn: AI_TOKEN_TTL_SECONDS }
   );

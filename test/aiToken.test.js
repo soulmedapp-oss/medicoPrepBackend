@@ -18,6 +18,8 @@ test('signAiToken: carries only the user id and the ai scope, and is short-lived
   const payload = jwt.verify(token, process.env.JWT_SECRET);
   assert.equal(payload.sub, '64b000000000000000000001');
   assert.equal(payload.scope, AI_TOKEN_SCOPE);
+  assert.equal(payload.tv, 3, 'carries the token version so the AI service can honour revocation');
+  assert.equal(jwt.verify(signAiToken({ _id: 'x' }), process.env.JWT_SECRET).tv, 0, 'no version counts as 0');
   assert.equal(payload.exp - payload.iat, AI_TOKEN_TTL_SECONDS);
   assert.ok(AI_TOKEN_TTL_SECONDS <= 600, 'a script-readable token must not live long');
   // PyJWT refuses a token with an `aud` claim unless the verifier names one;
