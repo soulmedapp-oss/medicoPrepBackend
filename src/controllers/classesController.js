@@ -16,7 +16,7 @@ const { lockState, upgradeRefusal, viewerFor, featureLock } = require('../utils/
 const { studentClassRow } = require('../utils/classProjection');
 const { missingUpdatePermissions } = require('../rbac/updatePermissions');
 const { MAX_CHAT_MESSAGE_LENGTH } = require('../utils/security');
-const { recordActiveStateChange, recordDeactivated } = require('../utils/audit');
+const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../utils/audit');
 const { reportError } = require('../lib/errorReporter.js');
 
 // Fields staff may change via PATCH /classes/:id. Zoom URLs, recording files and
@@ -63,6 +63,22 @@ function isClassTeacher(user, liveClass) {
   const teacherEmail = String(liveClass?.teacher_email || '').trim().toLowerCase();
   const userEmail = String(user?.email || '').trim().toLowerCase();
   return Boolean(teacherEmail) && Boolean(userEmail) && teacherEmail === userEmail;
+}
+
+// Who may open the Zoom HOST link: the class's own teacher (by email) or a
+// CanHostAnyClass holder. Pure; used by the row flag and the host-link route.
+function canHostClass(user, liveClass) {
+  return isClassTeacher(user, liveClass) || can(user, 'CanHostAnyClass');
+}
+
+// The host may start early (Zoom itself allows it) — 30 minutes before the
+// scheduled time until the scheduled end. Pure, for tests.
+const HOST_EARLY_MINUTES = 30;
+function hostWindow(liveClass, now = new Date()) {
+  const start = new Date(liveClass.scheduled_date);
+  const end = new Date(start.getTime() + (liveClass.duration_minutes || 60) * 60000);
+  const opensAt = new Date(start.getTime() - HOST_EARLY_MINUTES * 60000);
+  return { opensAt, end, open: now >= opensAt && now <= end };
 }
 
 function buildClassInviteIcs(liveClass) {
@@ -173,8 +189,8 @@ function createClassesController({ createNotification }) {
         const userMap = new Map(users.map((user) => [String(user._id), user]));
         const withNames = attachActorNames(classes, userMap);
         visibleClasses = withNames.map((liveClass) => {
-          if (canHostAny || isClassTeacher(req.user, liveClass)) return { ...liveClass, lock: null };
-          const sanitized = { ...liveClass, lock: null };
+          if (canHostAny || isClassTeacher(req.user, liveClass)) return { ...liveClass, lock: null, can_host: Boolean(liveClass.zoom_start_url || liveClass.meeting_link) };
+          const sanitized = { ...liveClass, lock: null, can_host: false };
           delete sanitized.zoom_start_url;
           return sanitized;
         });
@@ -184,8 +200,12 @@ function createClassesController({ createNotification }) {
         // it. A locked row is stripped of join/recording hints on top of the
         // usual student sanitizer, since neither is usable without the plan.
         const readyRecordings = await readyRecordingLectureIds(classes);
-        visibleClasses = classes.map((liveClass) => studentClassRow(liveClass, lockState(liveClass, viewer), {
-          recordingLectureReady: readyRecordings.has(String(liveClass.recording_video_id || '')),
+        visibleClasses = classes.map((liveClass) => ({
+          ...studentClassRow(liveClass, lockState(liveClass, viewer), {
+            recordingLectureReady: readyRecordings.has(String(liveClass.recording_video_id || '')),
+          }),
+          // The assigned teacher sees "Start class" on their own card.
+          can_host: canHostClass(req.user, liveClass),
         }));
       }
       return res.json({ classes: visibleClasses });
@@ -256,6 +276,10 @@ function createClassesController({ createNotification }) {
             waiting_room: false,
             approval_type: 2,
             auto_recording: 'cloud',
+            // When the teacher is a user on our Zoom account, Zoom shows them
+            // as host and the class appears in their own Zoom app. Zoom
+            // refuses unknown emails, so zoomService retries without it.
+            ...(data.teacher_email ? { alternative_hosts: String(data.teacher_email).trim(), alternative_hosts_email_notification: true } : {}),
           },
         });
       }
@@ -293,9 +317,18 @@ function createClassesController({ createNotification }) {
           await sendEmail({
             to: liveClass.teacher_email,
             subject: `Class scheduled: ${liveClass.title}`,
-            text: `A class has been scheduled.\n\nTitle: ${liveClass.title}\nDate: ${new Date(
-              liveClass.scheduled_date
-            ).toLocaleString()}\nDuration: ${liveClass.duration_minutes} mins\n`,
+            text: [
+              'A class has been scheduled for you.',
+              '',
+              `Title: ${liveClass.title}`,
+              `Date: ${new Date(liveClass.scheduled_date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
+              `Duration: ${liveClass.duration_minutes} mins`,
+              '',
+              'How to start: log in to the app up to 30 minutes before the class and press "Start class" on it.',
+              liveClass.zoom_start_url
+                ? `Backup host link (do not share — it makes whoever opens it the host): ${liveClass.zoom_start_url}`
+                : '',
+            ].filter((line) => line !== undefined).join('\n'),
             attachments: [
               {
                 filename: 'class-invite.ics',
@@ -525,6 +558,42 @@ function createClassesController({ createNotification }) {
     }
   }
 
+  // The Zoom HOST link for the assigned teacher (or CanHostAnyClass). Opening
+  // it starts the meeting with them as host — no Zoom login needed. Audited,
+  // because whoever holds this link controls the class.
+  async function getClassHostLink(req, res) {
+    try {
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass || liveClass.is_active === false) {
+        return res.status(404).json({ error: 'Class not found' });
+      }
+      if (!canHostClass(req.user, liveClass)) {
+        return res.status(403).json({ error: 'Only the class teacher can start this class' });
+      }
+      const window = hostWindow(liveClass);
+      if (!window.open) {
+        return res.status(400).json({
+          error: `The class can be started from ${window.opensAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
+          opens_at: window.opensAt,
+        });
+      }
+      const url = liveClass.zoom_start_url || liveClass.meeting_link || '';
+      if (!url) {
+        return res.status(404).json({ error: 'This class has no Zoom meeting to start' });
+      }
+      await recordAudit(req, {
+        action: 'class.host_link_opened',
+        target_type: 'live_class',
+        target_id: liveClass._id,
+        target_label: liveClass.title,
+      });
+      return res.json({ url });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load host link' });
+    }
+  }
+
   async function getClassSummary(req, res) {
     try {
       const { value } = await getOpenAiKey();
@@ -652,6 +721,7 @@ function createClassesController({ createNotification }) {
     deleteClassNote,
     getClassRecording,
     getClassJoinLink,
+    getClassHostLink,
     getClassSummary,
     chatAboutClass,
   };
@@ -659,4 +729,6 @@ function createClassesController({ createNotification }) {
 
 // Exported for test/classRecordingAccess.test.js: which recordings count as
 // "ready" decides whether a student row advertises a watchable lecture at all.
-module.exports = { createClassesController, readyRecordingLectureIds };
+module.exports = {
+  canHostClass,
+  hostWindow, createClassesController, readyRecordingLectureIds };

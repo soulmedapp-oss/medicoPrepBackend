@@ -88,6 +88,12 @@ async function createZoomMeeting(payload) {
   });
   if (!response.ok) {
     const body = await response.text();
+    // The teacher is not a user on this Zoom account (error 1114 / "alternative
+    // host"): create the meeting without them — the start link still works.
+    if (payload?.settings?.alternative_hosts && /1114|alternative host/i.test(body)) {
+      const { alternative_hosts, alternative_hosts_email_notification, ...settings } = payload.settings;
+      return createZoomMeeting({ ...payload, settings });
+    }
     throw new Error(`Zoom meeting create failed: ${body}`);
   }
   return response.json();
