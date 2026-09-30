@@ -166,7 +166,17 @@ async function fetchFromUrl(videoId, url) {
     signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Bunny fetch-from-url failed (${response.status})`);
-  return response.json().catch(() => ({}));
+  // Bunny answers a refused fetch with HTTP 200 and { success: false, ... } in
+  // the body — an unreachable source URL, a bad token, a file it will not
+  // accept. Treating that as success left the lecture stuck in `processing`
+  // for ever with nothing logged, so the body decides, not the status line.
+  const body = await response.json().catch(() => ({}));
+  if (body && body.success === false) {
+    throw new Error(
+      `Bunny fetch-from-url refused: ${body.message || 'no message'} (statusCode ${body.statusCode ?? 'none'})`
+    );
+  }
+  return body;
 }
 
 async function getStatus(videoId) {

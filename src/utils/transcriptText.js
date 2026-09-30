@@ -3,7 +3,7 @@
 // are joined with single spaces.
 function transcriptToPlainText(raw) {
   return String(raw || '')
-    .replace(/﻿/g, '')
+    .replace(/\uFEFF/g, '')
     .replace(/\r/g, '')
     .split('\n')
     .filter((line) => !/^WEBVTT/.test(line))

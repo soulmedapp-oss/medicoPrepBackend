@@ -93,21 +93,31 @@ async function createZoomMeeting(payload) {
   return response.json();
 }
 
-// Zoom cloud-recording files need the account token: either as a bearer
-// header (our own download) or as ?access_token= on the URL (for Bunny to
-// fetch directly). Tokens last an hour; Bunny starts the fetch immediately.
-async function tokenedDownloadUrl(downloadUrl) {
-  const token = await getZoomAccessToken();
-  if (!token) throw new Error('Zoom credentials are not configured');
-  const sep = downloadUrl.includes('?') ? '&' : '?';
-  return `${downloadUrl}${sep}access_token=${encodeURIComponent(token)}`;
+// Zoom cloud-recording files are authorised with a token on the URL
+// (?access_token=), never an Authorization header: Zoom answers a download
+// with a 302 to a CDN host, and fetch drops the Authorization header across
+// that redirect — so the header approach 401s for files Zoom redirects, and
+// works only by accident for the ones it doesn't.
+//
+// `recording.completed` carries its own short-lived `download_token` (a
+// sibling of `payload`, scoped to exactly that recording's files). Prefer it;
+// fall back to the S2S account token only when the webhook did not carry one.
+async function resolveDownloadToken(token) {
+  if (token) return token;
+  const accountToken = await getZoomAccessToken();
+  if (!accountToken) throw new Error('Zoom credentials are not configured');
+  return accountToken;
 }
 
-async function downloadRecordingFile(file, { maxBytes = 5 * 1024 * 1024 } = {}) {
-  const token = await getZoomAccessToken();
-  if (!token) throw new Error('Zoom credentials are not configured');
-  const response = await fetch(file.download_url, {
-    headers: { Authorization: `Bearer ${token}` },
+async function tokenedDownloadUrl(downloadUrl, { token } = {}) {
+  const resolved = await resolveDownloadToken(token);
+  const sep = downloadUrl.includes('?') ? '&' : '?';
+  return `${downloadUrl}${sep}access_token=${encodeURIComponent(resolved)}`;
+}
+
+async function downloadRecordingFile(file, { maxBytes = 5 * 1024 * 1024, token } = {}) {
+  const url = await tokenedDownloadUrl(file.download_url, { token });
+  const response = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(30000),
   });

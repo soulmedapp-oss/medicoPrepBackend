@@ -157,3 +157,36 @@ test('resolvePlaybackAccess: a live-class recording is playable by whoever may o
   const openPlaylist = { is_published: true, is_active: true, is_free: true, items: [{ lecture_id: lectureId }] };
   assert.deepEqual(resolvePlaybackAccess({ lecture, playlists: [openPlaylist], viewer: free, isStaff: false, sourceClass: paidClass }), { allowed: true });
 });
+
+// Two ways in means two locks, and the refusal must quote the cheaper one. A
+// recording on a basic-tier class that an admin also filed in an elite
+// playlist is unlocked by basic — quoting elite would sell the student more
+// plan than the content needs. The class lock therefore joins the playlist
+// locks in the same cheapest-tier choice, instead of only being consulted
+// when no playlist carries the lecture at all.
+test('resolvePlaybackAccess: when the class and the playlist both lock a recording, the cheapest lock is named', () => {
+  const TIERED_PLANS = [
+    { plan_name: 'free', display_name: 'Free', tier: 0, is_active: true },
+    { plan_name: 'basic', display_name: 'Basic', tier: 1, is_active: true },
+    { plan_name: 'elite', display_name: 'Elite', tier: 2, is_active: true },
+  ];
+  const lectureId = oid();
+  const lecture = { _id: lectureId, is_active: true, source_live_class_id: oid() };
+  const free = buildViewer({ subscription_plan: 'free' }, TIERED_PLANS);
+  const basicClass = { is_published: true, is_active: true, allowed_plans: ['basic'] };
+  const elitePlaylist = { is_published: true, is_active: true, allowed_plans: ['elite'], items: [{ lecture_id: lectureId }] };
+
+  assert.deepEqual(
+    resolvePlaybackAccess({ lecture, playlists: [elitePlaylist], viewer: free, isStaff: false, sourceClass: basicClass }),
+    { allowed: false, status: 403, body: upgradeRefusal({ required_plan: 'basic', required_label: 'Basic', required_tier: 1 }) }
+  );
+
+  // And the other way round: an elite class whose recording also sits in a
+  // basic playlist is unlocked by basic.
+  const eliteClass = { is_published: true, is_active: true, allowed_plans: ['elite'] };
+  const basicPlaylist = { is_published: true, is_active: true, allowed_plans: ['basic'], items: [{ lecture_id: lectureId }] };
+  assert.deepEqual(
+    resolvePlaybackAccess({ lecture, playlists: [basicPlaylist], viewer: free, isStaff: false, sourceClass: eliteClass }),
+    { allowed: false, status: 403, body: upgradeRefusal({ required_plan: 'basic', required_label: 'Basic', required_tier: 1 }) }
+  );
+});

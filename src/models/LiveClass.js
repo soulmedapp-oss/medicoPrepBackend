@@ -27,6 +27,12 @@ const liveClassSchema = new mongoose.Schema(
     zoom_recording_started_at: { type: Date },
     zoom_recording_completed_at: { type: Date },
     zoom_recording_password: { type: String },
+    // The ingest claim. Zoom redelivers `recording.completed` whenever it does
+    // not see a prompt 200, and we now answer before the ingest runs — so two
+    // deliveries can overlap. The ingest claims the class with a conditional
+    // findOneAndUpdate on this field being absent; the loser does nothing.
+    // Unset again when a step failed, so a redelivery may retry it.
+    zoom_ingest_claimed_at: { type: Date },
     is_free: { type: Boolean, default: false },
     is_published: { type: Boolean, default: false },
     is_active: { type: Boolean, default: true },

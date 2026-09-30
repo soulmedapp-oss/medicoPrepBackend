@@ -21,6 +21,15 @@
 const STUDENT_LECTURE_FIELDS =
   'title description teacher_name teacher_email subtopic provider video_url processing_status duration_seconds thumbnail_url card_thumbnail_url is_active subject subject_id';
 
+// The same allowlist as field names, for the callers that project a lean
+// document in JS rather than handing the string to Mongoose's .select().
+// Derived from the string above so the two can never disagree — an extra
+// space or a trailing one used to become an empty field name, and an
+// `undefined` under the key '' in the response.
+const STUDENT_LECTURE_FIELD_LIST = STUDENT_LECTURE_FIELDS.split(/\s+/)
+  .map((field) => field.trim())
+  .filter(Boolean);
+
 // Task 3 (spec §2): the allowlist for a lecture row inside a LOCKED
 // playlist's teaser. A student who cannot open the playlist may still see
 // what's in it — title, subtopic, duration, thumbnails — but never
@@ -82,4 +91,10 @@ function studentPlaylistView(playlist, extra) {
   return view;
 }
 
-module.exports = { STUDENT_LECTURE_FIELDS, STUDENT_TEASER_FIELDS, studentPlaylistView, teaserLectureView };
+module.exports = {
+  STUDENT_LECTURE_FIELDS,
+  STUDENT_LECTURE_FIELD_LIST,
+  STUDENT_TEASER_FIELDS,
+  studentPlaylistView,
+  teaserLectureView,
+};

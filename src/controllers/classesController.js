@@ -657,4 +657,6 @@ function createClassesController({ createNotification }) {
   };
 }
 
-module.exports = { createClassesController };
+// Exported for test/classRecordingAccess.test.js: which recordings count as
+// "ready" decides whether a student row advertises a watchable lecture at all.
+module.exports = { createClassesController, readyRecordingLectureIds };

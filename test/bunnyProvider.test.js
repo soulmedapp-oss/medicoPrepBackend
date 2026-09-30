@@ -9,6 +9,7 @@ const {
   createUpload,
   ensureCollection,
   deleteVideo,
+  fetchFromUrl,
 } = require('../src/services/video/bunnyProvider');
 
 // Sets an env var for the duration of `fn` and restores the previous value
@@ -449,6 +450,61 @@ test('deleteVideo throws on any other Bunny failure and on an empty id', async (
     await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
       await assert.rejects(() => deleteVideo('guid-1'), /Bunny delete video failed \(500\)/);
       await assert.rejects(() => deleteVideo(''), /bunny_video_id is required/);
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// Bunny answers a refused /fetch with HTTP 200 and { success: false } in the
+// body — an unreachable source URL, an expired Zoom token, a file it will not
+// accept. Trusting the status line left the lecture in `processing` for ever
+// with nothing logged and no error raised for the ingest to report.
+test('fetchFromUrl throws when Bunny answers 200 with success:false, quoting its message and statusCode', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ success: false, message: 'x', statusCode: 400 }) });
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      await assert.rejects(
+        () => fetchFromUrl('guid-1', 'https://zoom/rec.mp4?access_token=T'),
+        /Bunny fetch-from-url refused: x \(statusCode 400\)/
+      );
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+test('fetchFromUrl posts the source URL and returns the body of an accepted fetch', async () => {
+  const previousFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, json: async () => ({ success: true, statusCode: 200 }) };
+  };
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      const body = await fetchFromUrl('guid-1', 'https://zoom/rec.mp4?access_token=T');
+      assert.deepEqual(body, { success: true, statusCode: 200 });
+      assert.equal(captured.url, 'https://video.bunnycdn.com/library/99/videos/guid-1/fetch');
+      assert.equal(captured.options.method, 'POST');
+      assert.equal(captured.options.headers.AccessKey, 'FAKE-KEY');
+      assert.deepEqual(JSON.parse(captured.options.body), { url: 'https://zoom/rec.mp4?access_token=T' });
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
+
+// A non-JSON 200 must stay a success: Bunny has answered an accepted fetch
+// with an empty body before, and treating that as a failure would delete a
+// video it is already encoding.
+test('fetchFromUrl treats a 200 with an unparseable body as accepted', async () => {
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => { throw new Error('not json'); } });
+  try {
+    await withEnv({ BUNNY_STREAM_LIBRARY_ID: '99', BUNNY_STREAM_API_KEY: 'FAKE-KEY' }, async () => {
+      assert.deepEqual(await fetchFromUrl('guid-1', 'https://zoom/rec.mp4'), {});
     });
   } finally {
     global.fetch = previousFetch;

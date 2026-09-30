@@ -9,9 +9,10 @@ const {
   tokenedDownloadUrl,
   downloadRecordingFile,
 } = require('../services/zoomService');
-const { createUpload, fetchFromUrl } = require('../services/video/bunnyProvider');
+const { createUpload, fetchFromUrl, deleteVideo } = require('../services/video/bunnyProvider');
 const { getDefaultStorage } = require('../lib/uploadStorage');
 const { ingestZoomRecording } = require('../services/classRecordingIngest');
+const { resolveSubjectForWrite } = require('../utils/subjects');
 
 async function handleZoomWebhook(req, res) {
   try {
@@ -95,25 +96,35 @@ async function handleZoomWebhook(req, res) {
         : null;
       const liveClass = byMeetingId || byUuid;
 
-      // Transcript + Bunny copy. Best effort: logs and continues, never fails
-      // the webhook (Zoom would only retry and we would redo the same work).
+      // Transcript + Bunny copy. Answered FIRST: downloading a transcript and
+      // talking to Bunny takes far longer than Zoom's delivery timeout, and a
+      // 200 Zoom never sees becomes a redelivery — which is why the ingest
+      // claims the class before doing anything (see classRecordingIngest).
+      // Best effort from here on: logs and continues, never fails the webhook.
       if (liveClass) {
-        try {
-          await ingestZoomRecording(liveClass, {
-            pickRecording,
+        // `download_token` is a sibling of `payload`, not inside it, and is
+        // scoped to exactly this recording's files.
+        const downloadToken = typeof payload?.download_token === 'string' ? payload.download_token : '';
+        res.json({ ok: true });
+        setImmediate(() => {
+          ingestZoomRecording(liveClass, {
             downloadRecordingFile,
             tokenedDownloadUrl,
             storeUpload: (file, validated, folder) => getDefaultStorage().storeUpload(file, validated, folder),
             createUpload,
             fetchFromUrl,
+            deleteVideo,
+            resolveSubjectForWrite,
             Video,
             LiveClass,
             logger,
             reportError,
+            downloadToken,
+          }).catch((err) => {
+            reportError(null, err, 'zoom recording ingest crashed', { liveClassId: String(liveClass._id) });
           });
-        } catch (err) {
-          reportError(req, err, 'zoom recording ingest crashed');
-        }
+        });
+        return;
       }
     }
 

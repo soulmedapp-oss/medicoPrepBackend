@@ -62,6 +62,10 @@ function studentClassRow(liveClass, lock, { recordingLectureReady = false } = {}
     delete row.youtube_url;
     row.has_join_link = false;
     row.has_recording = false;
+    // The Bunny lecture id is a usable handle on gated content: the watch page
+    // takes it straight off this row, and a locked row that still carried it
+    // pointed the client at a lecture /videos/:id would only have refused.
+    row.recording_lecture_id = null;
   }
   return { ...row, lock: lock || null };
 }

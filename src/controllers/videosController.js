@@ -6,7 +6,7 @@ const VideoProgress = require('../models/VideoProgress');
 const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
 const { viewerFor, lockState, upgradeRefusal, featureLock } = require('../utils/entitlement');
-const { STUDENT_LECTURE_FIELDS } = require('../utils/studentProjection');
+const { STUDENT_LECTURE_FIELDS, STUDENT_LECTURE_FIELD_LIST } = require('../utils/studentProjection');
 const bunnyProvider = require('../services/video/bunnyProvider');
 const { getProvider } = require('../services/video');
 const { applyBunnyStatusTransition } = require('../services/video/statusTransition');
@@ -198,10 +198,6 @@ function cheapestLockFor(lecture, playlists, viewer) {
 // two different refusals: a real lock (403, upgrade prompt) versus a lecture
 // no published playlist carries at all (404, same as always) — never a
 // thrown error, never a token.
-function carriesLecture(playlist, lecture) {
-  return (playlist?.items || []).some((item) => String(item.lecture_id) === String(lecture._id));
-}
-
 function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff, sourceClass = null }) {
   if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
   if (lecture.is_active === false) {
@@ -213,12 +209,19 @@ function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff, sourceClas
   if (!isLecturePlayable(lecture, playlists, viewer)) {
     // A live-class recording is playable by anyone who may open the class,
     // whether or not an admin has also put it in a playlist.
+    let classLock = null;
     if (sourceClass && sourceClass.is_published && sourceClass.is_active !== false) {
-      const classLock = lockState(sourceClass, viewer);
+      classLock = lockState(sourceClass, viewer);
       if (!classLock) return { allowed: true };
-      if (!playlists.some((p) => carriesLecture(p, lecture))) return { allowed: false, status: 403, body: upgradeRefusal(classLock) };
     }
-    const lock = cheapestLockFor(lecture, playlists, viewer);
+    // Two ways in means two locks, and the refusal must name the cheaper one:
+    // a recording on a basic-tier class that an admin also filed in an elite
+    // playlist is unlocked by basic, so quoting elite would sell the student
+    // more plan than the content needs. The class lock joins the playlist
+    // locks in the same cheapest-tier choice cheapestLockFor makes.
+    const lock = [classLock, cheapestLockFor(lecture, playlists, viewer)]
+      .filter(Boolean)
+      .sort((a, b) => a.required_tier - b.required_tier)[0];
     if (!lock) return { allowed: false, status: 404, error: 'Video not found' };
     return { allowed: false, status: 403, body: upgradeRefusal(lock) };
   }
@@ -927,12 +930,20 @@ function createVideosController() {
       const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
       if (!video) return res.status(status || 404).json(body || { error });
       const lecture = Object.fromEntries(
-        ['_id', ...STUDENT_LECTURE_FIELDS.split(' ')].map((field) => [field, video[field]])
+        ['_id', ...STUDENT_LECTURE_FIELD_LIST].map((field) => [field, video[field]])
       );
+      // The back link names a class, so it may only name one the student could
+      // have reached anyway: an unpublished or deactivated class is invisible
+      // everywhere else, and echoing its title here would leak a draft
+      // class's existence off the one lecture that points at it.
       let source_class = null;
       if (video.source_live_class_id) {
-        const liveClass = await LiveClass.findById(video.source_live_class_id).select('title scheduled_date').lean();
-        if (liveClass) source_class = { id: String(liveClass._id), title: liveClass.title, scheduled_date: liveClass.scheduled_date };
+        const liveClass = await LiveClass.findById(video.source_live_class_id)
+          .select('title scheduled_date is_published is_active')
+          .lean();
+        if (liveClass && liveClass.is_published && liveClass.is_active !== false) {
+          source_class = { id: String(liveClass._id), title: liveClass.title, scheduled_date: liveClass.scheduled_date };
+        }
       }
       return res.json({ lecture, source_class });
     } catch (err) {
