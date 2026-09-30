@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 
 // Per-upload-type whitelist: extension -> content type we store/serve with.
 const UPLOAD_KINDS = {
@@ -147,11 +146,6 @@ function validateUploadedFile(kind, file) {
   return claimed;
 }
 
-function buildUploadKey(ext) {
-  const safeExt = String(ext || '').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
-  return `${Date.now()}_${crypto.randomBytes(8).toString('hex')}.${safeExt}`;
-}
-
 function isInlineSafeExtension(ext) {
   return INLINE_SAFE_EXTENSIONS.has(String(ext || '').toLowerCase());
 }
@@ -171,7 +165,6 @@ module.exports = {
   checkFileAllowed,
   detectImageType,
   validateUploadedFile,
-  buildUploadKey,
   isInlineSafeExtension,
   createFileFilter,
   invalidTypeError,

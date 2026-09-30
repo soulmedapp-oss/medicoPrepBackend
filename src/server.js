@@ -62,7 +62,6 @@ const { bodyLimits } = require('./middlewares/bodyLimits');
 const {
   createFileFilter,
   validateUploadedFile,
-  buildUploadKey,
   isInlineSafeExtension,
   getExtension,
 } = require('./utils/uploadValidation');
@@ -354,31 +353,25 @@ app.use(
 const uploadStorage = multer.memoryStorage();
 
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { createUploadStorage, UPLOAD_FOLDERS } = require('./lib/uploadStorage');
 const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
 const uploadsS3Region =
   process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : null;
 
-// Persists an in-memory multer file that already passed validateUploadedFile()
-// and returns its public path ("/uploads/<key>"). The key is random and its
-// extension comes from the validated type, never from the client filename.
-async function storeUpload(file, { ext, contentType }) {
-  const key = buildUploadKey(ext);
-  if (s3Client) {
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: uploadsBucket,
-        Key: `uploads/${key}`,
-        Body: file.buffer,
-        ContentType: contentType,
-        ContentDisposition: isInlineSafeExtension(ext) ? 'inline' : 'attachment',
-      })
-    );
-  } else {
-    fs.writeFileSync(path.join(uploadsDir, key), file.buffer);
-  }
-  return `/uploads/${key}`;
-}
+// Storage backend (S3 or local disk) and the readable key scheme live in
+// src/lib/uploadStorage.js; every upload route names its UPLOAD_FOLDERS entry.
+const fileStore = createUploadStorage({
+  uploadsDir,
+  bucket: uploadsBucket,
+  region: uploadsS3Region,
+  publicBaseUrl: process.env.UPLOADS_PUBLIC_BASE_URL || '',
+  s3Client,
+  PutObjectCommand,
+  isInlineSafeExtension,
+});
+const storeUpload = fileStore.storeUpload;
+logger.info({ mode: fileStore.mode, bucket: uploadsBucket || undefined, dir: fileStore.mode === 'disk' ? uploadsDir : undefined }, 'uploads storage');
 
 const upload = multer({
   storage: uploadStorage,
@@ -946,7 +939,7 @@ app.use(
   })
 );
 
-async function handleUpload(res, file, kind) {
+async function handleUpload(res, file, kind, folder) {
   if (!file) {
     return res.status(400).json({ error: 'File is required' });
   }
@@ -955,7 +948,7 @@ async function handleUpload(res, file, kind) {
     return res.status(400).json({ error: validated.error });
   }
   try {
-    const url = await storeUpload(file, validated);
+    const url = await storeUpload(file, validated, folder);
     return res.json({ url });
   } catch (err) {
     reportError(null, err, 'upload failed');
@@ -1008,38 +1001,38 @@ app.post(
   authMiddleware,
   authorize.any('CanAddQuestions', 'CanEditQuestions', 'CanAddQuestionBank', 'CanEditQuestionBank'),
   upload.single('file'),
-  (req, res) => handleUpload(res, req.file, 'image')
+  (req, res) => handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.questionImage)
 );
 
 app.post('/uploads/classes', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.classThumbnail)
 );
 
 app.post('/uploads/recordings', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'video')
+  handleUpload(res, req.file, 'video', UPLOAD_FOLDERS.classRecording)
 );
 
 app.post('/uploads/videos', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), videoUpload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'video')
+  handleUpload(res, req.file, 'video', UPLOAD_FOLDERS.lectureVideo)
 );
 
 // The playlist's own thumbnail image — distinct from /uploads/videos above,
 // which is the video FILE upload path (videoUpload, 'video' validation).
 // Same permission gate as writing a playlist (playlistsRoutes.js).
 app.post('/uploads/playlists', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.playlistThumbnail)
 );
 
 // A lecture's own thumbnail image (Video.thumbnail_url), shown on the student
 // lecture list. Image validation, same gate as editing a lecture.
 app.post('/uploads/lecture-thumbnails', authMiddleware, authorize.any('CanAddVideos', 'CanEditVideos'), upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.lectureThumbnail)
 );
 
 // The banner image for a plan's upgrade pitch (SubscriptionPlan.pitch.banner_url).
 // Same permission gate as writing a subscription plan.
 app.post('/uploads/plan-banners', authMiddleware, authorize.any('CanAddSubscriptionPlans', 'CanEditSubscriptionPlans'), upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.planBanner)
 );
 
 app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), transcriptUpload.single('file'), async (req, res) => {
@@ -1054,7 +1047,7 @@ app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 
   let text = '';
   let url;
   try {
-    url = await storeUpload(file, validated);
+    url = await storeUpload(file, validated, UPLOAD_FOLDERS.classTranscript);
     const raw = file.buffer.toString('utf8');
     text = raw
       .replace(/\uFEFF/g, '')
@@ -1074,11 +1067,11 @@ app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 
 });
 
 app.post('/uploads/doubts', authMiddleware, authorize.any('CanAccessDoubts', 'CanAnswerDoubts'), upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.doubtImage)
 );
 
 app.post('/uploads/profile', authMiddleware, selfService, upload.single('file'), (req, res) =>
-  handleUpload(res, req.file, 'image')
+  handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.profilePhoto)
 );
 
 // Final JSON error handler: multer (413/400), CORS (403), body-parser (400/413)

@@ -342,3 +342,90 @@ Two caches sit between a Plans-page edit and a student seeing it change:
 - **Manage Live Class**: create or edit a class and confirm **Scheduled
   by** and **Last modified** fill in with the actor's name and timestamp;
   a class created before this deploy shows `—` in both columns.
+
+## Uploads on Amazon S3 (added 2026-09-30)
+
+Thumbnails, plan banners, profile photos, doubt/question images, class
+recordings and transcripts are stored either on the server's disk
+(`UPLOADS_DIR`, dev only) or in an S3 bucket when `UPLOADS_S3_BUCKET` is set.
+Production must use S3: Lambda/Vercel have no persistent disk, and disk files
+are outside your backups.
+
+### Folder layout in the bucket
+
+Keys are readable on purpose:
+
+```
+thumbnails/lectures/2026/09/20260930-141522-a1b2c3-dr-jindal.jpg
+thumbnails/playlists/…      thumbnails/classes/…
+plans/banners/…             profiles/…        doubts/…      questions/…
+recordings/classes/…        videos/uploads/…  transcripts/classes/…
+misc/…                      (only if code ever forgets to name a folder)
+```
+
+`<folder>/<year>/<month>/<yyyymmdd-hhmmss>-<6 random hex>-<original name, slugified>.<ext>`.
+Files moved from the old disk folder by the migration script sit in the same
+folders with a `legacy-` prefix; unreferenced old files go to `misc/legacy/`.
+
+### One-time AWS setup (owner)
+
+1. **Bucket**: S3 → Create bucket, e.g. `soulmed-uploads`, region `ap-south-1`
+   (Mumbai). Leave versioning off. Under *Block Public Access* untick
+   "Block all public access" (objects must be readable by students' browsers)
+   — or keep it blocked and put CloudFront in front (step 4).
+2. **Bucket policy** (Permissions → Bucket policy), so anyone can *read*
+   objects but nobody can list or write:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Sid": "PublicReadObjects",
+       "Effect": "Allow",
+       "Principal": "*",
+       "Action": "s3:GetObject",
+       "Resource": "arn:aws:s3:::soulmed-uploads/*"
+     }]
+   }
+   ```
+3. **IAM user for the API**: IAM → Users → Create `soulmed-api-uploads`,
+   *Attach policies directly* → *Create policy* (JSON):
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"], "Resource": "arn:aws:s3:::soulmed-uploads/*" },
+       { "Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::soulmed-uploads" }
+     ]
+   }
+   ```
+   Then *Security credentials → Create access key → Application running
+   outside AWS*. Copy the key id and secret once. (On Lambda, attach the same
+   policy to the function's execution role instead and skip the access key.)
+4. **Optional CDN**: CloudFront distribution with the bucket as origin
+   (Origin access control) and, if you like, a CNAME such as
+   `cdn.soulmed.app`. Then keep Block Public Access ON and set
+   `UPLOADS_PUBLIC_BASE_URL=https://cdn.soulmed.app`.
+5. **Environment on the backend host**:
+   ```
+   UPLOADS_S3_BUCKET=soulmed-uploads
+   UPLOADS_S3_REGION=ap-south-1
+   AWS_ACCESS_KEY_ID=…            (not needed on Lambda with a role)
+   AWS_SECRET_ACCESS_KEY=…
+   UPLOADS_PUBLIC_BASE_URL=       (only with CloudFront / custom domain)
+   ```
+   Restart. The startup log prints `uploads storage mode=s3 bucket=…`.
+6. **Move the existing files** (once, from a machine that has the old
+   `uploads` folder and the same env):
+   ```
+   node src/scripts/migrate-uploads-to-s3.js --dry-run
+   node src/scripts/migrate-uploads-to-s3.js --execute
+   ```
+   It uploads every file a database field points at, rewrites those fields to
+   the new URLs, and lists anything missing on disk.
+
+### What to check after deploy
+
+- Upload a lecture thumbnail → the saved URL starts with `https://soulmed-uploads.s3…` (or your CDN) and the image shows on the student Videos page.
+- The object appears in the bucket under `thumbnails/lectures/<year>/<month>/`.
+- Old thumbnails (migrated) still display; the browser console shows no CSP errors (`img-src https:` and `media-src` already allow the bucket for images; if class recordings are served from S3, add the bucket/CDN host to `media-src` in the frontend `vercel.json`/`index.html`).
+- Cost: images are tiny; a few thousand thumbnails cost cents per month. Recordings are the only thing worth watching.

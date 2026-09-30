@@ -4,7 +4,6 @@ const {
   checkFileAllowed,
   detectImageType,
   validateUploadedFile,
-  buildUploadKey,
   isInlineSafeExtension,
   createFileFilter,
 } = require('../src/utils/uploadValidation');
@@ -81,12 +80,6 @@ test('validateUploadedFile: transcripts must be text', () => {
   assert.strictEqual(bin.ok, false);
 });
 
-test('buildUploadKey never uses client filename and keeps safe ext', () => {
-  const key = buildUploadKey('png');
-  assert.match(key, /^\d+_[a-f0-9]{16}\.png$/);
-  assert.match(buildUploadKey('../../etc'), /\.etc$/);
-  assert.match(buildUploadKey(''), /\.bin$/);
-});
 
 test('isInlineSafeExtension only for raster images', () => {
   assert.strictEqual(isInlineSafeExtension('png'), true);
