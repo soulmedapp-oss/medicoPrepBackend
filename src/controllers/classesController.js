@@ -1,4 +1,5 @@
 const LiveClass = require('../models/LiveClass');
+const Video = require('../models/Video');
 const LiveClassNote = require('../models/LiveClassNote');
 const User = require('../models/User');
 const { attachActorNames } = require('../utils/actorNames');
@@ -88,6 +89,15 @@ function buildClassInviteIcs(liveClass) {
   return lines.join('\r\n');
 }
 
+// Which of these classes' Bunny recordings have finished encoding — one
+// query for the whole page.
+async function readyRecordingLectureIds(classes) {
+  const ids = classes.map((c) => c.recording_video_id).filter(Boolean);
+  if (!ids.length) return new Set();
+  const ready = await Video.find({ _id: { $in: ids }, processing_status: 'ready', is_active: { $ne: false } }).select('_id').lean();
+  return new Set(ready.map((v) => String(v._id)));
+}
+
 function createClassesController({ createNotification }) {
   async function listClasses(req, res) {
     try {
@@ -173,7 +183,10 @@ function createClassesController({ createNotification }) {
         // dropped — the student sees what exists and what it takes to open
         // it. A locked row is stripped of join/recording hints on top of the
         // usual student sanitizer, since neither is usable without the plan.
-        visibleClasses = classes.map((liveClass) => studentClassRow(liveClass, lockState(liveClass, viewer)));
+        const readyRecordings = await readyRecordingLectureIds(classes);
+        visibleClasses = classes.map((liveClass) => studentClassRow(liveClass, lockState(liveClass, viewer), {
+          recordingLectureReady: readyRecordings.has(String(liveClass.recording_video_id || '')),
+        }));
       }
       return res.json({ classes: visibleClasses });
     } catch (err) {

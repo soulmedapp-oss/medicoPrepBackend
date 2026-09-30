@@ -154,6 +154,21 @@ async function createUpload({ title, subject }) {
   return { videoId: created.guid, libraryId };
 }
 
+// Ask Bunny to pull the file itself (used for Zoom recordings so the MP4
+// never passes through this server). Bunny answers 200 and encodes in the
+// background; the status webhook / refresh reports progress as usual.
+async function fetchFromUrl(videoId, url) {
+  const { libraryId, apiKey } = config();
+  const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${videoId}/fetch`, {
+    method: 'POST',
+    headers: { AccessKey: apiKey, 'content-type': 'application/json' },
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(BUNNY_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Bunny fetch-from-url failed (${response.status})`);
+  return response.json().catch(() => ({}));
+}
+
 async function getStatus(videoId) {
   const { libraryId, apiKey } = config();
   const response = await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${videoId}`, {
@@ -192,6 +207,7 @@ async function deleteVideo(videoId) {
 // `res.json(bunnyProvider.config())` downstream leak both. Callers that need
 // upload credentials go through createUploadCredentials instead.
 module.exports = {
+  fetchFromUrl,
   buildPlaybackToken,
   buildUploadSignature,
   getPlaybackToken,

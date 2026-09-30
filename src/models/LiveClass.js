@@ -15,6 +15,9 @@ const liveClassSchema = new mongoose.Schema(
     recording_url: { type: String },
     transcript_url: { type: String },
     transcript_text: { type: String, default: '' },
+    // The Lecture (Video) that holds this class's recording on Bunny, once the
+    // Zoom ingest has created it. Students watch it on the lecture watch page.
+    recording_video_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Video' },
     thumbnail_url: { type: String },
     zoom_meeting_id: { type: String },
     zoom_meeting_uuid: { type: String },

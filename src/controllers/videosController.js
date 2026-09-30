@@ -1,6 +1,7 @@
 const Video = require('../models/Video');
 const User = require('../models/User');
 const Playlist = require('../models/Playlist');
+const LiveClass = require('../models/LiveClass');
 const VideoProgress = require('../models/VideoProgress');
 const DiscussionPost = require('../models/DiscussionPost');
 const { isLecturePlayable } = require('../utils/playlistAccess');
@@ -197,7 +198,11 @@ function cheapestLockFor(lecture, playlists, viewer) {
 // two different refusals: a real lock (403, upgrade prompt) versus a lecture
 // no published playlist carries at all (404, same as always) — never a
 // thrown error, never a token.
-function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff }) {
+function carriesLecture(playlist, lecture) {
+  return (playlist?.items || []).some((item) => String(item.lecture_id) === String(lecture._id));
+}
+
+function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff, sourceClass = null }) {
   if (!lecture) return { allowed: false, status: 404, error: 'Video not found' };
   if (lecture.is_active === false) {
     return { allowed: false, status: 404, error: 'Video not found' };
@@ -206,6 +211,13 @@ function resolvePlaybackAccess({ lecture, playlists, viewer, isStaff }) {
     return { allowed: true };
   }
   if (!isLecturePlayable(lecture, playlists, viewer)) {
+    // A live-class recording is playable by anyone who may open the class,
+    // whether or not an admin has also put it in a playlist.
+    if (sourceClass && sourceClass.is_published && sourceClass.is_active !== false) {
+      const classLock = lockState(sourceClass, viewer);
+      if (!classLock) return { allowed: true };
+      if (!playlists.some((p) => carriesLecture(p, lecture))) return { allowed: false, status: 403, body: upgradeRefusal(classLock) };
+    }
     const lock = cheapestLockFor(lecture, playlists, viewer);
     if (!lock) return { allowed: false, status: 404, error: 'Video not found' };
     return { allowed: false, status: 403, body: upgradeRefusal(lock) };
@@ -246,7 +258,10 @@ function createVideosController() {
       }).lean();
     }
     const viewer = isStaff ? null : await viewerFor(user);
-    const decision = resolvePlaybackAccess({ lecture: video, playlists, viewer, isStaff });
+    const sourceClass = !isStaff && video.source_live_class_id
+      ? await LiveClass.findById(video.source_live_class_id).select('is_published is_active is_free allowed_plans').lean()
+      : null;
+    const decision = resolvePlaybackAccess({ lecture: video, playlists, viewer, isStaff, sourceClass });
     if (!decision.allowed) {
       // Task 3: `body` carries the uniform upgradeRefusal shape for a 403 —
       // present alongside `error` for a 404 (there body is undefined and the
@@ -903,6 +918,29 @@ function createVideosController() {
     }
   }
 
+  // One lecture for the student watch page when there is no playlist to load
+  // it through — a live-class recording opened from Live Classes or a
+  // notification. Same gate as playback; same student projection as a
+  // playlist's lecture list; plus the class it came from, for the back link.
+  async function getLectureForStudent(req, res) {
+    try {
+      const { video, error, status, body } = await loadVideoForPlayback(req.user, req.params.id);
+      if (!video) return res.status(status || 404).json(body || { error });
+      const lecture = Object.fromEntries(
+        ['_id', ...STUDENT_LECTURE_FIELDS.split(' ')].map((field) => [field, video[field]])
+      );
+      let source_class = null;
+      if (video.source_live_class_id) {
+        const liveClass = await LiveClass.findById(video.source_live_class_id).select('title scheduled_date').lean();
+        if (liveClass) source_class = { id: String(liveClass._id), title: liveClass.title, scheduled_date: liveClass.scheduled_date };
+      }
+      return res.json({ lecture, source_class });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load lecture' });
+    }
+  }
+
   return {
     // Exported so the discussions router can reuse the ONE playback gate
     // rather than growing a second copy of the entitlement rule.
@@ -916,6 +954,7 @@ function createVideosController() {
     getVideoSummary,
     chatAboutVideo,
     getVideoTranscript,
+    getLectureForStudent,
     createUploadUrl,
     refreshVideoStatus,
     getPlayback,

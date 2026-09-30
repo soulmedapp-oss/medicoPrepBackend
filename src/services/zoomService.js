@@ -93,7 +93,33 @@ async function createZoomMeeting(payload) {
   return response.json();
 }
 
+// Zoom cloud-recording files need the account token: either as a bearer
+// header (our own download) or as ?access_token= on the URL (for Bunny to
+// fetch directly). Tokens last an hour; Bunny starts the fetch immediately.
+async function tokenedDownloadUrl(downloadUrl) {
+  const token = await getZoomAccessToken();
+  if (!token) throw new Error('Zoom credentials are not configured');
+  const sep = downloadUrl.includes('?') ? '&' : '?';
+  return `${downloadUrl}${sep}access_token=${encodeURIComponent(token)}`;
+}
+
+async function downloadRecordingFile(file, { maxBytes = 5 * 1024 * 1024 } = {}) {
+  const token = await getZoomAccessToken();
+  if (!token) throw new Error('Zoom credentials are not configured');
+  const response = await fetch(file.download_url, {
+    headers: { Authorization: `Bearer ${token}` },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw new Error(`Zoom recording download failed (${response.status})`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > maxBytes) throw new Error(`Zoom recording file too large (${buffer.length} bytes)`);
+  return buffer;
+}
+
 module.exports = {
+  tokenedDownloadUrl,
+  downloadRecordingFile,
   verifyZoomWebhookSignature,
   buildZoomValidationResponse,
   getZoomAccessToken,

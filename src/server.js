@@ -353,7 +353,8 @@ app.use(
 const uploadStorage = multer.memoryStorage();
 
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { createUploadStorage, UPLOAD_FOLDERS } = require('./lib/uploadStorage');
+const { createUploadStorage, setDefaultStorage, UPLOAD_FOLDERS } = require('./lib/uploadStorage');
+const { transcriptToPlainText } = require('./utils/transcriptText');
 const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
 const uploadsS3Region =
   process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
@@ -371,6 +372,7 @@ const fileStore = createUploadStorage({
   isInlineSafeExtension,
 });
 const storeUpload = fileStore.storeUpload;
+setDefaultStorage(fileStore);
 logger.info({ mode: fileStore.mode, bucket: uploadsBucket || undefined, dir: fileStore.mode === 'disk' ? uploadsDir : undefined }, 'uploads storage');
 
 const upload = multer({
@@ -1048,18 +1050,7 @@ app.post('/uploads/transcripts', authMiddleware, authorize.any('CanAddClasses', 
   let url;
   try {
     url = await storeUpload(file, validated, UPLOAD_FOLDERS.classTranscript);
-    const raw = file.buffer.toString('utf8');
-    text = raw
-      .replace(/\uFEFF/g, '')
-      .replace(/^\d+\s*$/gm, '')
-      .replace(/\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*/g, '')
-      .replace(/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}.*/g, '')
-      .replace(/WEBVTT/g, '')
-      .replace(/\r/g, '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join(' ');
+    text = transcriptToPlainText(file.buffer.toString('utf8'));
   } catch (err) {
     return res.status(500).json({ error: 'Failed to read transcript' });
   }

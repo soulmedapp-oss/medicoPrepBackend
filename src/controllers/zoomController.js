@@ -1,10 +1,17 @@
 const LiveClass = require('../models/LiveClass');
 const { reportError } = require('../lib/errorReporter.js');
+const Video = require('../models/Video');
+const { logger } = require('../lib/logger');
 const {
   verifyZoomWebhookSignature,
   buildZoomValidationResponse,
   pickRecording,
+  tokenedDownloadUrl,
+  downloadRecordingFile,
 } = require('../services/zoomService');
+const { createUpload, fetchFromUrl } = require('../services/video/bunnyProvider');
+const { getDefaultStorage } = require('../lib/uploadStorage');
+const { ingestZoomRecording } = require('../services/classRecordingIngest');
 
 async function handleZoomWebhook(req, res) {
   try {
@@ -81,10 +88,32 @@ async function handleZoomWebhook(req, res) {
       };
 
       const byMeetingId = meetingId
-        ? await LiveClass.findOneAndUpdate({ zoom_meeting_id: meetingId }, { $set: update }, { new: true })
+        ? await LiveClass.findOneAndUpdate({ zoom_meeting_id: meetingId }, { $set: update }, { new: true }).lean()
         : null;
-      if (!byMeetingId && meetingUuid) {
-        await LiveClass.findOneAndUpdate({ zoom_meeting_uuid: meetingUuid }, { $set: update });
+      const byUuid = !byMeetingId && meetingUuid
+        ? await LiveClass.findOneAndUpdate({ zoom_meeting_uuid: meetingUuid }, { $set: update }, { new: true }).lean()
+        : null;
+      const liveClass = byMeetingId || byUuid;
+
+      // Transcript + Bunny copy. Best effort: logs and continues, never fails
+      // the webhook (Zoom would only retry and we would redo the same work).
+      if (liveClass) {
+        try {
+          await ingestZoomRecording(liveClass, {
+            pickRecording,
+            downloadRecordingFile,
+            tokenedDownloadUrl,
+            storeUpload: (file, validated, folder) => getDefaultStorage().storeUpload(file, validated, folder),
+            createUpload,
+            fetchFromUrl,
+            Video,
+            LiveClass,
+            logger,
+            reportError,
+          });
+        } catch (err) {
+          reportError(req, err, 'zoom recording ingest crashed');
+        }
       }
     }
 

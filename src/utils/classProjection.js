@@ -31,6 +31,7 @@ const STUDENT_HIDDEN_CLASS_FIELDS = [
   // student with no gate at all, on a locked class as readily as an open one.
   'transcript_text',
   'transcript_url',
+  'recording_video_id', // exposed as recording_lecture_id only when ready
 ];
 
 function sanitizeClassForStudent(liveClass) {
@@ -50,8 +51,13 @@ function sanitizeClassForStudent(liveClass) {
 // server gate) and has_join_link/has_recording report false, since neither is
 // usable without the plan. `lock` is null for an open class, and the key is
 // always present so the row shape is stable.
-function studentClassRow(liveClass, lock) {
+function studentClassRow(liveClass, lock, { recordingLectureReady = false } = {}) {
   const row = sanitizeClassForStudent(liveClass);
+  // The Bunny copy of a Zoom recording, playable on the lecture watch page.
+  // Only advertised once Bunny has finished encoding; until then the Zoom
+  // play URL (has_recording) is the fallback.
+  row.recording_lecture_id = recordingLectureReady && liveClass.recording_video_id ? String(liveClass.recording_video_id) : null;
+  if (row.recording_lecture_id) row.has_recording = true;
   if (lock) {
     delete row.youtube_url;
     row.has_join_link = false;

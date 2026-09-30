@@ -135,3 +135,25 @@ test('resolvePlaybackAccess: locked lecture → 403 with the uniform UPGRADE_REQ
   const notCarried = resolvePlaybackAccess({ lecture, playlists: [], viewer, isStaff: false });
   assert.deepEqual(notCarried, { allowed: false, status: 404, error: 'Video not found' });
 });
+
+// Zoom recording ingest: a lecture linked to a live class follows the class's
+// own gate, playlist or not.
+test('resolvePlaybackAccess: a live-class recording is playable by whoever may open the class, even with no playlist', () => {
+  const lectureId = oid();
+  const lecture = { _id: lectureId, is_active: true, source_live_class_id: oid() };
+  const free = buildViewer({ subscription_plan: 'free' }, PLANS);
+  const elite = buildViewer({ subscription_plan: 'elite' }, PLANS);
+  const openClass = { is_published: true, is_active: true, is_free: true };
+  const paidClass = { is_published: true, is_active: true, allowed_plans: ['elite'] };
+  const draftClass = { is_published: false, is_active: true, is_free: true };
+
+  assert.deepEqual(resolvePlaybackAccess({ lecture, playlists: [], viewer: free, isStaff: false, sourceClass: openClass }), { allowed: true });
+  assert.deepEqual(resolvePlaybackAccess({ lecture, playlists: [], viewer: elite, isStaff: false, sourceClass: paidClass }), { allowed: true });
+  assert.deepEqual(resolvePlaybackAccess({ lecture, playlists: [], viewer: free, isStaff: false, sourceClass: paidClass }), {
+    allowed: false, status: 403, body: upgradeRefusal({ required_plan: 'elite', required_label: 'Elite', required_tier: 2 }),
+  }, 'the class lock is the answer when no playlist carries the lecture');
+  assert.equal(resolvePlaybackAccess({ lecture, playlists: [], viewer: free, isStaff: false, sourceClass: draftClass }).status, 404, 'an unpublished class hides its recording like before');
+  // An open playlist carrying it still wins regardless of the class.
+  const openPlaylist = { is_published: true, is_active: true, is_free: true, items: [{ lecture_id: lectureId }] };
+  assert.deepEqual(resolvePlaybackAccess({ lecture, playlists: [openPlaylist], viewer: free, isStaff: false, sourceClass: paidClass }), { allowed: true });
+});

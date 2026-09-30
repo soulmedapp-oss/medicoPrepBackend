@@ -99,4 +99,13 @@ function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, s3Clie
   return { storeUpload, mode: s3Client ? 's3' : 'disk' };
 }
 
-module.exports = { UPLOAD_FOLDERS, buildUploadKey, publicUploadUrl, slugForName, createUploadStorage };
+// server.js registers its configured storage here so services (e.g. the Zoom
+// recording ingest) can store files without threading it through every call.
+let defaultStorage = null;
+function setDefaultStorage(storage) { defaultStorage = storage; }
+function getDefaultStorage() {
+  if (!defaultStorage) throw new Error('Upload storage is not initialised');
+  return defaultStorage;
+}
+
+module.exports = { UPLOAD_FOLDERS, buildUploadKey, publicUploadUrl, slugForName, createUploadStorage, setDefaultStorage, getDefaultStorage };

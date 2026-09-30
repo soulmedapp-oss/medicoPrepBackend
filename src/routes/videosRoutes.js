@@ -50,6 +50,8 @@ function createVideosRoutes({ authMiddleware }) {
     authorize.any('CanAccessVideos', 'CanViewVideos'),
     controller.getVideoTranscript
   );
+  // A lecture on its own (no playlist): live-class recordings, deep links.
+  router.get('/lectures/:id', authMiddleware, authorize.any('CanAccessVideos', 'CanViewVideos'), controller.getLectureForStudent);
 
   return router;
 }

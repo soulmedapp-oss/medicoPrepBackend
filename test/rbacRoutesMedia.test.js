@@ -44,6 +44,7 @@ test('videos routes', () => {
   // feature gate itself runs inside the controller, after this permission
   // check and the playback gate).
   expectRule(routes, 'GET', '/videos/:id/transcript', 'permission', ['CanAccessVideos', 'CanViewVideos']);
+  expectRule(routes, 'GET', '/lectures/:id', 'permission', ['CanAccessVideos', 'CanViewVideos']);
 });
 
 test('video progress routes', () => {

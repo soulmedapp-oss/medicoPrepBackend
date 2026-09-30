@@ -21,6 +21,10 @@ const videoSchema = new mongoose.Schema(
     provider: { type: String, enum: ['youtube', 'bunny'], default: 'youtube' },
     bunny_video_id: { type: String, default: '' },
     bunny_library_id: { type: String, default: '' },
+    // Set when this lecture is the recording of a live class (created by the
+    // Zoom recording.completed ingest). Such a lecture is playable by anyone
+    // who may open that class, playlist or not.
+    source_live_class_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LiveClass', index: true },
     processing_status: {
       type: String,
       enum: ['uploading', 'processing', 'ready', 'failed'],
