@@ -6,6 +6,7 @@ const { normalizeFeatures } = require('./planFeatures');
 const PITCH_ICONS = ['video', 'notes', 'questions', 'live', 'doubt', 'ai', 'analytics', 'star', 'check'];
 const PITCH_MAX_HIGHLIGHTS = 6;
 const PITCH_TEXT_MAX = 120;
+const CARD_POINTS_MAX = 12;
 
 // Final fix wave C1: a plan "has no tier" only when the field is absent or
 // null. `tier` carries a schema default of 0, so a document that has been
@@ -51,6 +52,21 @@ function validatePlanFields(body, existing) {
     if (!Number.isInteger(tier) || tier < 0) return { ok: false, error: 'tier must be a whole number of 0 or more' };
     value.tier = tier;
   }
+  if (Object.prototype.hasOwnProperty.call(value, 'card_points')) {
+    if (!Array.isArray(value.card_points)) return { ok: false, error: 'card_points must be a list of lines' };
+    if (value.card_points.length > CARD_POINTS_MAX) return { ok: false, error: `At most ${CARD_POINTS_MAX} card points` };
+    const points = [];
+    for (const line of value.card_points) {
+      const text = String(line || '').trim();
+      if (!text) continue; // blank rows from the editor are dropped, not refused
+      if (text.length > PITCH_TEXT_MAX) return { ok: false, error: `Each card point must be ${PITCH_TEXT_MAX} characters or fewer` };
+      points.push(text);
+    }
+    value.card_points = points;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'card_points_mode')) {
+    if (!['append', 'replace'].includes(value.card_points_mode)) return { ok: false, error: 'card_points_mode must be append or replace' };
+  }
   if (Object.prototype.hasOwnProperty.call(value, 'pitch')) {
     const pitch = value.pitch;
     if (!pitch || typeof pitch !== 'object' || Array.isArray(pitch)) return { ok: false, error: 'pitch must be an object' };
@@ -91,4 +107,4 @@ function validatePlanFields(body, existing) {
   return { ok: true, value };
 }
 
-module.exports = { PITCH_ICONS, PITCH_MAX_HIGHLIGHTS, PITCH_TEXT_MAX, validatePlanFields, assignMissingTiers };
+module.exports = { PITCH_ICONS, PITCH_MAX_HIGHLIGHTS, PITCH_TEXT_MAX, CARD_POINTS_MAX, validatePlanFields, assignMissingTiers };

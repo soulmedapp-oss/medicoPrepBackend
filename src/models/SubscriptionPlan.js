@@ -35,6 +35,10 @@ const subscriptionPlanSchema = new mongoose.Schema(
     features: { type: [String], default: undefined },
     // Copy for the student Upgrade dialog when this plan is the cheapest way
     // into a locked item.
+    // Free-text bullet lines for the pricing card, written by the admin.
+    // 'append' shows them after the automatic lines; 'replace' shows only these.
+    card_points: { type: [String], default: [] },
+    card_points_mode: { type: String, enum: ['append', 'replace'], default: 'append' },
     pitch: {
       headline: { type: String, default: '' },
       highlights: { type: [{ icon: { type: String }, text: { type: String }, _id: false }], default: [] },

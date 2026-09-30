@@ -122,3 +122,14 @@ test('validatePlanFields: features validated via normalizeFeatures — dedupe/re
   // A body without `features` at all passes through untouched, same as tier/pitch.
   assert.equal(Object.prototype.hasOwnProperty.call(validatePlanFields({ display_name: 'Elite' }).value, 'features'), false);
 });
+
+test('validatePlanFields: card_points are trimmed, blanks dropped, capped at 12 lines of 120 chars; mode must be append|replace', () => {
+  const ok = validatePlanFields({ card_points: ['  Doubt answers within 24h ', '', 'Weekly live revision'], card_points_mode: 'replace' });
+  assert.equal(ok.ok, true, ok.error);
+  assert.deepEqual(ok.value.card_points, ['Doubt answers within 24h', 'Weekly live revision']);
+  assert.equal(ok.value.card_points_mode, 'replace');
+  assert.match(validatePlanFields({ card_points: 'x' }).error, /list/);
+  assert.match(validatePlanFields({ card_points: Array.from({ length: 13 }, () => 'a') }).error, /12/);
+  assert.match(validatePlanFields({ card_points: ['x'.repeat(121)] }).error, /120/);
+  assert.match(validatePlanFields({ card_points_mode: 'only' }).error, /append or replace/);
+});
