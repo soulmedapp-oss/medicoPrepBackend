@@ -8,7 +8,11 @@ const { validateSubjectIfConfigured } = require('../utils/subjects');
 const { pickRecording, createZoomMeeting, zoomTokenConfigured } = require('../services/zoomService');
 const { getOpenAiKey } = require('../services/settingsService');
 const { requestClassSummary, requestClassChat } = require('../services/tutorService');
-const { sendEmail } = require('../services/emailService');
+const { sendEmail, emailConfigured } = require('../services/emailService');
+const ClassNotificationRun = require('../models/ClassNotificationRun');
+const { notifyClass } = require('../services/classNotifier');
+const { runDueReminders } = require('../services/classReminderScheduler');
+const { getActivePlans } = require('../utils/entitlement');
 const { can } = require('../rbac/can');
 const { lockState, upgradeRefusal, viewerFor, featureLock } = require('../utils/entitlement');
 // Final fix wave C2: the student class projection now lives in utils so the
@@ -42,6 +46,7 @@ const UPDATABLE_CLASS_FIELDS = [
   'is_active',
   'status',
   'allowed_plans',
+  'notify_students',
 ];
 
 function pickFields(source, fields) {
@@ -114,7 +119,20 @@ async function readyRecordingLectureIds(classes) {
   return new Set(ready.map((v) => String(v._id)));
 }
 
-function createClassesController({ createNotification }) {
+function createClassesController({ createNotification, appBaseUrl = process.env.APP_BASE_URL || process.env.CORS_ORIGIN || '' }) {
+  // Students are told in the background so publishing stays instant; every
+  // send lands on a ClassNotificationRun the admin can inspect and retry.
+  const notifierDeps = {
+    User, ClassNotificationRun, getActivePlans, createNotification, sendEmail, emailConfigured,
+    buildIcs: buildClassInviteIcs, appBaseUrl, reportError,
+  };
+  function notifyStudents(liveClass, kind, req, extra = {}) {
+    if (liveClass.notify_students === false) return Promise.resolve(null);
+    const plain = typeof liveClass.toObject === 'function' ? liveClass.toObject() : liveClass;
+    return notifyClass({ liveClass: plain, kind, triggeredBy: req?.user?.email || 'system', ...extra }, notifierDeps)
+      .catch((err) => reportError(req, err, 'class notification failed', { liveClassId: String(plain._id), kind }));
+  }
+
   async function listClasses(req, res) {
     try {
       const { all } = req.query;
@@ -343,12 +361,7 @@ function createClassesController({ createNotification }) {
       }
 
       if (liveClass.is_published) {
-        await createNotification({
-          userEmail: 'students',
-          title: 'New class scheduled',
-          message: liveClass.title || 'A new class is available.',
-          type: 'class_reminder',
-        });
+        setImmediate(() => notifyStudents(liveClass, 'published', req));
       }
       return res.status(201).json({ liveClass });
     } catch (err) {
@@ -429,15 +442,11 @@ function createClassesController({ createNotification }) {
       await recordActiveStateChange(req, { resource: 'class', before: existing, after: liveClass, targetLabel: liveClass.title });
 
       const justPublished = !existing?.is_published && liveClass.is_published;
-      const scheduleChanged = existing?.scheduled_date?.toString() !== liveClass.scheduled_date?.toString();
-      if (justPublished || scheduleChanged) {
-        await createNotification({
-          userEmail: 'students',
-          title: justPublished ? 'Class published' : 'Class updated',
-          message: liveClass.title || 'A class was updated.',
-          type: 'class_reminder',
-        });
-      }
+      const unpublished = existing?.is_published && (!liveClass.is_published || liveClass.is_active === false);
+      const scheduleChanged = liveClass.is_published && existing?.is_published
+        && new Date(existing.scheduled_date).getTime() !== new Date(liveClass.scheduled_date).getTime();
+      const kind = justPublished ? 'published' : unpublished ? 'cancelled' : scheduleChanged ? 'rescheduled' : null;
+      if (kind) setImmediate(() => notifyStudents(liveClass, kind, req));
       return res.json({ liveClass });
     } catch (err) {
       reportError(req, err);
@@ -457,6 +466,7 @@ function createClassesController({ createNotification }) {
       liveClass.updated_by_at = new Date();
       await liveClass.save();
       await recordDeactivated(req, { resource: 'class', targetId: liveClass._id, targetLabel: liveClass.title });
+      if (liveClass.is_published) setImmediate(() => notifyStudents(liveClass, 'cancelled', req));
       return res.json({ ok: true, liveClass: liveClass.toObject() });
     } catch (err) {
       reportError(req, err);
@@ -594,6 +604,55 @@ function createClassesController({ createNotification }) {
     }
   }
 
+  // What was sent for this class and to whom it failed (Manage Live Class →
+  // Notifications).
+  async function listClassNotifications(req, res) {
+    try {
+      const runs = await ClassNotificationRun.find({ live_class_id: req.params.id }).sort({ started_at: -1 }).limit(50).lean();
+      return res.json({ runs, email_configured: emailConfigured() });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load notifications' });
+    }
+  }
+
+  // Re-send the failed emails of one run (or the whole publish email when
+  // `all: true`, e.g. after SMTP was fixed).
+  async function retryClassNotifications(req, res) {
+    try {
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass) return res.status(404).json({ error: 'Class not found' });
+      const { run_id: runId, all } = req.body || {};
+      let onlyEmails = null;
+      if (!all) {
+        const run = runId ? await ClassNotificationRun.findById(runId).lean() : null;
+        if (!run || String(run.live_class_id) !== String(liveClass._id)) return res.status(404).json({ error: 'Run not found' });
+        onlyEmails = (run.failures || []).map((f) => f.email);
+        if (!onlyEmails.length) return res.status(400).json({ error: 'Nothing failed in that run' });
+      }
+      const result = await notifyClass({ liveClass, kind: all ? 'published' : 'retry', triggeredBy: req.user?.email || 'admin', onlyEmails, skipInApp: true }, notifierDeps);
+      return res.json({ result });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to retry notifications' });
+    }
+  }
+
+  // Cron entry point for serverless hosts (a long-lived server also runs
+  // this on an interval, see server.js).
+  async function runDueClassReminders(req, res) {
+    try {
+      const result = await runDueReminders({
+        LiveClass, ClassNotificationRun, logger: req.log, reportError,
+        notifyClass: (args) => notifyClass(args, notifierDeps),
+      });
+      return res.json(result);
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to run reminders' });
+    }
+  }
+
   async function getClassSummary(req, res) {
     try {
       const { value } = await getOpenAiKey();
@@ -722,6 +781,10 @@ function createClassesController({ createNotification }) {
     getClassRecording,
     getClassJoinLink,
     getClassHostLink,
+    listClassNotifications,
+    retryClassNotifications,
+    runDueClassReminders,
+    notifierDeps,
     getClassSummary,
     chatAboutClass,
   };

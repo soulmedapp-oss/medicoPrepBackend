@@ -23,6 +23,9 @@ test('classes routes', () => {
   expectRule(routes, 'POST', '/classes', 'permission', ['CanAddClasses']);
   expectRule(routes, 'PATCH', '/classes/:id', 'permission', ['CanEditClasses', 'CanDeactivateClasses']);
   expectRule(routes, 'GET', '/classes/:id/host-link', 'permission', ['CanAccessLiveClasses', 'CanViewClasses', 'CanHostAnyClass']);
+  expectRule(routes, 'GET', '/classes/:id/notifications', 'permission', ['CanViewClasses']);
+  expectRule(routes, 'POST', '/classes/:id/notifications/retry', 'permission', ['CanEditClasses']);
+  expectRule(routes, 'POST', '/classes/notifications/run-due', 'permission', ['CanEditClasses']);
   expectRule(routes, 'DELETE', '/classes/:id', 'permission', ['CanDeactivateClasses']);
   ['GET /classes/:id/notes', 'POST /classes/:id/notes', 'DELETE /classes/:classId/notes/:noteId',
     'GET /classes/:id/recording', 'GET /classes/:id/join', 'GET /classes/:id/ai-summary', 'POST /classes/:id/ai-chat',

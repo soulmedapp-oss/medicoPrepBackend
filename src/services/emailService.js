@@ -35,4 +35,9 @@ async function sendEmail({ to, subject, text, html, attachments = [] }) {
   });
 }
 
-module.exports = { sendEmail };
+function emailConfigured() {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
+  return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS);
+}
+
+module.exports = { sendEmail, emailConfigured };

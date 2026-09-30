@@ -630,6 +630,7 @@ async function updateMe(req, res) {
       'year_of_study',
       'target_exam',
       'profile_image',
+      'notify_live_classes',
       'last_login_date',
       'last_seen_date',
       'nickname',

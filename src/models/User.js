@@ -43,6 +43,8 @@ const userSchema = new mongoose.Schema(
     password_reset_expires: { type: Date },
     password_reset_requested_at: { type: Date },
     is_active: { type: Boolean, default: true },
+    // Profile → Notifications: emails about live classes (publish, reschedule, reminder).
+    notify_live_classes: { type: Boolean, default: true },
     // Bumped on password reset/change; JWTs carry it as `tv` so older tokens are rejected.
     token_version: { type: Number, default: 0 },
     // Cookie sessions (src/auth/session.js): one entry per signed-in browser,

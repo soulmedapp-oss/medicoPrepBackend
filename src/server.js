@@ -1078,6 +1078,27 @@ async function startLocalServer() {
   server.listen(port, process.env.HOST || undefined, () => {
     logger.info({ port }, `Server listening on http://localhost:${port}`);
   });
+  startClassReminderLoop();
+}
+
+// Live-class reminders (1 hour before + at start). Every 5 minutes on a
+// long-lived server; serverless hosts call POST /classes/notifications/run-due
+// from a cron instead. Send-once is guaranteed by ClassNotificationRun rows,
+// so an overlapping run or a restart cannot double-send.
+function startClassReminderLoop() {
+  const { createClassesController } = require('./controllers/classesController');
+  const { runDueReminders } = require('./services/classReminderScheduler');
+  const { notifyClass } = require('./services/classNotifier');
+  const ClassNotificationRun = require('./models/ClassNotificationRun');
+  const LiveClass = require('./models/LiveClass');
+  const { notifierDeps } = createClassesController({ createNotification });
+  const tick = () => runDueReminders({
+    LiveClass, ClassNotificationRun, logger, reportError,
+    notifyClass: (args) => notifyClass(args, notifierDeps),
+  }).catch((err) => reportError(null, err, 'class reminder loop failed'));
+  const timer = setInterval(tick, 5 * 60 * 1000);
+  timer.unref?.();
+  setTimeout(tick, 15 * 1000).unref?.();
 }
 
 if (!runningOnVercel && require.main === module) {

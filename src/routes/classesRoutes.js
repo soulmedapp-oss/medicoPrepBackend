@@ -27,6 +27,11 @@ function createClassesRoutes({ authMiddleware, createNotification }) {
   router.get('/classes/:id/join', authMiddleware, authorize('CanAccessLiveClasses'), controller.getClassJoinLink);
   // Host link: teachers reach it from Live Classes (CanAccessLiveClasses) or
   // Manage Live Class (CanViewClasses); the handler checks teacher/CanHostAnyClass.
+  router.get('/classes/:id/notifications', authMiddleware, authorize('CanViewClasses'), controller.listClassNotifications);
+  router.post('/classes/:id/notifications/retry', authMiddleware, authorize('CanEditClasses'), controller.retryClassNotifications);
+  // Reminder cron hook (serverless). Placed before /classes/:id/* so the
+  // literal "notifications" segment is never read as an id.
+  router.post('/classes/notifications/run-due', authMiddleware, authorize('CanEditClasses'), controller.runDueClassReminders);
   router.get('/classes/:id/host-link', authMiddleware, authorize.any('CanAccessLiveClasses', 'CanViewClasses', 'CanHostAnyClass'), controller.getClassHostLink);
   router.get('/classes/:id/ai-summary', authMiddleware, authorize('CanAccessLiveClasses'), controller.getClassSummary);
   router.post('/classes/:id/ai-chat', authMiddleware, authorize('CanAccessLiveClasses'), aiChatLimiter, controller.chatAboutClass);
