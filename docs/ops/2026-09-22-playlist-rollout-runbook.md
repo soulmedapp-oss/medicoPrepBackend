@@ -473,3 +473,57 @@ releases the claim so a redelivered webhook retries only what is missing.
   plan gets the upgrade prompt.
 - Sentry/logs: `zoom transcript stored`, `zoom recording handed to Bunny`;
   any `zoom … ingest failed` line names the class.
+
+## Student notifications for live classes (added 2026-09-30)
+
+Students are told about a live class five times at most:
+
+| When | Bell (in-app) | Email |
+| --- | --- | --- |
+| class published (created published, or Published switched on) | yes | yes, with a calendar (.ics) file |
+| schedule changed on a published class | yes | yes |
+| class unpublished / deactivated / deleted | yes | yes (no calendar file) |
+| 1 hour before start | yes | yes |
+| at the start (0–5 min after) | yes | no |
+
+Who: active **students** whose plan may open the class (the same rule as the
+lock badge) — a Premium-only class never emails a Free student. A student
+switches emails off under **Profile → Notifications → Email me about live
+classes** (`notify_live_classes`); the bell still shows. An admin switches
+everything off for one class with **Notify students** in the class form
+(`notify_students`).
+
+Every send writes a `ClassNotificationRun` row: kind, who triggered it,
+total / sent / failed / skipped (opted out or no email), and the failing
+addresses with the mail server's reason. **Manage Live Class → bell icon**
+on the row shows those runs, with *Retry failed* (re-sends just those
+addresses) and *Resend to everyone* (the publish email again, e.g. after
+SMTP was fixed). Retries never repeat the bell notice.
+
+Reminders: a long-lived server checks every 5 minutes (first check 15 s
+after boot). On a serverless host nothing ticks — point a cron at
+`POST /api/classes/notifications/run-due` (needs a signed-in user with
+*Edit classes*) every 5 minutes. Send-once is guaranteed by the run rows,
+so overlapping ticks or restarts cannot double-send; a reminder is skipped
+entirely (not sent late) if no tick runs inside its window.
+
+### Requirements
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` — without
+  them the bell still goes out, the run is recorded with
+  *email_configured: false*, and the dialog shows an amber warning.
+- `APP_BASE_URL` (falls back to `CORS_ORIGIN`) — the "Join from the app"
+  link in the email; set it to the student-facing site.
+
+### What to check after deploy
+- Schedule a published class → within a few seconds the bell icon → dialog
+  shows *Class published … N of N emails sent*; a test student's inbox has
+  the email with `class.ics`; their bell shows the notice.
+- Change the date → a *Class rescheduled* run appears; unpublish → *Class
+  cancelled*.
+- Put a bad address on a test student (e.g. `nobody@invalid.test`) and
+  publish → the run shows *1 failed*, *Show failed addresses* names it with
+  the SMTP reason; *Retry failed* creates a *Retry of failed emails* run.
+- Schedule a class 50 minutes out → within 5 minutes a *Reminder (1 hour
+  before)* run appears; at the start time a *Starting now* run (bell only).
+- Profile → switch the email off → next publish counts that student under
+  *opted out*, and they still get the bell.
