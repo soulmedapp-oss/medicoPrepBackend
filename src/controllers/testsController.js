@@ -15,7 +15,10 @@ const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../
 const { truncateText } = require('../utils/security');
 const { reportError } = require('../lib/errorReporter.js');
 
-// Fix round 1, Minor 2: question_text is validated up to 4000 chars but
+// Formatted question text (HTML: lists, tables) — the same limit as AI Tools V2.
+const QUESTION_TEXT_MAX = 40000;
+
+// Fix round 1, Minor 2: question_text is validated up to QUESTION_TEXT_MAX chars but
 // target_label has no maxlength — truncate before it ever reaches recordAudit.
 const LABEL_MAX = 120;
 function questionLabel(question) {
@@ -472,8 +475,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       const data = req.body || {};
-      if (!isValidTextLength(String(data.question_text || ''), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (!isValidTextLength(String(data.question_text || ''), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
         return res.status(400).json({ error: 'correct_answers is required' });
@@ -718,8 +721,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (!isValidTextLength(String(data.subject || ''), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
-      if (!isValidTextLength(String(data.question_text || ''), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (!isValidTextLength(String(data.question_text || ''), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
         return res.status(400).json({ error: 'correct_answers is required' });
@@ -887,8 +890,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (updates.subject) {
         updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
-      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       const actor = getActor(req);
       const wasActive = existing.is_active !== false;
@@ -941,8 +944,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const updates = req.body || {};
       const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditQuestions', deactivate: 'CanDeactivateQuestions' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
-      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       const actor = getActor(req);
       const previousTestId = existing.test_id;

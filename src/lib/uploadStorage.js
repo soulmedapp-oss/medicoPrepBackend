@@ -74,7 +74,33 @@ function publicUploadUrl(key, { bucket = '', region = '', publicBaseUrl = '' } =
   return `/uploads/${key}`;
 }
 
-function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, s3Client, PutObjectCommand, isInlineSafeExtension }) {
+/**
+ * Pure. The storage key behind a link this storage handed out, when it lies in
+ * `folder` — or null for anything else (another host, another folder, `..`).
+ * Lets the API read back its own uploads without fetching arbitrary URLs.
+ */
+function uploadKeyFromUrl(url, { bucket = '', region = '', publicBaseUrl = '' } = {}, folder) {
+  if (!url || typeof url !== 'string' || !folder) return null;
+  const clean = url.split(/[?#]/)[0];
+  const bases = bucket
+    ? [publicBaseUrl && publicBaseUrl.replace(/\/+$/, ''), `https://${bucket}.s3.${region || 'ap-south-1'}.amazonaws.com`].filter(Boolean)
+    : [];
+  let key = null;
+  for (const base of bases) {
+    if (clean.startsWith(`${base}/`)) { key = clean.slice(base.length + 1); break; }
+  }
+  if (!key && !bucket) {
+    // disk mode: /uploads/<key>, possibly prefixed with the API's own origin by the browser
+    const match = clean.match(/^(?:https?:\/\/[^/]+)?\/uploads\/(.+)$/);
+    if (match) key = match[1];
+  }
+  if (!key) return null;
+  try { key = decodeURIComponent(key); } catch { return null; }
+  if (!key.startsWith(`${folder}/`) || key.includes('..') || !/^[A-Za-z0-9/._-]+$/.test(key)) return null;
+  return key;
+}
+
+function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, s3Client, PutObjectCommand, GetObjectCommand, isInlineSafeExtension }) {
   const config = { bucket, region, publicBaseUrl };
 
   async function storeUpload(file, { ext, contentType }, folder) {
@@ -96,7 +122,22 @@ function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, s3Clie
     return publicUploadUrl(key, config);
   }
 
-  return { storeUpload, mode: s3Client ? 's3' : 'disk' };
+  // { body: Buffer, contentType } for a key this storage wrote; throws when missing.
+  async function readUpload(key) {
+    if (s3Client) {
+      const out = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      const body = Buffer.from(await out.Body.transformToByteArray());
+      return { body, contentType: out.ContentType || 'application/octet-stream' };
+    }
+    const root = path.resolve(uploadsDir);
+    const target = path.resolve(root, key);
+    if (!target.startsWith(root + path.sep)) throw new Error('outside the uploads folder');
+    const ext = path.extname(target).slice(1).toLowerCase();
+    const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+    return { body: fs.readFileSync(target), contentType: types[ext] || 'application/octet-stream' };
+  }
+
+  return { storeUpload, readUpload, config, mode: s3Client ? 's3' : 'disk' };
 }
 
 // server.js registers its configured storage here so services (e.g. the Zoom
@@ -108,4 +149,4 @@ function getDefaultStorage() {
   return defaultStorage;
 }
 
-module.exports = { UPLOAD_FOLDERS, buildUploadKey, publicUploadUrl, slugForName, createUploadStorage, setDefaultStorage, getDefaultStorage };
+module.exports = { UPLOAD_FOLDERS, buildUploadKey, publicUploadUrl, uploadKeyFromUrl, slugForName, createUploadStorage, setDefaultStorage, getDefaultStorage };

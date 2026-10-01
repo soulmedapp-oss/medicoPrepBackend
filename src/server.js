@@ -352,8 +352,8 @@ app.use(
 // writes to the local uploads dir.
 const uploadStorage = multer.memoryStorage();
 
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { createUploadStorage, setDefaultStorage, UPLOAD_FOLDERS } = require('./lib/uploadStorage');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { createUploadStorage, setDefaultStorage, UPLOAD_FOLDERS, uploadKeyFromUrl } = require('./lib/uploadStorage');
 const { transcriptToPlainText } = require('./utils/transcriptText');
 const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
 const uploadsS3Region =
@@ -369,6 +369,7 @@ const fileStore = createUploadStorage({
   publicBaseUrl: process.env.UPLOADS_PUBLIC_BASE_URL || '',
   s3Client,
   PutObjectCommand,
+  GetObjectCommand,
   isInlineSafeExtension,
 });
 const storeUpload = fileStore.storeUpload;
@@ -1004,6 +1005,28 @@ app.post(
   authorize.any('CanAddQuestions', 'CanEditQuestions', 'CanAddQuestionBank', 'CanEditQuestionBank'),
   upload.single('file'),
   (req, res) => handleUpload(res, req.file, 'image', UPLOAD_FOLDERS.questionImage)
+);
+
+// The bytes of a question image this API uploaded, so the editor can resize it in the
+// browser (the bucket sends no CORS headers, so the page cannot read it directly).
+// Only links to our own `questions/` uploads are served; anything else is refused.
+app.get(
+  '/uploads/questions/file',
+  authMiddleware,
+  authorize.any('CanAddQuestions', 'CanEditQuestions', 'CanAddQuestionBank', 'CanEditQuestionBank'),
+  async (req, res) => {
+    const key = uploadKeyFromUrl(String(req.query.url || ''), fileStore.config, UPLOAD_FOLDERS.questionImage);
+    if (!key) return res.status(400).json({ error: 'Only images uploaded for questions can be opened here' });
+    try {
+      const { body, contentType } = await fileStore.readUpload(key);
+      if (!contentType.startsWith('image/')) return res.status(400).json({ error: 'Not an image' });
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', 'private, no-store');
+      return res.send(body);
+    } catch (err) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+  }
 );
 
 app.post('/uploads/classes', authMiddleware, authorize.any('CanAddClasses', 'CanEditClasses'), upload.single('file'), (req, res) =>
