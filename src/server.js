@@ -1104,21 +1104,31 @@ async function startLocalServer() {
   startClassReminderLoop();
 }
 
-// Live-class reminders (1 hour before + at start). Every 5 minutes on a
-// long-lived server; serverless hosts call POST /classes/notifications/run-due
-// from a cron instead. Send-once is guaranteed by ClassNotificationRun rows,
-// so an overlapping run or a restart cannot double-send.
-function startClassReminderLoop() {
-  const { createClassesController } = require('./controllers/classesController');
+// Live-class reminders (1 hour before + at start), sent by one run of
+// runClassRemindersOnce(). A long-lived server runs it every 5 minutes; on
+// Lambda an EventBridge schedule invokes the function directly every 5 minutes
+// (lambda.js, iac/reminders.tf). Send-once is guaranteed by ClassNotificationRun
+// rows, so an overlapping run or a restart cannot double-send.
+let reminderDeps = null;
+async function runClassRemindersOnce() {
+  if (!reminderDeps) {
+    const { createClassesController } = require('./controllers/classesController');
+    const { notifyClass } = require('./services/classNotifier');
+    const { notifierDeps } = createClassesController({ createNotification });
+    reminderDeps = {
+      LiveClass: require('./models/LiveClass'),
+      ClassNotificationRun: require('./models/ClassNotificationRun'),
+      logger, reportError,
+      notifyClass: (args) => notifyClass(args, notifierDeps),
+    };
+  }
   const { runDueReminders } = require('./services/classReminderScheduler');
-  const { notifyClass } = require('./services/classNotifier');
-  const ClassNotificationRun = require('./models/ClassNotificationRun');
-  const LiveClass = require('./models/LiveClass');
-  const { notifierDeps } = createClassesController({ createNotification });
-  const tick = () => runDueReminders({
-    LiveClass, ClassNotificationRun, logger, reportError,
-    notifyClass: (args) => notifyClass(args, notifierDeps),
-  }).catch((err) => reportError(null, err, 'class reminder loop failed'));
+  return runDueReminders(reminderDeps);
+}
+
+function startClassReminderLoop() {
+  const tick = () => runClassRemindersOnce()
+    .catch((err) => reportError(null, err, 'class reminder loop failed'));
   const timer = setInterval(tick, 5 * 60 * 1000);
   timer.unref?.();
   setTimeout(tick, 15 * 1000).unref?.();
@@ -1165,4 +1175,5 @@ module.exports = async (req, res) => {
 // streamed into Express (awaiting inside the request listener drops the body).
 module.exports.rawApp = app;
 module.exports.ensureDbConnected = ensureDbConnected;
+module.exports.runClassRemindersOnce = runClassRemindersOnce;
 
