@@ -72,6 +72,18 @@ const PERMISSIONS = [
   one('Notifications', 'CanSendNotifications', 'Send notifications', 'Send notifications to users.'),
 
   ...crud('Settings', 'platform settings', ['View', 'Edit']),
+
+  // AI Tools V2. Checked by the AI service (agents/soulmed-agents app/v2/permissions.py)
+  // and by its menu, tabs and buttons; no route in this API uses them.
+  one('AiToolsV2', 'CanViewAiOverview', 'View AI Tools V2 overview', 'The AI service checklist, estimated AI spend and recent AI jobs.'),
+  one('AiToolsV2', 'CanViewAiSourceMaterial', 'View AI source material', 'See the study PDFs uploaded for AI Tools and read their passages.'),
+  one('AiToolsV2', 'CanAddAiSourceMaterial', 'Upload AI source material', 'Upload study PDFs for AI Tools and re-process them.'),
+  one('AiToolsV2', 'CanEditAiSourceMaterial', 'Edit AI source material', 'Change the chapter tag of an uploaded PDF, or delete it.'),
+  one('AiToolsV2', 'CanGenerateAiQuestions', 'Generate questions from material', 'Generate question drafts with AI, name batches, and check and send generated questions for final review.'),
+  one('AiToolsV2', 'CanImportAiQuestions', 'Import question banks', 'Import PDF/DOCX question banks, and check and send imported questions for final review.'),
+  one('AiToolsV2', 'CanReviewAiQuestions', 'Final review of AI questions', 'Approve and publish, reject or send back questions for subjects the user owns. Nobody approves a question they sent themselves.'),
+  one('AiToolsV2', 'CanAssembleAiTests', 'Assemble tests with AI Tools', 'Build a test from the question bank by blueprint in AI Tools V2.'),
+  one('AiToolsV2', 'CanEditAiSettings', 'Change AI Tools settings', 'Models, tutor limits, chunk size, feature switches and the daily spend alert.'),
   one('AdminDashboard', 'CanViewAdminDashboard', 'View admin dashboard', 'See platform analytics.'),
 
   // Student-facing page access.
