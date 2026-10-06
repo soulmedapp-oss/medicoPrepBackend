@@ -39,7 +39,7 @@ function sharedBucket(env = process.env) {
 }
 
 function uploadsPrefix(env = process.env) {
-  return sharedBucket(env) ? `soulmed-${normalizeEnvironment(env.APP_ENV)}-uploads-thumbnails` : '';
+  return sharedBucket(env) ? `soulmed-${normalizeEnvironment(env.APP_ENV)}-uploads-question` : '';
 }
 
 function logDirectory(env = process.env) {

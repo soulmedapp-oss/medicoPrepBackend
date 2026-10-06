@@ -11,7 +11,7 @@ test('shared environment bucket wins over old bucket overrides', () => {
   const env = { APP_ENV: 'dev 2', AWS_ACCOUNT_ID: '123456789012', UPLOADS_S3_BUCKET: 'old-uploads' };
   assert.equal(sharedBucket(env), 'soulmed-dev2-123456789012');
   assert.equal(uploadsBucket(env), 'soulmed-dev2-123456789012');
-  assert.equal(uploadsPrefix(env), 'soulmed-dev2-uploads-thumbnails');
+  assert.equal(uploadsPrefix(env), 'soulmed-dev2-uploads-question');
   assert.equal(sharedBucket({ APP_ENV: 'uat', S3_BUCKET: 'my-{env}-bucket' }), 'my-uat-bucket');
   assert.throws(() => sharedBucket({ APP_ENV: 'dev', S3_BUCKET: 'soulmed-{env}-{account_id}' }));
   assert.throws(() => sharedBucket({ AWS_ACCOUNT_ID: '123456789012' }));
@@ -22,12 +22,12 @@ test('shared upload URL and readback retain the service prefix', async () => {
   const { createUploadStorage, uploadKeyFromUrl } = require('../src/lib/uploadStorage');
   const sent = [];
   class Command { constructor(input) { this.input = input; } }
-  const store = createUploadStorage({ bucket: 'soulmed-dev-123456789012', region: 'ap-south-1', prefix: 'soulmed-dev-uploads-thumbnails',
+  const store = createUploadStorage({ bucket: 'soulmed-dev-123456789012', region: 'ap-south-1', prefix: 'soulmed-dev-uploads-question',
     s3Client: { send: async (command) => { sent.push(command.input); return {}; } }, PutObjectCommand: Command, isInlineSafeExtension: () => true });
   const url = await store.storeUpload({ buffer: Buffer.from('test'), originalname: 'question.png' }, { ext: 'png', contentType: 'image/png' }, 'questions');
-  assert.match(sent[0].Key, /^soulmed-dev-uploads-thumbnails\/questions\//);
+  assert.match(sent[0].Key, /^soulmed-dev-uploads-question\/questions\//);
   assert.equal(uploadKeyFromUrl(url, store.config, 'questions'), sent[0].Key);
-  assert.equal(uploadKeyFromUrl(url.replace('soulmed-dev-uploads-thumbnails/', 'soulmed-dev-ai-ingest/'), store.config, 'questions'), null);
+  assert.equal(uploadKeyFromUrl(url.replace('soulmed-dev-uploads-question/', 'soulmed-dev-ai-ingest/'), store.config, 'questions'), null);
 });
 
 test('environment names and aliases select distinct buckets', () => {
