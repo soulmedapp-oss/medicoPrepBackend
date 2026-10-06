@@ -1,0 +1,342 @@
+{
+  "execute": true,
+  "preserved_collections": [
+    "permissions",
+    "roles",
+    "users"
+  ],
+  "s3": [
+    {
+      "bucket": "soulmed-dev-ai-ingest",
+      "listed": 825,
+      "historical_versions_verified": false,
+      "deleted": 825,
+      "deletion_errors": [],
+      "failed_objects": 0,
+      "remaining_current_objects": 0
+    },
+    {
+      "bucket": "soulmed-uploads-thumbnails",
+      "listed": 5,
+      "historical_versions_verified": false,
+      "deleted": 0,
+      "deletion_errors": [
+        "AccessDenied"
+      ],
+      "failed_objects": 5,
+      "remaining_current_objects": 5
+    }
+  ],
+  "mongo": [
+    {
+      "database": "dkrTest",
+      "collections": [
+        {
+          "name": "settings",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "feedbacks",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "subscriptions",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "liveclassnotes",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "tests",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "videos",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "question_code_counters",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "rate_limits",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "connectionrequests",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "teacherrequests",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "subjects",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "questions",
+          "before": 28,
+          "deleted": 28,
+          "remaining": 0
+        },
+        {
+          "name": "payments",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "coupons",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "playlists",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "classnotificationruns",
+          "before": 4,
+          "deleted": 4,
+          "remaining": 0
+        },
+        {
+          "name": "testattempts",
+          "before": 6,
+          "deleted": 6,
+          "remaining": 0
+        },
+        {
+          "name": "discussion_posts",
+          "before": 5,
+          "deleted": 5,
+          "remaining": 0
+        },
+        {
+          "name": "subscriptionplans",
+          "before": 4,
+          "deleted": 4,
+          "remaining": 0
+        },
+        {
+          "name": "couponredemptions",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "auditlogs",
+          "before": 32,
+          "deleted": 32,
+          "remaining": 0
+        },
+        {
+          "name": "studygroups",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "videoprogresses",
+          "before": 3,
+          "deleted": 3,
+          "remaining": 0
+        },
+        {
+          "name": "liveclasses",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "tutorsessions",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "groupresources",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        },
+        {
+          "name": "notifications",
+          "before": 19,
+          "deleted": 19,
+          "remaining": 0
+        },
+        {
+          "name": "doubts",
+          "before": 0,
+          "deleted": 0,
+          "remaining": 0
+        }
+      ],
+      "preserved": {
+        "users": {
+          "count": 4,
+          "unchanged": true
+        },
+        "permissions": {
+          "count": 86,
+          "unchanged": true
+        },
+        "roles": {
+          "count": 4,
+          "unchanged": true
+        }
+      }
+    },
+    {
+      "database": "soulmed_ai_local",
+      "collections": [
+        {
+          "name": "langgraph_checkpoints",
+          "before": 139,
+          "deleted": 139,
+          "remaining": 0
+        },
+        {
+          "name": "subject_documents",
+          "before": 5,
+          "deleted": 5,
+          "remaining": 0
+        },
+        {
+          "name": "question_bank_imports",
+          "before": 17,
+          "deleted": 17,
+          "remaining": 0
+        },
+        {
+          "name": "media_assets",
+          "before": 18,
+          "deleted": 18,
+          "remaining": 0
+        },
+        {
+          "name": "ai_settings",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "document_figures",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "worker_heartbeats",
+          "before": 35,
+          "deleted": 35,
+          "remaining": 0
+        },
+        {
+          "name": "assembly_jobs",
+          "before": 2,
+          "deleted": 2,
+          "remaining": 0
+        },
+        {
+          "name": "document_chunks",
+          "before": 145,
+          "deleted": 145,
+          "remaining": 0
+        },
+        {
+          "name": "jobs",
+          "before": 19,
+          "deleted": 19,
+          "remaining": 0
+        },
+        {
+          "name": "cost_ledger",
+          "before": 14,
+          "deleted": 14,
+          "remaining": 0
+        },
+        {
+          "name": "langgraph_checkpoint_writes",
+          "before": 1309,
+          "deleted": 1309,
+          "remaining": 0
+        },
+        {
+          "name": "tutor_usage",
+          "before": 1,
+          "deleted": 1,
+          "remaining": 0
+        },
+        {
+          "name": "tutor_answer_cache",
+          "before": 3,
+          "deleted": 3,
+          "remaining": 0
+        },
+        {
+          "name": "generation_jobs",
+          "before": 12,
+          "deleted": 12,
+          "remaining": 0
+        },
+        {
+          "name": "qa_sessions",
+          "before": 7,
+          "deleted": 7,
+          "remaining": 0
+        },
+        {
+          "name": "draft_questions",
+          "before": 68,
+          "deleted": 68,
+          "remaining": 0
+        }
+      ],
+      "preserved": {}
+    }
+  ],
+  "backend_s3_retry": {
+    "bucket": "soulmed-uploads-thumbnails",
+    "credential_source": "backend",
+    "listed": 5,
+    "deleted": 0,
+    "remaining_current_objects": 5,
+    "historical_versions_verified": false,
+    "errors": [
+      "AccessDenied",
+      "AccessDenied",
+      "AccessDenied",
+      "AccessDenied",
+      "AccessDenied"
+    ]
+  }
+}
