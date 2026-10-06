@@ -79,7 +79,7 @@ function publicUploadUrl(key, { bucket = '', region = '', publicBaseUrl = '' } =
  * `folder` — or null for anything else (another host, another folder, `..`).
  * Lets the API read back its own uploads without fetching arbitrary URLs.
  */
-function uploadKeyFromUrl(url, { bucket = '', region = '', publicBaseUrl = '' } = {}, folder) {
+function uploadKeyFromUrl(url, { bucket = '', region = '', publicBaseUrl = '', prefix = '' } = {}, folder) {
   if (!url || typeof url !== 'string' || !folder) return null;
   const clean = url.split(/[?#]/)[0];
   const bases = bucket
@@ -96,15 +96,17 @@ function uploadKeyFromUrl(url, { bucket = '', region = '', publicBaseUrl = '' } 
   }
   if (!key) return null;
   try { key = decodeURIComponent(key); } catch { return null; }
-  if (!key.startsWith(`${folder}/`) || key.includes('..') || !/^[A-Za-z0-9/._-]+$/.test(key)) return null;
+  const expectedFolder = bucket && prefix ? `${prefix}/${folder}` : folder;
+  if (!key.startsWith(`${expectedFolder}/`) || key.includes('..') || !/^[A-Za-z0-9/._-]+$/.test(key)) return null;
   return key;
 }
 
-function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, s3Client, PutObjectCommand, GetObjectCommand, isInlineSafeExtension }) {
-  const config = { bucket, region, publicBaseUrl };
+function createUploadStorage({ uploadsDir, bucket, region, publicBaseUrl, prefix = '', s3Client, PutObjectCommand, GetObjectCommand, isInlineSafeExtension }) {
+  const config = { bucket, region, publicBaseUrl, prefix };
 
   async function storeUpload(file, { ext, contentType }, folder) {
-    const key = buildUploadKey(ext, folder, file?.originalname);
+    const relativeKey = buildUploadKey(ext, folder, file?.originalname);
+    const key = s3Client && prefix ? `${prefix}/${relativeKey}` : relativeKey;
     if (s3Client) {
       await s3Client.send(new PutObjectCommand({
         Bucket: bucket,

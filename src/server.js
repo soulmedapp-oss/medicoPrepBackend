@@ -365,6 +365,7 @@ const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : nul
 const fileStore = createUploadStorage({
   uploadsDir,
   bucket: uploadsBucket,
+  prefix: require('./lib/deploymentEnvironment').uploadsPrefix(),
   region: uploadsS3Region,
   publicBaseUrl: process.env.UPLOADS_PUBLIC_BASE_URL || '',
   s3Client,
