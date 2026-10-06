@@ -39,7 +39,7 @@ if (!isExecute && !process.argv.includes('--dry-run')) {
   process.exit(1);
 }
 
-const bucket = process.env.UPLOADS_S3_BUCKET || '';
+const bucket = require('../lib/deploymentEnvironment').uploadsBucket();
 const region = process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const publicBaseUrl = process.env.UPLOADS_PUBLIC_BASE_URL || '';
 const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads');

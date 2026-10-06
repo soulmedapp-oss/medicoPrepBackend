@@ -355,7 +355,7 @@ const uploadStorage = multer.memoryStorage();
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { createUploadStorage, setDefaultStorage, UPLOAD_FOLDERS, uploadKeyFromUrl } = require('./lib/uploadStorage');
 const { transcriptToPlainText } = require('./utils/transcriptText');
-const uploadsBucket = process.env.UPLOADS_S3_BUCKET || '';
+const uploadsBucket = require('./lib/deploymentEnvironment').uploadsBucket();
 const uploadsS3Region =
   process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const s3Client = uploadsBucket ? new S3Client({ region: uploadsS3Region }) : null;
@@ -1176,4 +1176,3 @@ module.exports = async (req, res) => {
 module.exports.rawApp = app;
 module.exports.ensureDbConnected = ensureDbConnected;
 module.exports.runClassRemindersOnce = runClassRemindersOnce;
-
