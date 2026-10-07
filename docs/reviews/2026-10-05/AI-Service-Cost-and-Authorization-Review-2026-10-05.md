@@ -1,5 +1,7 @@
 # AI service cost and authorization review
 
+> Update, 7 October 2026: SEC-01, the AI-media portion of SEC-03, SEC-05 and SEC-06 have code fixes and regression coverage. See `C:/SoulMedAi/myBranch/docs/AI-Isolation-Remediation-2026-10-07.md` for activation steps, commits, verification and remaining limits. The findings below preserve the original audit evidence.
+
 Review date: 5 October 2026. Status: review backlog; application fixes are not included.
 
 ## Decision
