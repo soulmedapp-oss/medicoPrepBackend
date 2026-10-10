@@ -17,6 +17,9 @@ const questionSchema = new mongoose.Schema(
     question_code: { type: String, immutable: true, index: true },
     source_type: { type: String, enum: ['pyq', 'question_bank'], default: 'question_bank' },
     origin_method: { type: String, default: 'manual' },
+    // 'two_stage' when published through AI Tools V2's review: its images are in the
+    // plain image fields, so Manage Questions edits it like a manual question.
+    review_workflow: { type: String },
     exam: { type: String, enum: ['', 'FMGE', 'NEET-PG', 'INI-CET'], default: '' },
     exam_year: { type: Number, default: null, min: 1950, validate: v => v == null || (Number.isInteger(v) && v <= new Date().getFullYear()) },
     topic: { type: String, default: '', maxlength: 120 },

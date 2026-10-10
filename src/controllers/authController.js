@@ -133,6 +133,16 @@ async function logout(req, res) {
   }
 }
 
+// POST /auth/ai-token — a short-lived bearer token for the AI service, which
+// lives on another origin and never sees the session cookies. POST so the
+// CSRF check applies: a cross-site page cannot mint one.
+function aiToken(req, res) {
+  return res.json({
+    token: session.signAiToken(req.user),
+    expires_in: session.AI_TOKEN_TTL_SECONDS,
+  });
+}
+
 async function attachEffectivePermissions(payload) {
   if (!payload) return payload;
   const { roleNames, permissions } = await loadPermissions(payload);
@@ -814,6 +824,7 @@ async function googleAuth(req, res) {
 module.exports = {
   refreshSession,
   logout,
+  aiToken,
   register,
   login,
   verifyEmail,

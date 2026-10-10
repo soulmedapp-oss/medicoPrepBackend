@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const { Transform } = require('stream');
 const pino = require('pino');
+const { normalizeEnvironment, logDirectory } = require('./deploymentEnvironment');
 
 // One JSON line per event, to stdout. Whoever collects stdout (CloudWatch on
 // Lambda, the host's log viewer on Render/Railway, a terminal locally) is a
@@ -35,7 +36,7 @@ const REDACT_PATHS = [
 // Local/VPS convenience: mirror the stream into a daily file when LOG_DIR is
 // set. Never on Lambda (read-only filesystem, and CloudWatch already has it).
 function fileDestination() {
-  const dir = process.env.LOG_DIR;
+  const dir = logDirectory();
   if (!dir || runningOnLambda || isTest) return null;
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -102,7 +103,7 @@ const logger = pino(
     level,
     base: {
       app: process.env.LOG_APP_NAME || 'SOULMED',
-      env: process.env.LOG_ENV_NAME || nodeEnv,
+      env: normalizeEnvironment(process.env.APP_ENV) || process.env.LOG_ENV_NAME || nodeEnv,
     },
     redact: { paths: REDACT_PATHS, censor: '[redacted]' },
     // "level":"info" rather than pino's numeric 30 — readable in any viewer.
