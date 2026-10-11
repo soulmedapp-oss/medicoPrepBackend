@@ -1,0 +1,2221 @@
+[
+  {
+    "method": "OPTIONS",
+    "path": {},
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/webhooks/zoom",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/webhooks/razorpay",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/webhooks/razorpay",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/health",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/register",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/login",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/verify-email",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/resend-verification",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/forgot-password",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/reset-password",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/validate-reset-token",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/me",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/me",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/nickname-available",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/google",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/refresh",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/logout",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/ai-token",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/admin/debug/rate-limit",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewSettings"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/tests",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTests",
+          "CanViewTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/tests/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTests",
+          "CanViewTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/tests/:id/stats",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTests",
+          "CanViewTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/tests/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditTests",
+          "CanDeactivateTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/tests/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/tests/:id/questions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTests",
+          "CanViewTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests/:id/questions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests/:id/questions/bulk-csv",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanBulkUploadQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests/:id/questions/assign",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAssignTestQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests/:id/questions/unassign",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAssignTestQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/questions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/question-bank",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/question-bank",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/question-bank/bulk-csv",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanBulkUploadQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/question-bank/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditQuestionBank",
+          "CanDeactivateQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/question-bank/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/questions/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditQuestions",
+          "CanDeactivateQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/questions/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/questions/bulk-delete",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/questions/bulk-activate",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateQuestions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/attempts",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tests/:id/attempts",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/attempts/:id",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/attempts/:id/review",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/doubts",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDoubts",
+          "CanViewAllDoubts"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/doubts",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDoubts"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/doubts/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDoubts",
+          "CanAnswerDoubts"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/discussions/reports",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanModerateDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/discussions/unanswered",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanModerateDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/discussions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDiscussions",
+          "CanModerateDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/discussions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/discussions/:id/upvote",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/discussions/:id/report",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/discussions/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDiscussions",
+          "CanModerateDiscussions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/feedback",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessFeedback",
+          "CanViewAllFeedback"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/feedback",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessFeedback"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/feedback/public",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/feedback/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditFeedback"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/connections/requests",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/connections/request",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/connections/requests/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/connections",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/students",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/groups",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/groups",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/groups/:id/members",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/groups/:id/resources",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/groups/:id/resources",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/groups/:groupId/resources/:resourceId/like",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/groups/:groupId/resources/:resourceId/comments",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessCommunity"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/subscription-plans",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/subscription-plans/all",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewSubscriptionPlans"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/subscription-plans",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddSubscriptionPlans"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/subscription-plans/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSubscriptionPlans",
+          "CanDeactivateSubscriptionPlans"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/subscription-plans/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateSubscriptionPlans"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/subscriptions",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/subscriptions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddSubscriptions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/subscriptions/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSubscriptions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/subscriptions/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateSubscriptions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/subscriptions/:id/extend",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSubscriptions"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/notifications",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/notifications",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanSendNotifications"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/notifications/:id",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/teacher-requests",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTeacherRequests",
+          "CanViewAllTeacherRequests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/teacher-requests",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessTeacherRequests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/teacher-requests/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditTeacherRequests"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/users",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/users",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddUsers"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PUT",
+    "path": "/users/:id/roles",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAssignUserRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/users/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditUsers",
+          "CanDeactivateUsers"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/users/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateUsers"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/subjects",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/subjects",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddSubjects"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/subjects/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSubjects"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/subjects/:id/subtopics",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddSubjects"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/subjects/:id/subtopics/:subtopicId",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSubjects"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PUT",
+    "path": "/subjects/:id/owners",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanManageSubjectOwners"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses",
+          "CanViewClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/classes",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/classes/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditClasses",
+          "CanDeactivateClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/classes/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/notes",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/classes/:id/notes",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/classes/:classId/notes/:noteId",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/recording",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/join",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/notifications",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/classes/:id/notifications/retry",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/classes/notifications/run-due",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/host-link",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses",
+          "CanViewClasses",
+          "CanHostAnyClass"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/classes/:id/ai-summary",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/classes/:id/ai-chat",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessLiveClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/videos",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/videos",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/videos/:id/upload-url",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/videos/:id/refresh-status",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/videos/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditVideos",
+          "CanDeactivateVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/videos/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/videos/:id/deletion-impact",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeleteVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/videos/:id/permanent",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeleteVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/videos/:id/ai-summary",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/videos/:id/playback",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/videos/:id/ai-chat",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/videos/:id/transcript",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/lectures/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/playlists/browse",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/playlists/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/lectures/:id/playlists",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos",
+          "CanViewVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/playlists",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewVideos",
+          "CanAddVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/playlists",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/playlists/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos",
+          "CanDeactivateVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/playlists/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/playlists/:id/items",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/playlists/:id/items",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/roles",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewRoles",
+          "CanAssignUserRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/roles",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/roles/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditRoles",
+          "CanDeactivateRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/roles/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/permissions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewPermissions",
+          "CanViewRoles"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/audit-log",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewAuditLog"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/payments/order",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/payments/verify",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/payments",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/payments/:id/cancel",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/payments/all",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewAllPayments"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/coupons/validate",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/coupons",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewCoupons"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/coupons",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddCoupons"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PATCH",
+    "path": "/coupons/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditCoupons",
+          "CanDeactivateCoupons"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "DELETE",
+    "path": "/coupons/:id",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanDeactivateCoupons"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/dashboard/admin",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewAdminDashboard"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/dashboard/student",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDashboard"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/attempts/:id/tutor",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanUseAiTutor"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/attempts/:id/tutor",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanUseAiTutor"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/tutor/chat",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanUseAiTutor"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/video-progress",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/video-progress",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/settings/openai-key",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanViewSettings"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "PUT",
+    "path": "/settings/openai-key",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanEditSettings"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/webhooks/bunny/video-status",
+    "rules": [
+      {
+        "type": "public",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/questions",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddQuestions",
+          "CanEditQuestions",
+          "CanAddQuestionBank",
+          "CanEditQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "GET",
+    "path": "/uploads/questions/file",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddQuestions",
+          "CanEditQuestions",
+          "CanAddQuestionBank",
+          "CanEditQuestionBank"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/classes",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddClasses",
+          "CanEditClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/recordings",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddClasses",
+          "CanEditClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/videos",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/playlists",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/lecture-thumbnails",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddVideos",
+          "CanEditVideos"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/plan-banners",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddSubscriptionPlans",
+          "CanEditSubscriptionPlans"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/transcripts",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAddClasses",
+          "CanEditClasses"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/doubts",
+    "rules": [
+      {
+        "type": "permission",
+        "codes": [
+          "CanAccessDoubts",
+          "CanAnswerDoubts"
+        ]
+      }
+    ],
+    "ordering_issue": null
+  },
+  {
+    "method": "POST",
+    "path": "/uploads/profile",
+    "rules": [
+      {
+        "type": "self",
+        "codes": []
+      }
+    ],
+    "ordering_issue": null
+  }
+]

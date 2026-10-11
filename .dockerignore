@@ -1,0 +1,15 @@
+node_modules
+.git
+.env*
+**/.env*
+.agents
+.codex
+.aws
+.review-workflow-tests
+.shared-storage-tests
+logs
+uploads
+test
+docs
+*.log
+*.tfstate*

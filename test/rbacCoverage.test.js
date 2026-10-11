@@ -30,7 +30,9 @@ test('no permission in the catalogue is unused by both routes and controllers', 
   const source = [...read(path.join(__dirname, '../src/routes')), ...read(path.join(__dirname, '../src/controllers')),
     fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8')].join('\n');
   // CanAccessProgress/Subscription/Payments gate frontend pages only (their APIs are selfService).
-  const frontendOnly = new Set(['CanAccessProgress', 'CanAccessSubscription', 'CanAccessPayments']);
+  // AI Tools V2 codes are checked by the AI service (agents/soulmed-agents app/v2/permissions.py) and the frontend.
+  const { codesForResource } = require('../src/rbac/permissions');
+  const frontendOnly = new Set(['CanAccessProgress', 'CanAccessSubscription', 'CanAccessPayments', ...codesForResource('AiToolsV2')]);
   // Codes whose first backend use arrives with a LATER task. Each later task must delete its entry here.
   const pendingLaterTasks = new Set();
   const unused = ALL_CODES.filter((code) => !frontendOnly.has(code) && !pendingLaterTasks.has(code) && !source.includes(`'${code}'`));

@@ -11,6 +11,11 @@ const liveClassSchema = new mongoose.Schema(
     scheduled_date: { type: Date, required: true },
     duration_minutes: { type: Number, default: 60 },
     meeting_link: { type: String },
+    live_provider: { type: String, enum: ['zoom', 'ivs-broadcast', 'ivs-interactive'], default: 'zoom' },
+    ivs_channel_arn: String,
+    ivs_playback_url: String,
+    ivs_stage_arn: String,
+    ivs_publisher_ids: { type: [String], default: [] },
     youtube_url: { type: String },
     recording_url: { type: String },
     transcript_url: { type: String },
@@ -51,4 +56,5 @@ const liveClassSchema = new mongoose.Schema(
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
 
+liveClassSchema.index({ is_published: 1, is_active: 1, _id: -1 });
 module.exports = mongoose.model('LiveClass', liveClassSchema);

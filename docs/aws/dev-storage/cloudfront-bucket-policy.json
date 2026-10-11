@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontPublicAssets",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::soulmed-dev-uploads/soulmed-dev-uploads-question/thumbnails/*",
+        "arn:aws:s3:::soulmed-dev-uploads/soulmed-dev-uploads-question/plans/banners/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::986518320302:distribution/E2JEO6N4TNUL2T"
+        }
+      }
+    }
+  ]
+}

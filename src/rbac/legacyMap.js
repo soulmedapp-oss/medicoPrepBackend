@@ -2,6 +2,11 @@ const { codesForResource, PERMISSION_CODES } = require('./permissions');
 
 const all = (...resources) => resources.flatMap(codesForResource);
 const STUDENT_PAGES = codesForResource('StudentPages');
+// AI Tools V2 for the built-in roles: teachers do everything but settings (they
+// prepare and give final review, never on a question they sent themselves);
+// the content team generates and imports. Settings stay admin-only.
+const AI_TOOLS_V2_TEACHER = codesForResource('AiToolsV2').filter((code) => code !== 'CanEditAiSettings');
+const AI_TOOLS_V2_CONTENT_TEAM = ['CanGenerateAiQuestions', 'CanImportAiQuestions'];
 
 const LEGACY_PERMISSION_MAP = {
   manage_questions: [...all('Questions', 'QuestionBank'), 'CanAddSubjects', 'CanEditSubjects', 'CanViewTests'],
@@ -65,8 +70,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     ...STUDENT_PAGES.filter((code) => code !== 'CanAccessCommunity'),
     'CanAccessTeacherRequests',
     ...mapLegacyPermissions(['manage_tests', 'manage_questions', 'manage_classes', 'manage_videos', 'manage_doubts', 'manage_students']),
+    ...AI_TOOLS_V2_TEACHER,
   ]),
-  content_writer: uniq(mapLegacyPermissions(['manage_questions'])),
+  content_writer: uniq([...mapLegacyPermissions(['manage_questions']), ...AI_TOOLS_V2_CONTENT_TEAM]),
   admin: [],
 };
 
