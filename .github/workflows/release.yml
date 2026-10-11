@@ -1,0 +1,54 @@
+name: Release backend containers
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: backend-release-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  release:
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICES: ${{ vars.ECS_API_SERVICE }} ${{ vars.ECS_TUTOR_SERVICE }} ${{ vars.ECS_MAINTENANCE_SERVICE }}
+      CONTAINER_NAME: backend
+      HEALTH_URL: ${{ vars.HEALTH_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci && npm test
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build immutable release
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            docker build -t "$image" .
+            docker push "$image"
+            digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          fi
+          echo "RELEASE_IMAGE=$REGISTRY/$ECR_REPOSITORY@$digest" >> "$GITHUB_ENV"
+      - name: Deploy and verify; roll back on failure
+        run: bash scripts/release-ecs.sh

@@ -2,7 +2,7 @@ const OpenAI = require('openai');
 const TutorSession = require('../models/TutorSession');
 const TestAttempt = require('../models/TestAttempt');
 const Question = require('../models/Question');
-const { enqueueJob } = require('../utils/inMemoryQueue');
+const { paperQuestions } = require('./examAttemptService');
 
 const {
   TUTOR_MODEL = 'gpt-4o-mini',
@@ -13,7 +13,6 @@ const {
   VIDEO_AI_CHAT_MAX_TOKENS = '600',
 } = process.env;
 const { getOpenAiKey } = require('./settingsService');
-const { reportError } = require('../lib/errorReporter.js');
 const {
   truncateText,
   MAX_TRANSCRIPT_CHARS,
@@ -22,9 +21,6 @@ const {
 } = require('../utils/security');
 
 const OPENAI_TIMEOUT_MS = 25000;
-// A pending session untouched this long is assumed lost (e.g. Lambda froze
-// before the in-memory job ran) and may be re-queued.
-const STALE_PENDING_MS = 10 * 60 * 1000;
 
 const maxTokens = Math.max(200, Number(TUTOR_MAX_TOKENS) || 600);
 const batchSize = Math.min(10, Math.max(1, Number(TUTOR_BATCH_SIZE) || 5));
@@ -42,6 +38,8 @@ async function getOpenAiClient() {
   if (!client || clientKey !== value) {
     // Bounded so a slow upstream can't hold a Lambda/API Gateway request past its limit.
     client = new OpenAI({ apiKey: value, timeout: OPENAI_TIMEOUT_MS, maxRetries: 0 });
+    const create = client.chat.completions.create.bind(client.chat.completions);
+    client.chat.completions.create = (request) => require('./modelCapacity').withModelCapacity(request, create);
     clientKey = value;
   }
   return client;
@@ -253,117 +251,49 @@ async function requestVideoChat(message, video, history = []) {
   return response.choices?.[0]?.message?.content?.trim() || '';
 }
 
-async function processTutorSession(sessionId) {
-  const session = await TutorSession.findById(sessionId);
-  if (!session || session.status === 'ready') return;
-
-  try {
-    const attempt = await TestAttempt.findById(session.attempt_id).lean();
-    if (!attempt) {
-      session.status = 'failed';
-      session.error_message = 'Attempt not found';
-      await session.save();
-      return;
+async function processTutorSession(session, checkpoint) {
+  const attempt = await TestAttempt.findById(session.attempt_id).lean();
+  if (!attempt || attempt.status !== 'completed') throw new Error('Completed attempt not found');
+  const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
+  const questions = attempt.paper_id
+    ? await paperQuestions(attempt)
+    : await Question.find({ _id: { $in: answers.map((a) => a.question_id) } }).lean();
+  const questionMap = new Map(questions.map((q) => [String(q._id), q]));
+  const processed = new Set(session.processed_question_ids || []);
+  const payloads = answers.filter((a) => !processed.has(String(a.question_id)))
+    .map((a) => questionMap.has(String(a.question_id)) ? buildQuestionPayload(questionMap.get(String(a.question_id)), a) : null)
+    .filter(Boolean);
+  const items = [...(session.items || [])];
+  if (!answers.length || !questions.length) throw new Error('No questions found for attempt');
+  for (let i = 0; i < payloads.length; i += batchSize) {
+    const batch = payloads.slice(i, i + batchSize);
+    const feedback = await requestBatchFeedback(batch);
+    for (const q of batch) {
+      const entry = feedback.find((item) => String(item.question_id) === String(q.question_id));
+      if (!entry) throw new Error('Incomplete tutor feedback');
+      items.push({ question_id: q.question_id, correct_answers: q.correct_answers, user_answer: q.user_answer,
+        feedback: String(entry.feedback || ''), concept_gap: String(entry.concept_gap || ''), next_step: String(entry.next_step || '') });
+      processed.add(String(q.question_id));
     }
-
-    const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
-    const questionIds = answers.map((answer) => answer.question_id).filter(Boolean);
-    const questions = await Question.find({ _id: { $in: questionIds } }).lean();
-    const questionMap = new Map(questions.map((question) => [String(question._id), question]));
-
-    const payloads = answers
-      .map((answer) => {
-        const question = questionMap.get(String(answer.question_id));
-        if (!question) return null;
-        return buildQuestionPayload(question, answer);
-      })
-      .filter(Boolean);
-
-    if (payloads.length === 0) {
-      session.status = 'failed';
-      session.error_message = 'No questions found for attempt';
-      await session.save();
-      return;
-    }
-
-    const items = [];
-    for (let i = 0; i < payloads.length; i += batchSize) {
-      const batch = payloads.slice(i, i + batchSize);
-      const feedback = await requestBatchFeedback(batch);
-      feedback.forEach((entry) => {
-        const source = batch.find((q) => String(q.question_id) === String(entry.question_id));
-        if (!source) return;
-        items.push({
-          question_id: source.question_id,
-          correct_answers: source.correct_answers,
-          user_answer: source.user_answer,
-          feedback: String(entry.feedback || ''),
-          concept_gap: String(entry.concept_gap || ''),
-          next_step: String(entry.next_step || ''),
-        });
-      });
-    }
-
-    const summary = await requestSummary(items);
-    session.status = 'ready';
-    session.items = items;
-    session.summary = summary;
-    session.error_message = '';
-    await session.save();
-  } catch (err) {
-    // Keep a detailed log for debugging while exposing only a generic message to users
-    reportError(null, err, 'Tutor session processing failed');
-    session.status = 'failed';
-    session.error_message = 'AI tutor is unavailable right now. Please try again later.';
-    await session.save();
+    await checkpoint({ $set: { items, processed_question_ids: [...processed] } });
   }
+  const summary = await requestSummary(items);
+  await checkpoint({ $set: { status: 'ready', items, summary, error_message: '' }, $unset: { lease_owner: '', lease_until: '' } });
 }
 
 async function enqueueTutorSession(attemptId) {
   const attempt = await TestAttempt.findById(attemptId).lean();
-  if (!attempt) {
-    throw new Error('Attempt not found');
+  if (!attempt || attempt.status !== 'completed') throw new Error('Completed attempt not found');
+  try {
+    // This row IS the durable queue. API processes never run tutor jobs.
+    return await TutorSession.findOneAndUpdate({ attempt_id: attempt._id }, { $setOnInsert: {
+      attempt_id: attempt._id, user_id: attempt.user_id, test_id: attempt.test_id,
+      status: 'pending', next_run_at: new Date(), processing_attempts: 0,
+    } }, { new: true, upsert: true });
+  } catch (err) {
+    if (err.code === 11000) return TutorSession.findOne({ attempt_id: attempt._id });
+    throw err;
   }
-
-  // Idempotent: processing is queued only by the caller that creates the
-  // session, or that atomically re-claims a failed / stale pending one.
-  const existing = await TutorSession.findOne({ attempt_id: attempt._id });
-  if (!existing) {
-    try {
-      const created = await TutorSession.create({
-        attempt_id: attempt._id,
-        user_id: attempt.user_id,
-        test_id: attempt.test_id,
-        status: 'pending',
-      });
-      enqueueJob(() => processTutorSession(created._id));
-      return created;
-    } catch (err) {
-      if (err && err.code === 11000) {
-        // A concurrent call created it first; that call owns processing.
-        return TutorSession.findOne({ attempt_id: attempt._id });
-      }
-      throw err;
-    }
-  }
-
-  const staleBefore = new Date(Date.now() - STALE_PENDING_MS);
-  const reclaimed = await TutorSession.findOneAndUpdate(
-    {
-      _id: existing._id,
-      $or: [
-        { status: 'failed' },
-        { status: 'pending', updated_date: { $lt: staleBefore } },
-      ],
-    },
-    { $set: { status: 'pending', error_message: '' } },
-    { new: true }
-  );
-  if (reclaimed) {
-    enqueueJob(() => processTutorSession(reclaimed._id));
-    return reclaimed;
-  }
-  return existing;
 }
 
 function buildClassContext(liveClass) {
@@ -417,6 +347,7 @@ async function requestClassChat(message, liveClass) {
 }
 
 module.exports = {
+  processTutorSession,
   enqueueTutorSession,
   requestChatResponse,
   requestVideoSummary,

@@ -14,6 +14,10 @@
 // which enforce the time window / plan checks.
 const STUDENT_HIDDEN_CLASS_FIELDS = [
   'meeting_link',
+  'ivs_channel_arn',
+  'ivs_playback_url',
+  'ivs_stage_arn',
+  'ivs_publisher_ids',
   'recording_url',
   'zoom_recording_files',
   'zoom_recording_password',
@@ -38,7 +42,7 @@ function sanitizeClassForStudent(liveClass) {
   const sanitized = { ...liveClass };
   const hasZoomRecording = Array.isArray(liveClass.zoom_recording_files) && liveClass.zoom_recording_files.length > 0;
   sanitized.has_recording = Boolean(liveClass.recording_url || liveClass.youtube_url || hasZoomRecording);
-  sanitized.has_join_link = Boolean(liveClass.zoom_join_url || liveClass.meeting_link);
+  sanitized.has_join_link = Boolean(liveClass.live_provider?.startsWith('ivs-') || liveClass.zoom_join_url || liveClass.meeting_link);
   STUDENT_HIDDEN_CLASS_FIELDS.forEach((field) => {
     delete sanitized[field];
   });

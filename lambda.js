@@ -12,7 +12,16 @@ const proxy = serverlessExpress({ app: rawApp });
 // every 5 minutes with exactly this payload. Such a call never comes through
 // API Gateway (it has no requestContext) and only principals allowed to invoke
 // the function — that schedule — can send it, so no secret is needed.
-const SCHEDULED_TASKS = { 'class-reminders': () => runClassRemindersOnce() };
+const { finalizeExpiredAttempts, reconcileCompletionEffects } = require('./src/services/examAttemptService');
+const SCHEDULED_TASKS = {
+  'class-reminders': () => runClassRemindersOnce(),
+  'exam-finalizer': async () => {
+    const result = await finalizeExpiredAttempts();
+    const effects = await reconcileCompletionEffects();
+    if (result.failures.length) throw new Error(`Exam finalizer failed for ${result.failures.length} attempts`);
+    return { ...result, effects };
+  },
+};
 function scheduledTask(event) {
   if (!event || event.requestContext || typeof event.task !== 'string') return null;
   return SCHEDULED_TASKS[event.task] || null;

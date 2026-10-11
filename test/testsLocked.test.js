@@ -95,6 +95,10 @@ test('createAttempt: locked test → 403 UPGRADE_REQUIRED and no attempt written
   assert.equal(res.body.lock.required_plan, 'elite');
   assert.equal(created, false, 'refuse before writing');
   const staff = mockRes();
+  stub(TestAttempt, 'findOne', () => q(null));
+  stub(Question, 'find', () => q([{ _id: oid(), correct_answers: ['1'], marks: 1 }]));
+  stub(require('../src/models/ExamPaper'), 'updateOne', async () => ({}));
+  stub(TestAttempt, 'findOneAndUpdate', (filter, update) => q({ _id: oid(), ...update.$setOnInsert }));
   await controller().createAttempt({ params: { id: String(oid()) }, user: { _id: oid(), email: 't@x.com', subscription_plan: 'free', effective_permissions: ['CanViewTests'] } }, staff);
   assert.equal(staff.statusCode, 201);
 });

@@ -54,9 +54,11 @@ async function hit(id, windowMs) {
     try {
       return { count: await incrementMongo(windowId, windowEnd), windowEnd };
     } catch (err) {
+      if (process.env.RATE_LIMIT_FAIL_CLOSED === 'true') throw err;
       // Fall through to memory so a DB hiccup never blocks requests.
     }
   }
+  if (process.env.RATE_LIMIT_FAIL_CLOSED === 'true' && !useMongoStore()) throw new Error('Shared rate limit store unavailable');
   return { count: incrementMemory(windowId, windowEnd), windowEnd };
 }
 
@@ -81,6 +83,10 @@ const createRateLimiter = ({ windowMs = 60_000, max = 5, message, name, keyGener
       const scope = name || `path:${req.path}`;
       result = await hit(`${scope}:${getKey(req)}`, windowMs);
     } catch (err) {
+      if (process.env.RATE_LIMIT_FAIL_CLOSED === 'true') {
+        res.setHeader('Retry-After', '5');
+        return res.status(503).json({ error: 'Service is temporarily unavailable. Please retry shortly.' });
+      }
       return next();
     }
     if (result.count > max) {

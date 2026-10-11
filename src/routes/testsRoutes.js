@@ -51,6 +51,7 @@ function createTestsRoutes({
   router.get('/attempts', authMiddleware, selfService, controller.listAttempts);
   router.post('/tests/:id/attempts', authMiddleware, authorize('CanAccessTests'), controller.createAttempt);
   router.patch('/attempts/:id', authMiddleware, selfService, controller.updateAttempt);
+  router.get('/attempts/:id', authMiddleware, selfService, controller.getAttempt);
   router.get('/attempts/:id/review', authMiddleware, selfService, controller.getAttemptReview);
 
   return router;

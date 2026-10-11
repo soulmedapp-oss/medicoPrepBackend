@@ -3,3 +3,12 @@ logs/
 .env
 .env.*
 !.env.example
+*.local.json
+.remaining-tests.log
+.frontend-build.log
+.agents-tests.log
+.terraform-validation.log
+.frontend-lint.log
+.frontend-tests.log
+.docker-build.log
+.frontend-linux-build.log

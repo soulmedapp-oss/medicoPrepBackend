@@ -41,6 +41,7 @@ function createTutorSessionsController() {
       return res.status(202).json({ session });
     } catch (err) {
       attachLogContext(res, err);
+      if (err.code === 'AI_BUSY') return res.status(503).set('Retry-After', '10').json({ error: 'AI tutor is busy. Please retry shortly.' });
       return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }
@@ -56,13 +57,12 @@ function createTutorSessionsController() {
         return res.status(403).json({ error: 'Not authorized' });
       }
 
-      let session = await TutorSession.findOne({ attempt_id: attempt._id }).lean();
+      const session = await TutorSession.findOne({ attempt_id: attempt._id }).lean();
       if (!session) {
         if (attempt.status !== 'completed') {
           return res.status(400).json({ error: 'Attempt is not completed yet' });
         }
-        session = await enqueueTutorSession(attempt._id);
-        return res.status(202).json({ session });
+        return res.json({ session: null });
       }
       return res.json({ session });
     } catch (err) {
@@ -99,6 +99,7 @@ function createTutorSessionsController() {
       return res.json({ reply: response });
     } catch (err) {
       attachLogContext(res, err);
+      if (err.code === 'AI_BUSY') return res.status(503).set('Retry-After', '10').json({ error: 'AI tutor is busy. Please retry shortly.' });
       return res.status(500).json({ error: 'AI tutor is unavailable right now. Please try again later.' });
     }
   }

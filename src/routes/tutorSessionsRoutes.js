@@ -16,7 +16,7 @@ function createTutorSessionsRoutes({ authMiddleware }) {
     message: 'Too many AI tutor questions. Please wait a minute.',
   });
 
-  router.post('/attempts/:id/tutor', authMiddleware, authorize('CanUseAiTutor'), controller.requestTutorSession);
+  router.post('/attempts/:id/tutor', authMiddleware, authorize('CanUseAiTutor'), tutorChatLimiter, controller.requestTutorSession);
   router.get('/attempts/:id/tutor', authMiddleware, authorize('CanUseAiTutor'), controller.getTutorSession);
   router.post('/tutor/chat', authMiddleware, authorize('CanUseAiTutor'), tutorChatLimiter, controller.chatWithTutor);
 

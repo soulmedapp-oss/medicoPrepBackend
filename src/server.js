@@ -402,9 +402,29 @@ const videoUpload = multer({
 });
 
 function initRealtime(serverInstance) {
-  const wss = new WebSocket.Server({ server: serverInstance, path: '/ws' });
+  const wss = new WebSocket.Server({ server: serverInstance, path: '/ws', maxPayload: 16 * 1024 });
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 30_000);
+  heartbeat.unref?.();
+  wss.on('close', () => clearInterval(heartbeat));
+  if (process.env.REALTIME_SHARED_ENABLED === 'true') {
+    const stop = require('./services/realtimeBus').subscribe(async (kind, payload) => {
+      if (kind === 'notification') await broadcastNotification(payload, true);
+      if (kind === 'feedback') await broadcastFeedback(payload, true);
+      if (kind === 'user') await broadcastUserEvent(payload, true);
+    });
+    wss.on('close', stop);
+  }
 
   wss.on('connection', (ws, req) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('error', (err) => logger.warn({ err }, 'WebSocket connection error'));
     const closeUnauthorized = () => {
       try {
         ws.close(1008, 'Unauthorized');
@@ -431,6 +451,7 @@ function initRealtime(serverInstance) {
       const payload = jwt.verify(token, JWT_SECRET);
       User.findById(payload.sub).lean()
         .then((user) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
           if (!user || user.is_active === false || !isTokenVersionCurrent(payload, user)) {
             closeUnauthorized();
             return;
@@ -440,7 +461,9 @@ function initRealtime(serverInstance) {
           ws.userRole = user.role;
           ws.isTeacher = Boolean(user.is_teacher);
           wsClients.add(ws);
-          ws.on('close', () => wsClients.delete(ws));
+          const expiry = setTimeout(() => ws.close(1008, 'Session expired'), Math.max(0, (payload.exp || 0) * 1000 - Date.now()));
+          expiry.unref?.();
+          ws.on('close', () => { wsClients.delete(ws); clearTimeout(expiry); });
         })
         .catch(() => closeUnauthorized());
     } catch (err) {
@@ -486,8 +509,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const wsClients = new Set();
+function sendSocket(client, payload) {
+  if (client.bufferedAmount > 256 * 1024) { client.close(1013, 'Reconnect and refresh'); return; }
+  client.send(payload, (err) => { if (err) client.terminate(); });
+}
 
-function broadcastNotification(notification) {
+async function broadcastNotification(notification, remote = false) {
+  if (!remote && notification) await require('./services/realtimeBus').publish('notification', notification);
   if (!notification) return;
   const payload = JSON.stringify({ type: 'notification', notification });
   wsClients.forEach((client) => {
@@ -499,33 +527,35 @@ function broadcastNotification(notification) {
       (notification.user_email === 'students' && !isStaffClient) ||
       client.userEmail === notification.user_email
     ) {
-      client.send(payload);
+      sendSocket(client, payload);
     }
   });
 }
 
-function broadcastFeedback(feedback) {
+async function broadcastFeedback(feedback, remote = false) {
+  if (!remote && feedback) await require('./services/realtimeBus').publish('feedback', feedback);
   if (!feedback) return;
   const payload = JSON.stringify({ type: 'feedback', feedback });
   wsClients.forEach((client) => {
     if (client.readyState !== WebSocket.OPEN) return;
     if (client.userEmail === feedback.student_email) {
-      client.send(payload);
+      sendSocket(client, payload);
     }
   });
 }
 
-function broadcastUserEvent({ userId, userEmail, type, data = {} }) {
+async function broadcastUserEvent({ userId, userEmail, type, data = {} }, remote = false) {
+  if (!remote && type) await require('./services/realtimeBus').publish('user', { userId, userEmail, type, data });
   if (!type) return;
   const payload = JSON.stringify({ type, ...data, userId, userEmail });
   wsClients.forEach((client) => {
     if (client.readyState !== WebSocket.OPEN) return;
     if (userId && String(client.userId) === String(userId)) {
-      client.send(payload);
+      sendSocket(client, payload);
       return;
     }
     if (userEmail && client.userEmail === userEmail) {
-      client.send(payload);
+      sendSocket(client, payload);
     }
   });
 }
@@ -557,7 +587,7 @@ async function createNotification({ userEmail, title, message, type = 'info', li
     type,
     link,
   });
-  broadcastNotification(notification.toObject());
+  await broadcastNotification(notification.toObject());
   return notification;
 }
 
@@ -566,12 +596,19 @@ async function connectDb() {
     return mongoose.connection;
   }
   await mongoose.connect(MONGODB_URI, {
-    autoIndex: true,
+    autoIndex: process.env.NODE_ENV !== 'production',
+    maxPoolSize: Math.max(1, Math.min(100, Number(process.env.MONGO_MAX_POOL_SIZE) || 20)),
+    minPoolSize: 0,
+    maxConnecting: 2,
+    serverSelectionTimeoutMS: 5000,
+    waitQueueTimeoutMS: 5000,
   });
-  await ensureDefaultSubscriptionPlans();
-  await ensurePlanTiers();
-  await ensurePlanFeatures();
-  await ensureDefaultRoles();
+  if (process.env.NODE_ENV !== 'production' || process.env.RUN_STARTUP_SEEDS === 'true') {
+    await ensureDefaultSubscriptionPlans();
+    await ensurePlanTiers();
+    await ensurePlanFeatures();
+    await ensureDefaultRoles();
+  }
   // eslint-disable-next-line no-console
   logger.info({ db: mongoose.connection.name, host: mongoose.connection.host }, `MongoDB connected (db: ${mongoose.connection.name})`);
 }
@@ -790,6 +827,12 @@ async function ensureDefaultRoles() {
   );
   await Role.updateMany({ name: { $in: ['admin', 'student'] } }, { $set: { is_system: true } });
 }
+
+let draining = false;
+app.get('/ready', publicRoute, (req, res) => {
+  const ready = !draining && mongoose.connection.readyState === 1;
+  res.status(ready ? 200 : 503).json({ ok: ready });
+});
 
 app.get('/health', publicRoute, (req, res) => {
   res.json({ ok: true });
@@ -1103,6 +1146,34 @@ async function startLocalServer() {
     logger.info({ port }, `Server listening on http://localhost:${port}`);
   });
   startClassReminderLoop();
+  if (process.env.RUN_MAINTENANCE_IN_API !== 'false') startExamFinalizerLoop();
+  const shutdown = () => {
+    if (draining) return;
+    draining = true;
+    for (const ws of wsClients) ws.close(1001, 'Server restarting');
+    server.close(async () => { await mongoose.disconnect(); process.exit(0); });
+    setTimeout(() => process.exit(1), 25_000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+}
+
+function startExamFinalizerLoop() {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const { finalizeExpiredAttempts, reconcileCompletionEffects } = require('./services/examAttemptService');
+      const result = await finalizeExpiredAttempts();
+      if (result.failures.length) logger.error({ failures: result.failures }, 'exam finalizer failures');
+      await reconcileCompletionEffects();
+    } catch (err) {
+      reportError(null, err, 'exam finalizer loop failed');
+    } finally { running = false; }
+  };
+  setInterval(tick, 60_000).unref?.();
+  setTimeout(tick, 10_000).unref?.();
 }
 
 // Live-class reminders (1 hour before + at start), sent by one run of

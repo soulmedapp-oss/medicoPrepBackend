@@ -25,6 +25,8 @@ function createClassesRoutes({ authMiddleware, createNotification }) {
   router.delete('/classes/:classId/notes/:noteId', authMiddleware, authorize('CanAccessLiveClasses'), controller.deleteClassNote);
   router.get('/classes/:id/recording', authMiddleware, authorize('CanAccessLiveClasses'), controller.getClassRecording);
   router.get('/classes/:id/join', authMiddleware, authorize('CanAccessLiveClasses'), controller.getClassJoinLink);
+  router.post('/classes/:id/live-session', authMiddleware, authorize.any('CanAccessLiveClasses', 'CanHostAnyClass'), controller.getLiveSession);
+  router.patch('/classes/:id/live-config', authMiddleware, authorize('CanEditClasses'), controller.configureLiveClass);
   // Host link: teachers reach it from Live Classes (CanAccessLiveClasses) or
   // Manage Live Class (CanViewClasses); the handler checks teacher/CanHostAnyClass.
   router.get('/classes/:id/notifications', authMiddleware, authorize('CanViewClasses'), controller.listClassNotifications);

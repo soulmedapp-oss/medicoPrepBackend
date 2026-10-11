@@ -33,6 +33,7 @@ const oid = () => new mongoose.Types.ObjectId();
 function q(value) {
   const chain = {
     sort: () => chain,
+    limit: () => chain,
     select: () => chain,
     lean: async () => value,
     then: (resolve, reject) => Promise.resolve(value).then(resolve, reject),
@@ -45,6 +46,7 @@ function mockRes() {
     statusCode: 200,
     body: undefined,
     status(code) { this.statusCode = code; return this; },
+    set() { return this; },
     json(payload) { this.body = payload; return this; },
   };
 }
@@ -68,6 +70,49 @@ test.afterEach(() => {
 function controller() {
   return createClassesController({ createNotification: async () => {} });
 }
+
+test('live class listing derives time status without writing during GET', async () => {
+  const liveClass = { _id: oid(), scheduled_date: new Date(Date.now() - 1000), duration_minutes: 60, status: 'scheduled', is_published: true, is_free: true };
+  stub(LiveClass, 'find', () => q([liveClass]));
+  stub(LiveClass, 'findByIdAndUpdate', () => { throw new Error('GET must not write'); });
+  const res = mockRes();
+  await controller().listClasses({ query: {}, user: { role: 'student', subscription_plan: 'free' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.classes[0].status, 'live');
+});
+
+test('class pages return an opaque next cursor and bound each database read', async () => {
+  const rows = [{ _id: oid(), status: 'completed' }, { _id: oid(), status: 'completed' }];
+  let requestedLimit;
+  stub(LiveClass, 'find', () => ({ sort() { return this; }, limit(value) { requestedLimit = value; return this; }, lean: async () => rows }));
+  const res = mockRes();
+  await controller().listClasses({ query: { all: 'true', limit: '1' }, user: { effective_permissions: ['CanViewClasses'] } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(requestedLimit, 2);
+  assert.equal(res.body.classes.length, 1);
+  assert.equal(res.body.next_cursor, String(rows[0]._id));
+});
+
+test('interactive live sessions never grant student publishing from request input', async () => {
+  const ivs = require('../src/services/ivsService');
+  const student = { _id: oid(), subscription_plan: 'free', role: 'student' };
+  const liveClass = { _id: oid(), scheduled_date: new Date(), duration_minutes: 60, status: 'live', is_published: true, is_free: true, live_provider: 'ivs-interactive', ivs_publisher_ids: [] };
+  stub(LiveClass, 'findById', () => q(liveClass));
+  stub(ivs, 'interactiveSession', async (row, user, publish) => { assert.equal(publish, false); return { token: 'subscribe-only' }; });
+  const res = mockRes();
+  await controller().getLiveSession({ params: { id: String(liveClass._id) }, user: student, userId: student._id, body: { can_publish: true } }, res);
+  assert.equal(res.statusCode, 200);
+});
+
+test('live-session tokens are denied for a locked class before contacting IVS', async () => {
+  const ivs = require('../src/services/ivsService');
+  const liveClass = { _id: oid(), scheduled_date: new Date(), duration_minutes: 60, is_published: true, allowed_plans: ['elite'], live_provider: 'ivs-interactive' };
+  stub(LiveClass, 'findById', () => q(liveClass));
+  stub(ivs, 'interactiveSession', async () => { throw new Error('Locked content must not reach provider'); });
+  const res = mockRes();
+  await controller().getLiveSession({ params: { id: String(liveClass._id) }, user: { _id: oid(), role: 'student', subscription_plan: 'free' } }, res);
+  assert.equal(res.statusCode, 403);
+});
 
 test('listClasses: locked classes are returned with lock and stripped of join/recording hints', async () => {
   // listClasses runs a Zoom-status refresh loop over the fetched classes
