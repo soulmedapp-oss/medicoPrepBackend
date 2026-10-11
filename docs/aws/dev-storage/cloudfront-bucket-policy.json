@@ -14,7 +14,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "AWS:SourceArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID"
+          "AWS:SourceArn": "arn:aws:cloudfront::986518320302:distribution/E2JEO6N4TNUL2T"
         }
       }
     }
