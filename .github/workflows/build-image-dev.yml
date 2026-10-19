@@ -1,0 +1,60 @@
+name: Build backend dev image
+on:
+  push:
+    branches: [feature/dkrSeptAPI]
+    paths:
+      - .github/workflows/build-image-dev.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: backend-dev-image
+  cancel-in-progress: false
+jobs:
+  build:
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Test
+        run: npm ci && npm test
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://127.0.0.1:27017/soulmed_ci_test
+          JWT_SECRET: ci-test-only-not-for-deployment
+      - name: Check configuration
+        run: |
+          test "$AWS_REGION" = ap-south-1
+          test "$ECR_REPOSITORY" = soulmed-dev-backend
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: '986518320302'
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build and publish without deploying
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          digest=$(aws ecr list-images --repository-name "$ECR_REPOSITORY" --filter tagStatus=TAGGED --query "imageIds[?imageTag=='$GITHUB_SHA'].imageDigest | [0]" --output text)
+          if [[ "$digest" == None || -z "$digest" ]]; then
+            image="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+            docker build -t "$image" .
+            docker push "$image"
+            digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "### Backend dev image" >> "$GITHUB_STEP_SUMMARY"
+          echo "$REGISTRY/$ECR_REPOSITORY@$digest" >> "$GITHUB_STEP_SUMMARY"
