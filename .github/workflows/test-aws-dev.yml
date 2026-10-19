@@ -1,6 +1,11 @@
 name: Test backend dev AWS connection
 
 on:
+  push:
+    branches:
+      - feature/dkrSeptAPI
+    paths:
+      - .github/workflows/test-aws-dev.yml
   workflow_dispatch:
 
 permissions:
