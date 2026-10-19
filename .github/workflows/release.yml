@@ -4,8 +4,8 @@ on:
     inputs:
       environment:
         type: choice
-        options: [staging, production]
-        default: staging
+        options: [dev, qa, uat, prod]
+        default: dev
         required: true
 permissions:
   contents: read
@@ -31,6 +31,10 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci && npm test
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://127.0.0.1:27017/soulmed_ci_test
+          JWT_SECRET: ci-test-only-not-for-deployment
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
