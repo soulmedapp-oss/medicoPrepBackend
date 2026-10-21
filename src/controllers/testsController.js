@@ -4,6 +4,7 @@ const { parse } = require('csv-parse/sync');
 const Test = require('../models/Test');
 const Question = require('../models/Question');
 const TestAttempt = require('../models/TestAttempt');
+const examAttempts = require('../services/examAttemptService');
 const User = require('../models/User');
 const { isValidTextLength } = require('../utils/validation');
 const { validateSubjectIfConfigured } = require('../utils/subjects');
@@ -15,7 +16,10 @@ const { recordAudit, recordActiveStateChange, recordDeactivated } = require('../
 const { truncateText } = require('../utils/security');
 const { reportError } = require('../lib/errorReporter.js');
 
-// Fix round 1, Minor 2: question_text is validated up to 4000 chars but
+// Formatted question text (HTML: lists, tables) — the same limit as AI Tools V2.
+const QUESTION_TEXT_MAX = 40000;
+
+// Fix round 1, Minor 2: question_text is validated up to QUESTION_TEXT_MAX chars but
 // target_label has no maxlength — truncate before it ever reaches recordAudit.
 const LABEL_MAX = 120;
 function questionLabel(question) {
@@ -268,9 +272,16 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
       if (!test.is_published || !isTestLiveForStudent(test)) {
         if (!canAny(req.user, ['CanViewTests', 'CanViewQuestions'])) {
-          return res.status(test.is_published ? 404 : 403).json({
-            error: test.is_published ? 'Test not available' : 'Staff access required',
-          });
+          // A closed exam remains readable to its participants for resume and
+          // result recovery. This never permits starting a fresh closed exam.
+          const participated = test.is_published && test.is_active !== false && test.available_until &&
+            new Date(test.available_until) <= new Date() &&
+            await TestAttempt.findOne({ test_id: test._id, user_id: req.user._id, exam_protocol: 1 }).select('_id').lean();
+          if (!participated) {
+            return res.status(test.is_published ? 404 : 403).json({
+              error: test.is_published ? 'Test not available' : 'Staff access required',
+            });
+          }
         }
       }
       // Final fix wave I1: the test carries `lock` for the same reason every
@@ -472,8 +483,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       const data = req.body || {};
-      if (!isValidTextLength(String(data.question_text || ''), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (!isValidTextLength(String(data.question_text || ''), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
         return res.status(400).json({ error: 'correct_answers is required' });
@@ -718,8 +729,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (!isValidTextLength(String(data.subject || ''), 2, 120)) {
         return res.status(400).json({ error: 'subject must be between 2 and 120 characters' });
       }
-      if (!isValidTextLength(String(data.question_text || ''), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (!isValidTextLength(String(data.question_text || ''), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       if (!Array.isArray(data.correct_answers) || data.correct_answers.length === 0) {
         return res.status(400).json({ error: 'correct_answers is required' });
@@ -887,8 +898,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       if (updates.subject) {
         updates.subject = await validateSubjectIfConfigured(updates.subject);
       }
-      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       const actor = getActor(req);
       const wasActive = existing.is_active !== false;
@@ -941,8 +952,8 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       const updates = req.body || {};
       const missing = missingUpdatePermissions(req.user, updates, existing, { edit: 'CanEditQuestions', deactivate: 'CanDeactivateQuestions' });
       if (missing) return res.status(403).json({ error: 'Permission denied', required: missing });
-      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, 4000)) {
-        return res.status(400).json({ error: 'question_text must be between 2 and 4000 characters' });
+      if (updates.question_text && !isValidTextLength(String(updates.question_text), 2, QUESTION_TEXT_MAX)) {
+        return res.status(400).json({ error: `question_text must be between 2 and ${QUESTION_TEXT_MAX} characters` });
       }
       const actor = getActor(req);
       const previousTestId = existing.test_id;
@@ -1163,6 +1174,20 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(403).json({ error: 'Staff access required' });
       }
 
+      if (process.env.TEST_STATS_CACHE_ENABLED === 'true') {
+        const { getSharedStats, personalize } = require('../services/testStatsCache');
+        const snapshot = await getSharedStats(test);
+        if (!snapshot) return res.status(503).set('Retry-After', '2').json({ error: 'Results are being prepared. Please retry shortly.' });
+        const ownFilter = { test_id: test._id, status: 'completed' };
+        let selected = null;
+        if (req.query.attempt_id && mongoose.isValidObjectId(String(req.query.attempt_id))) {
+          selected = await TestAttempt.findOne({ ...ownFilter, _id: req.query.attempt_id,
+            ...(!canViewAllAttempts ? { user_id: req.userId } : {}) }).select('percentage').lean();
+        }
+        if (!selected && req.userId) selected = await TestAttempt.findOne({ ...ownFilter, user_id: req.userId })
+          .sort({ completed_at: -1 }).select('percentage').lean();
+        return res.json({ stats: personalize(snapshot, selected?.percentage) });
+      }
       const completedFilter = { test_id: test._id, status: 'completed' };
       const numericFilter = { ...completedFilter, percentage: { $type: 'number' } };
       const [summary] = await TestAttempt.aggregate([
@@ -1257,26 +1282,51 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
 
       const user = req.user;
       const isStaff = canAny(user, ['CanViewTests', 'CanViewQuestions']);
-      if (!isStaff && !isTestLiveForStudent(test)) {
-        return res.status(403).json({ error: 'This test is not currently available' });
-      }
       if (!isStaff) {
         const lock = lockState(test, await viewerFor(user));
         if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
 
-      // Status, start time and marks are server-controlled; the request body is ignored.
-      const attempt = await TestAttempt.create({
+      const activeKey = { test_id: test._id, user_id: user._id, status: 'in_progress', exam_protocol: 1 };
+      // Startup auto-indexing can still be in flight on a cold environment.
+      // Never admit concurrent starts before the unique index is ready.
+      if (mongoose.connection.readyState === 1) await TestAttempt.init();
+      let attempt = await TestAttempt.findOne(activeKey).lean();
+      if (attempt) {
+        const questions = await examAttempts.paperQuestions(attempt);
+        return res.json({ attempt: examAttempts.publicAttempt(attempt), questions: questions.map(stripAnswerKey) });
+      }
+      if (!isStaff && !isTestLiveForStudent(test)) {
+        return res.status(403).json({ error: 'This test is not currently available' });
+      }
+      const questions = await Question.find(buildQuestionFilter(test._id, user, await viewerFor(user)))
+        .sort({ created_date: 1, _id: 1 }).lean();
+      if (!questions.length) return res.status(409).json({ error: 'This test has no available questions' });
+      const startedAt = new Date();
+      const paperId = await examAttempts.snapshotPaper(test._id, questions);
+      const initial = {
         test_id: req.params.id,
         user_id: user._id,
         user_email: user.email,
         user_name: user.full_name,
         status: 'in_progress',
-        started_at: new Date(),
+        started_at: startedAt,
+        deadline_at: examAttempts.deadlineFor(test, startedAt),
+        paper_id: paperId,
+        exam_protocol: 1,
+        answer_version: 0,
         total_marks: test.total_marks ?? 0,
-      });
-
-      return res.status(201).json({ attempt });
+      };
+      try {
+        attempt = await TestAttempt.findOneAndUpdate(activeKey, { $setOnInsert: initial },
+          { upsert: true, new: true, runValidators: true }).lean();
+      } catch (err) {
+        if (err.code !== 11000) throw err;
+        attempt = await TestAttempt.findOne(activeKey).lean();
+        if (!attempt) throw err;
+      }
+      const paper = attempt.paper_id === paperId ? questions : await examAttempts.paperQuestions(attempt);
+      return res.status(201).json({ attempt: examAttempts.publicAttempt(attempt), questions: paper.map(stripAnswerKey) });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to create attempt' });
@@ -1339,20 +1389,37 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         return res.status(403).json({ error: 'Not authorized' });
       }
       if (attempt.status === 'completed') {
-        return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
+        return res.status(409).json({ error: 'Attempt is already completed and cannot be modified', code: 'ATTEMPT_COMPLETED' });
       }
 
       const body = req.body || {};
+      const versioned = attempt.exam_protocol === 1;
+      const isExpired = examAttempts.expired(attempt);
+      if (versioned && !isExpired && (!Number.isSafeInteger(body.answer_version) || body.answer_version !== attempt.answer_version)) {
+        return res.status(409).json({ error: 'Answers changed in another request. Reload the saved attempt.', code: 'ANSWER_VERSION_CONFLICT', attempt: examAttempts.publicAttempt(attempt) });
+      }
       const nextStatus = body.status === undefined ? attempt.status : body.status;
       if (!['in_progress', 'completed'].includes(nextStatus)) {
         return res.status(400).json({ error: "status must be 'in_progress' or 'completed'" });
       }
-      const hasAnswers = Object.prototype.hasOwnProperty.call(body, 'answers');
-      const answerMap = hasAnswers
-        ? normalizeSubmittedAnswers(body.answers)
+      const hasDelta = Object.prototype.hasOwnProperty.call(body, 'answers_delta');
+      const hasFullAnswers = Object.prototype.hasOwnProperty.call(body, 'answers');
+      if (hasDelta && (!versioned || hasFullAnswers || !body.answers_delta || typeof body.answers_delta !== 'object' || Array.isArray(body.answers_delta))) {
+        return res.status(400).json({ error: 'Send either answers or an answers_delta object with an answer version' });
+      }
+      const hasAnswers = hasFullAnswers || hasDelta;
+      const answerMap = hasAnswers && !isExpired
+        ? (hasDelta ? { ...normalizeSubmittedAnswers(attempt.answers), ...normalizeSubmittedAnswers(body.answers_delta) } : normalizeSubmittedAnswers(body.answers))
         : normalizeSubmittedAnswers(attempt.answers);
-      const timeTaken = sanitizeTimeTaken(body.time_taken_seconds, attempt);
+      const timeTaken = isExpired
+        ? Math.max(0, Math.floor((new Date(attempt.deadline_at) - new Date(attempt.started_at)) / 1000))
+        : sanitizeTimeTaken(body.time_taken_seconds, attempt);
       const notCompleted = { _id: attempt._id, status: { $ne: 'completed' } };
+      if (versioned) notCompleted.answer_version = attempt.answer_version;
+
+      if (isExpired && nextStatus !== 'completed') {
+        return res.status(409).json({ error: 'The exam deadline has passed. Submit to view your saved result.', code: 'ATTEMPT_EXPIRED' });
+      }
 
       if (nextStatus !== 'completed') {
         const set = { status: nextStatus, time_taken_seconds: timeTaken };
@@ -1366,11 +1433,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
               marks_obtained: 0,
             }));
         }
-        const saved = await TestAttempt.findOneAndUpdate(notCompleted, { $set: set }, { new: true, runValidators: true }).lean();
+        if (versioned) notCompleted.deadline_at = { $gt: new Date() };
+        const saved = await TestAttempt.findOneAndUpdate(notCompleted, { $set: set, ...(versioned ? { $inc: { answer_version: 1 } } : {}) }, { new: true, runValidators: true }).lean();
         if (!saved) {
-          return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
+          return res.status(409).json({ error: 'The attempt changed or its deadline passed. Reload before retrying.', code: 'ATTEMPT_CHANGED' });
         }
-        return res.json({ attempt: saved });
+        return res.json({ attempt: examAttempts.publicAttempt(saved) });
       }
 
       // Grade against exactly the questions the attempt owner (the caller, per the
@@ -1386,10 +1454,12 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
         const lock = test ? lockState(test, viewer) : null;
         if (lock) return res.status(403).json(upgradeRefusal(lock));
       }
-      const questions = await Question.find(buildQuestionFilter(attempt.test_id, req.user, viewer))
+      const questions = versioned ? await examAttempts.paperQuestions(attempt) : await Question.find(buildQuestionFilter(attempt.test_id, req.user, viewer))
         .sort({ created_date: 1 })
         .lean();
       const graded = gradeAttempt(questions, answerMap);
+      // Do not accept a new answer sheet if the deadline passed during grading.
+      if (versioned && !isExpired) notCompleted.deadline_at = { $gt: new Date() };
 
       // Atomic transition: only one request can move the attempt to completed,
       // so completion side effects (incl. tutor enqueue) run exactly once.
@@ -1403,17 +1473,22 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
             total_marks: graded.total_marks,
             percentage: graded.percentage,
             time_taken_seconds: timeTaken,
-            completed_at: new Date(),
+            completed_at: isExpired ? attempt.deadline_at : new Date(),
+            ...(versioned ? { completion_effects_pending: true } : {}),
           },
+          ...(versioned ? { $inc: { answer_version: 1 } } : {}),
         },
         { new: true, runValidators: true }
       ).lean();
       if (!saved) {
-        return res.status(409).json({ error: 'Attempt is already completed and cannot be modified' });
+        return res.status(409).json({ error: 'The attempt changed. Reload before retrying.', code: 'ATTEMPT_CHANGED' });
       }
 
-      await runCompletionSideEffects(saved);
-      return res.json({ attempt: saved, questions });
+      // New attempts persist follow-up work with completion. The scheduled
+      // reconciler updates derived counters; expensive tutor work is requested
+      // separately rather than automatically fan-out at exam end.
+      if (!versioned) await runCompletionSideEffects(saved);
+      return res.json({ attempt: examAttempts.publicAttempt(saved), questions });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to update attempt' });
@@ -1442,13 +1517,26 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
       }
 
       const ids = (attempt.answers || []).map((a) => a.question_id).filter(Boolean);
-      const found = await Question.find({ _id: { $in: ids } }).lean();
+      const found = attempt.paper_id ? await examAttempts.paperQuestions(attempt) : await Question.find({ _id: { $in: ids } }).lean();
       const byId = new Map(found.map((q) => [String(q._id), q]));
       const questions = ids.map((id) => byId.get(String(id))).filter(Boolean);
       return res.json({ attempt, questions });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load attempt review' });
+    }
+  }
+
+  async function getAttempt(req, res) {
+    try {
+      if (!mongoose.isValidObjectId(String(req.params.id))) return res.status(404).json({ error: 'Attempt not found' });
+      const attempt = await TestAttempt.findById(req.params.id).lean();
+      if (!attempt) return res.status(404).json({ error: 'Attempt not found' });
+      if (String(attempt.user_id) !== String(req.userId)) return res.status(403).json({ error: 'Not authorized' });
+      return res.json({ attempt: examAttempts.publicAttempt(attempt) });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load attempt' });
     }
   }
 
@@ -1477,6 +1565,7 @@ function createTestsController({ createNotification, broadcastUserEvent, enqueue
     getTestStats,
     createAttempt,
     updateAttempt,
+    getAttempt,
     getAttemptReview,
   };
 }

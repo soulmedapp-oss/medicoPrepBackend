@@ -39,7 +39,8 @@ if (!isExecute && !process.argv.includes('--dry-run')) {
   process.exit(1);
 }
 
-const bucket = process.env.UPLOADS_S3_BUCKET || '';
+const bucket = require('../lib/deploymentEnvironment').uploadsBucket();
+const uploadPrefix = require('../lib/deploymentEnvironment').uploadsPrefix();
 const region = process.env.UPLOADS_S3_REGION || process.env.AWS_REGION || 'ap-south-1';
 const publicBaseUrl = process.env.UPLOADS_PUBLIC_BASE_URL || '';
 const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads');
@@ -85,7 +86,7 @@ async function main() {
     const abs = path.join(uploadsDir, relPath);
     if (!fs.existsSync(abs)) { missing.push(relPath); return null; }
     const ext = getExtension(relPath) || 'bin';
-    const key = `${folder}/legacy-${path.basename(relPath).replace(/[^A-Za-z0-9._-]+/g, '-')}`;
+    const key = `${uploadPrefix ? `${uploadPrefix}/` : ''}${folder}/legacy-${path.basename(relPath).replace(/[^A-Za-z0-9._-]+/g, '-')}`;
     const url = publicUploadUrl(key, { bucket, region, publicBaseUrl });
     if (isExecute) {
       await s3.send(new PutObjectCommand({

@@ -1,0 +1,39 @@
+name: Test backend dev AWS connection
+
+on:
+  push:
+    branches:
+      - feature/dkrSeptAPI
+    paths:
+      - .github/workflows/test-aws-dev.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check dev configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          test -n "$ROLE_ARN" || { echo 'Missing dev environment variable AWS_RELEASE_ROLE_ARN'; exit 1; }
+          test -n "$REGION" || { echo 'Missing dev environment variable AWS_REGION'; exit 1; }
+
+      - name: Authenticate to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "986518320302"
+          role-session-name: backend-dev-auth-test
+
+      - name: Show connected account and role
+        run: aws sts get-caller-identity

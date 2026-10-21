@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const LiveClass = require('../models/LiveClass');
 const Video = require('../models/Video');
 const LiveClassNote = require('../models/LiveClassNote');
@@ -148,9 +149,30 @@ function createClassesController({ createNotification, appBaseUrl = process.env.
         filter.is_active = { $ne: false };
       }
 
-      const classes = await LiveClass.find(filter).sort({ scheduled_date: -1 }).lean();
+      if (req.query.search) {
+        const search = String(req.query.search).trim();
+        if (search.length > 100) return res.status(400).json({ error: 'Search must be at most 100 characters' });
+        const literal = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$or = ['title', 'teacher_name', 'subject'].map((field) => ({ [field]: { $regex: literal, $options: 'i' } }));
+      }
+      if (req.query.subject) filter.subject = String(req.query.subject);
+      if (req.query.view === 'upcoming') {
+        filter.status = { $nin: ['completed', 'cancelled'] };
+        filter.$expr = { $gt: [{ $add: ['$scheduled_date', { $multiply: [{ $ifNull: ['$duration_minutes', 60] }, 60000] }] }, new Date()] };
+      } else if (req.query.view === 'recordings') {
+        filter.status = { $ne: 'cancelled' };
+        filter.$expr = { $lte: [{ $add: ['$scheduled_date', { $multiply: [{ $ifNull: ['$duration_minutes', 60] }, 60000] }] }, new Date()] };
+      }
+
+      const pageSize = Math.max(1, Math.min(100, Math.floor(Number(req.query.limit) || 50)));
+      const before = req.query.before;
+      if (before && !mongoose.isValidObjectId(before)) return res.status(400).json({ error: 'Invalid page cursor' });
+      if (before) filter._id = { $lt: before };
+      const classes = await LiveClass.find(filter).sort({ _id: -1 }).limit(pageSize + 1).lean();
+      const hasMore = classes.length > pageSize;
+      if (hasMore) classes.pop();
       const now = new Date();
-      const updatesById = new Map();
+
       classes.forEach((liveClass) => {
         const start = new Date(liveClass.scheduled_date);
         const end = new Date(start.getTime() + (liveClass.duration_minutes || 60) * 60000);
@@ -165,26 +187,15 @@ function createClassesController({ createNotification, appBaseUrl = process.env.
         } else {
           nextStatus = 'scheduled';
         }
-        const update = {};
+
         if (nextStatus !== liveClass.status) {
-          update.status = nextStatus;
           liveClass.status = nextStatus;
         }
         if (liveClass.is_active === undefined) {
-          update.is_active = true;
           liveClass.is_active = true;
         }
-        if (Object.keys(update).length > 0) {
-          updatesById.set(liveClass._id.toString(), update);
-        }
+
       });
-      if (updatesById.size > 0) {
-        await Promise.all(
-          Array.from(updatesById.entries()).map(([id, update]) =>
-            LiveClass.findByIdAndUpdate(id, { $set: update })
-          )
-        );
-      }
       let visibleClasses;
       if (all === 'true') {
         // zoom_start_url is the Zoom HOST link — the one exception to "no
@@ -226,7 +237,7 @@ function createClassesController({ createNotification, appBaseUrl = process.env.
           can_host: canHostClass(req.user, liveClass),
         }));
       }
-      return res.json({ classes: visibleClasses });
+      return res.json({ classes: visibleClasses, next_cursor: hasMore ? String(classes[classes.length - 1]._id) : null });
     } catch (err) {
       reportError(req, err);
       return res.status(500).json({ error: 'Failed to load classes' });
@@ -535,6 +546,38 @@ function createClassesController({ createNotification, appBaseUrl = process.env.
     }
   }
 
+  async function configureLiveClass(req, res) {
+    let config;
+    try { config = require('../services/ivsService').validateLiveConfig(req.body || {}); }
+    catch (err) { return res.status(400).json({ error: err.message }); }
+    try {
+      const liveClass = await LiveClass.findByIdAndUpdate(req.params.id, { $set: config }, { new: true, runValidators: true });
+      if (!liveClass) return res.status(404).json({ error: 'Class not found' });
+      return res.json({ liveClass });
+    } catch (err) { reportError(req, err); return res.status(500).json({ error: 'Failed to configure live class' }); }
+  }
+
+  async function getLiveSession(req, res) {
+    try {
+      const liveClass = await LiveClass.findById(req.params.id).lean();
+      if (!liveClass || !liveClass.is_published || liveClass.is_active === false || liveClass.status === 'cancelled') return res.status(404).json({ error: 'Class not found' });
+      const start = new Date(liveClass.scheduled_date).getTime();
+      const end = start + (liveClass.duration_minutes || 60) * 60_000;
+      if (Date.now() < start - 10 * 60_000 || Date.now() >= end) return res.status(400).json({ error: 'Class is outside its live window' });
+      const host = canHostClass(req.user, liveClass);
+      if (!host) {
+        const lock = lockState(liveClass, await viewerFor(req.user));
+        if (lock) return res.status(403).json(upgradeRefusal(lock));
+      }
+      const { playbackSession, interactiveSession } = require('../services/ivsService');
+      res.set('Cache-Control', 'no-store');
+      if (liveClass.live_provider === 'ivs-broadcast') return res.json({ session: playbackSession(liveClass, req.userId) });
+      if (liveClass.live_provider === 'ivs-interactive') return res.json({ session: await interactiveSession(liveClass, req.user,
+        host || liveClass.ivs_publisher_ids?.includes(String(req.userId))) });
+      return res.status(400).json({ error: 'This class uses the existing meeting link' });
+    } catch (err) { reportError(req, err); return res.status(503).json({ error: 'Live video is temporarily unavailable' }); }
+  }
+
   async function getClassJoinLink(req, res) {
     try {
       const liveClass = await LiveClass.findById(req.params.id).lean();
@@ -780,6 +823,8 @@ function createClassesController({ createNotification, appBaseUrl = process.env.
     deleteClassNote,
     getClassRecording,
     getClassJoinLink,
+    getLiveSession,
+    configureLiveClass,
     getClassHostLink,
     listClassNotifications,
     retryClassNotifications,

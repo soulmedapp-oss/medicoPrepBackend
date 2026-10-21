@@ -1,0 +1,1040 @@
+[
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/health",
+    "handler": "app.routers.health.health",
+    "dependencies": [
+      "health"
+    ],
+    "token_gate": "public"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/health/bedrock",
+    "handler": "app.routers.health.bedrock_health",
+    "dependencies": [
+      "_dep",
+      "bedrock_health",
+      "get_current_user"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/health/vectors",
+    "handler": "app.routers.health.vector_store_health",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "vector_store_health"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/subjects/{subject_id}/ingest/upload-url",
+    "handler": "app.routers.ingest.ingest_upload_url",
+    "dependencies": [
+      "get_current_user",
+      "ingest_upload_url",
+      "require_subject_access"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/subjects/{subject_id}/ingest",
+    "handler": "app.routers.ingest.trigger_ingest",
+    "dependencies": [
+      "get_current_user",
+      "require_subject_access",
+      "trigger_ingest"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/subjects/{subject_id}/ingest/status",
+    "handler": "app.routers.ingest.ingest_status",
+    "dependencies": [
+      "get_current_user",
+      "ingest_status",
+      "require_subject_access"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/qa/ask",
+    "handler": "app.routers.qa.ask_question",
+    "dependencies": [
+      "ask_question",
+      "get_current_user"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/qa/sessions/{session_id}",
+    "handler": "app.routers.qa.session_history",
+    "dependencies": [
+      "get_current_user",
+      "session_history"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/questions/generate",
+    "handler": "app.routers.questions.generate",
+    "dependencies": [
+      "_dep",
+      "generate",
+      "get_current_user"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/jobs/{job_id}",
+    "handler": "app.routers.questions.job_status",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "job_status"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/subjects/{subject_id}/jobs",
+    "handler": "app.routers.questions.subject_jobs",
+    "dependencies": [
+      "get_current_user",
+      "require_subject_access",
+      "subject_jobs"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/jobs/{job_id}/review",
+    "handler": "app.routers.questions.review",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "review"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/jobs/{job_id}/publish",
+    "handler": "app.routers.questions.publish",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "publish"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/jobs/{job_id}/regenerate",
+    "handler": "app.routers.questions.regenerate",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "regenerate"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/tests/assemble",
+    "handler": "app.routers.tests.assemble_test",
+    "dependencies": [
+      "_dep",
+      "assemble_test",
+      "get_current_user"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/tests/jobs/{job_id}",
+    "handler": "app.routers.tests.test_job",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "test_job"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/subjects/{subject_id}/test-jobs",
+    "handler": "app.routers.tests.subject_test_jobs",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "subject_test_jobs"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/tests/jobs/{job_id}/revise",
+    "handler": "app.routers.tests.revise_job",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "revise_job"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/tests/jobs/{job_id}/reroll",
+    "handler": "app.routers.tests.reroll_job",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "reroll_job"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/tests/jobs/{job_id}/publish",
+    "handler": "app.routers.tests.publish_job",
+    "dependencies": [
+      "_dep",
+      "get_current_user",
+      "publish_job"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/figures/{document_id}/{name}",
+    "handler": "app.routers.figures.get_figure",
+    "dependencies": [
+      "get_figure"
+    ],
+    "token_gate": "public"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/capabilities",
+    "handler": "app.routers.extraction.capabilities",
+    "dependencies": [
+      "capabilities",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/template",
+    "handler": "app.routers.extraction.template",
+    "dependencies": [
+      "get_current_user",
+      "staff",
+      "template"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/uploads",
+    "handler": "app.routers.extraction.start_upload",
+    "dependencies": [
+      "get_current_user",
+      "staff",
+      "start_upload"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/uploads/{job_id}/complete",
+    "handler": "app.routers.extraction.complete_upload",
+    "dependencies": [
+      "complete_upload",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/questions/extract",
+    "handler": "app.routers.extraction.extract",
+    "dependencies": [
+      "extract",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/imports",
+    "handler": "app.routers.extraction.imports",
+    "dependencies": [
+      "get_current_user",
+      "imports",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}",
+    "handler": "app.routers.extraction.detail",
+    "dependencies": [
+      "detail",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/drafts/{draft_id}/review",
+    "handler": "app.routers.extraction.review",
+    "dependencies": [
+      "get_current_user",
+      "review",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/submit",
+    "handler": "app.routers.extraction.submit",
+    "dependencies": [
+      "get_current_user",
+      "staff",
+      "submit"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/publish",
+    "handler": "app.routers.extraction.publish",
+    "dependencies": [
+      "get_current_user",
+      "publish",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/retry",
+    "handler": "app.routers.extraction.retry",
+    "dependencies": [
+      "get_current_user",
+      "retry",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/cancel",
+    "handler": "app.routers.extraction.cancel",
+    "dependencies": [
+      "cancel",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/source",
+    "handler": "app.routers.extraction.source",
+    "dependencies": [
+      "get_current_user",
+      "source",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/assets/{name}",
+    "handler": "app.routers.extraction.asset",
+    "dependencies": [
+      "asset",
+      "get_current_user"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/question-bank/imports/{job_id}/crop",
+    "handler": "app.routers.extraction.crop",
+    "dependencies": [
+      "crop",
+      "get_current_user",
+      "staff"
+    ],
+    "token_gate": "legacy"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/status",
+    "handler": "app.v2.status.status",
+    "dependencies": [
+      "get_current_user_v2",
+      "require_staff_v2",
+      "status"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/settings",
+    "handler": "app.v2.settings.read_settings",
+    "dependencies": [
+      "get_current_user_v2",
+      "read_settings",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "PATCH"
+    ],
+    "path": "/ai/v2/settings",
+    "handler": "app.v2.settings.patch_settings",
+    "dependencies": [
+      "get_current_user_v2",
+      "patch_settings",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "DELETE"
+    ],
+    "path": "/ai/v2/settings/{key}",
+    "handler": "app.v2.settings.reset_setting",
+    "dependencies": [
+      "get_current_user_v2",
+      "require_staff_v2",
+      "reset_setting"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/jobs",
+    "handler": "app.v2.jobs_api.list_jobs",
+    "dependencies": [
+      "get_current_user_v2",
+      "list_jobs",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/jobs/{job_id}",
+    "handler": "app.v2.jobs_api.get_job",
+    "dependencies": [
+      "get_current_user_v2",
+      "get_job",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/jobs/{job_id}/cancel",
+    "handler": "app.v2.jobs_api.cancel_job",
+    "dependencies": [
+      "cancel_job",
+      "get_current_user_v2",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/subjects/{subject_id}/documents",
+    "handler": "app.v2.documents.list_documents",
+    "dependencies": [
+      "get_current_user_v2",
+      "list_documents"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/subjects/{subject_id}/documents/upload-url",
+    "handler": "app.v2.documents.upload_url",
+    "dependencies": [
+      "get_current_user_v2",
+      "upload_url"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/subjects/{subject_id}/documents",
+    "handler": "app.v2.documents.create_document",
+    "dependencies": [
+      "create_document",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/documents/{document_id}",
+    "handler": "app.v2.documents.get_document",
+    "dependencies": [
+      "get_current_user_v2",
+      "get_document"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/documents/{document_id}/chunks",
+    "handler": "app.v2.documents.list_chunks",
+    "dependencies": [
+      "get_current_user_v2",
+      "list_chunks"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "PATCH"
+    ],
+    "path": "/ai/v2/documents/{document_id}",
+    "handler": "app.v2.documents.patch_document",
+    "dependencies": [
+      "get_current_user_v2",
+      "patch_document"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "DELETE"
+    ],
+    "path": "/ai/v2/documents/{document_id}",
+    "handler": "app.v2.documents.delete_document",
+    "dependencies": [
+      "delete_document",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/documents/{document_id}/reprocess",
+    "handler": "app.v2.documents.reprocess_document",
+    "dependencies": [
+      "get_current_user_v2",
+      "reprocess_document"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/questions/generate",
+    "handler": "app.v2.questions.generate",
+    "dependencies": [
+      "generate",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/questions/batches",
+    "handler": "app.v2.questions.batches",
+    "dependencies": [
+      "batches",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/questions/batches/{batch_id}",
+    "handler": "app.v2.questions.batch_detail",
+    "dependencies": [
+      "batch_detail",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "PATCH"
+    ],
+    "path": "/ai/v2/questions/batches/{batch_id}",
+    "handler": "app.v2.questions.rename_batch",
+    "dependencies": [
+      "get_current_user_v2",
+      "rename_batch"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/questions/batches/{batch_id}/regenerate",
+    "handler": "app.v2.questions.regenerate_batch",
+    "dependencies": [
+      "get_current_user_v2",
+      "regenerate_batch"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/questions/sources",
+    "handler": "app.v2.questions.sources",
+    "dependencies": [
+      "get_current_user_v2",
+      "sources"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/imports/options",
+    "handler": "app.v2.imports.options",
+    "dependencies": [
+      "_staff",
+      "get_current_user_v2",
+      "options"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/imports",
+    "handler": "app.v2.imports.create",
+    "dependencies": [
+      "_staff",
+      "create",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/imports",
+    "handler": "app.v2.imports.list_imports",
+    "dependencies": [
+      "_staff",
+      "get_current_user_v2",
+      "list_imports"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/imports/{job_id}/source",
+    "handler": "app.v2.imports.source_file",
+    "dependencies": [
+      "_importer_or_reviewer",
+      "get_current_user_v2",
+      "source_file"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/save",
+    "handler": "app.v2.workflow.save",
+    "dependencies": [
+      "get_current_user_v2",
+      "save"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/submit",
+    "handler": "app.v2.workflow.submit",
+    "dependencies": [
+      "get_current_user_v2",
+      "submit"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/submit-all",
+    "handler": "app.v2.workflow.submit_all",
+    "dependencies": [
+      "get_current_user_v2",
+      "submit_all"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/discard",
+    "handler": "app.v2.workflow.discard",
+    "dependencies": [
+      "discard",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/confirm-flags",
+    "handler": "app.v2.workflow.confirm_flags",
+    "dependencies": [
+      "confirm_flags",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/ai-reread",
+    "handler": "app.v2.workflow.ai_reread",
+    "dependencies": [
+      "ai_reread",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/reset",
+    "handler": "app.v2.workflow.reset",
+    "dependencies": [
+      "get_current_user_v2",
+      "reset"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/workflow/{source}/{parent_id}/drafts/{draft_id}/decide",
+    "handler": "app.v2.workflow.decide",
+    "dependencies": [
+      "decide",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/workflow",
+    "handler": "app.v2.workflow.overview",
+    "dependencies": [
+      "get_current_user_v2",
+      "overview"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/media",
+    "handler": "app.v2.media.upload",
+    "dependencies": [
+      "get_current_user_v2",
+      "require_staff_v2",
+      "upload"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/media/resize",
+    "handler": "app.v2.media.resize",
+    "dependencies": [
+      "get_current_user_v2",
+      "require_staff_v2",
+      "resize"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/media/index",
+    "handler": "app.v2.media.index",
+    "dependencies": [
+      "get_current_user_v2",
+      "index",
+      "require_staff_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/media/{key:path}",
+    "handler": "app.v2.media.get",
+    "dependencies": [
+      "get"
+    ],
+    "token_gate": "public"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/tests/assemble",
+    "handler": "app.v2.tests.assemble_test",
+    "dependencies": [
+      "assemble_test",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/tests",
+    "handler": "app.v2.tests.recent",
+    "dependencies": [
+      "get_current_user_v2",
+      "recent"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/tests/{test_job_id}",
+    "handler": "app.v2.tests.detail",
+    "dependencies": [
+      "detail",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/tests/{test_job_id}/revise",
+    "handler": "app.v2.tests.revise_test",
+    "dependencies": [
+      "get_current_user_v2",
+      "revise_test"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/tests/{test_job_id}/reroll",
+    "handler": "app.v2.tests.reroll_test",
+    "dependencies": [
+      "get_current_user_v2",
+      "reroll_test"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/tests/{test_job_id}/publish",
+    "handler": "app.v2.tests.publish_test",
+    "dependencies": [
+      "get_current_user_v2",
+      "publish_test"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "POST"
+    ],
+    "path": "/ai/v2/tutor/ask",
+    "handler": "app.v2.tutor.ask",
+    "dependencies": [
+      "ask",
+      "get_current_user_v2"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/tutor/sessions/{session_id}",
+    "handler": "app.v2.tutor.session_history",
+    "dependencies": [
+      "get_current_user_v2",
+      "session_history"
+    ],
+    "token_gate": "v2"
+  },
+  {
+    "methods": [
+      "GET"
+    ],
+    "path": "/ai/v2/tutor/quota",
+    "handler": "app.v2.tutor.quota",
+    "dependencies": [
+      "get_current_user_v2",
+      "quota"
+    ],
+    "token_gate": "v2"
+  }
+]

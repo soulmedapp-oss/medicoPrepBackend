@@ -203,7 +203,7 @@ function createFeedbackController({ createNotification, sendSupportEmail, broadc
 
       await feedback.save();
 
-      broadcastFeedback(feedback.toObject());
+      await broadcastFeedback(feedback.toObject());
 
       if (updates.admin_response) {
         await createNotification({

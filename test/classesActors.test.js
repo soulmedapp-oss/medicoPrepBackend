@@ -28,6 +28,7 @@ const oid = () => new mongoose.Types.ObjectId();
 function q(value) {
   const chain = {
     sort: () => chain,
+    limit: () => chain,
     select: () => chain,
     lean: async () => value,
     then: (resolve, reject) => Promise.resolve(value).then(resolve, reject),
