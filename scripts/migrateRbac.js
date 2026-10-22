@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../src/utils/databaseConfig');
 // Task 12: one-time migration of legacy role/user permission data to the new
 // RBAC catalogue. All I/O lives here; the planning decisions themselves are
 // in src/rbac/migrationPlan.js so they can be unit-tested without a database.
@@ -275,7 +276,7 @@ async function main() {
   // a successful connect, so never carrying connection details) keep
   // err.message.
   try {
-    await mongoose.connect(process.env.MONGODB_URI, { autoIndex: true });
+    await mongoose.connect(process.env.MONGODB_URI, { ...databaseOptions(), autoIndex: true });
   } catch {
     throw new Error('could not connect (check MONGODB_URI)');
   }

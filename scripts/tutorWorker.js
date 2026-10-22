@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../src/utils/databaseConfig');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { runTutorWorkerOnce } = require('../src/services/tutorWorker');
@@ -8,7 +9,7 @@ process.on('SIGTERM', () => { stopping = true; });
 process.on('SIGINT', () => { stopping = true; });
 
 (async () => {
-  await mongoose.connect(process.env.MONGODB_URI, { autoIndex: false, maxPoolSize: 5 });
+  await mongoose.connect(process.env.MONGODB_URI, { ...databaseOptions(), autoIndex: false, maxPoolSize: 5 });
   while (!stopping) {
     try { await runTutorWorkerOnce(); }
     catch (err) { logger.error({ err }, 'Tutor worker failed'); }

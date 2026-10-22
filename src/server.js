@@ -1,3 +1,4 @@
+const { databaseOptions } = require('./utils/databaseConfig');
 require('dotenv').config();
 
 const { logger } = require('./lib/logger');
@@ -595,7 +596,7 @@ async function connectDb() {
   if (mongoose.connection.readyState === 1) {
     return mongoose.connection;
   }
-  await mongoose.connect(MONGODB_URI, {
+  await mongoose.connect(MONGODB_URI, { ...databaseOptions(),
     autoIndex: process.env.NODE_ENV !== 'production',
     maxPoolSize: Math.max(1, Math.min(100, Number(process.env.MONGO_MAX_POOL_SIZE) || 20)),
     minPoolSize: 0,
@@ -832,6 +833,16 @@ let draining = false;
 app.get('/ready', publicRoute, (req, res) => {
   const ready = !draining && mongoose.connection.readyState === 1;
   res.status(ready ? 200 : 503).json({ ok: ready });
+});
+
+// Database NAME only, no URI, hosts, credentials or user data. Never enabled
+// for QA/UAT/prod just because NODE_ENV is production in all deployed builds.
+app.get('/dev/build-info', publicRoute, (req, res) => {
+  const { devBuildInfo } = require('./utils/devBuildInfo');
+  const result = devBuildInfo(mongoose.connection);
+  res.set('Cache-Control', 'private, no-store');
+  res.set('Vary', 'Origin');
+  res.status(result.status).json(result.body);
 });
 
 app.get('/health', publicRoute, (req, res) => {

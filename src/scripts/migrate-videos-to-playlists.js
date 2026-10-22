@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../utils/databaseConfig');
 const path = require('path');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
@@ -100,7 +101,7 @@ async function migrateVideosToPlaylists() {
     throw new Error('MONGODB_URI is not set');
   }
 
-  await mongoose.connect(mongoUri, { autoIndex: false });
+  await mongoose.connect(mongoUri, { ...databaseOptions(), autoIndex: false });
 
   // Fix round 3, Important 4: this script connects with autoIndex:false and
   // server.js never loads PlaylistMigration, so nothing had ever built the

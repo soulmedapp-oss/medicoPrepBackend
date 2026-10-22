@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../utils/databaseConfig');
 // Creates (or promotes) the first administrator of a database.
 //
 //   node src/scripts/seed-admin.js --email you@example.com --name "Your Name" [--password '...'] [--force]
@@ -40,7 +41,7 @@ async function main() {
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) throw new Error('MONGODB_URI is not set');
-  await mongoose.connect(mongoUri, { autoIndex: true });
+  await mongoose.connect(mongoUri, { ...databaseOptions(), autoIndex: true });
   console.log(`Connected to database "${mongoose.connection.name}" on ${mongoose.connection.host}`);
 
   try {

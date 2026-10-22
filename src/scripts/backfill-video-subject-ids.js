@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../utils/databaseConfig');
 const path = require('path');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
@@ -50,7 +51,7 @@ async function backfillVideoSubjectIds() {
     throw new Error('MONGODB_URI is not set');
   }
 
-  await mongoose.connect(mongoUri, { autoIndex: false });
+  await mongoose.connect(mongoUri, { ...databaseOptions(), autoIndex: false });
 
   const subjects = await Subject.find({}, '_id name slug').lean();
   const videos = await Video.find({}, '_id subject subject_id').lean();

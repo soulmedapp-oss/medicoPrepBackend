@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../src/utils/databaseConfig');
 require('dotenv').config();
 
 const mongoose = require('mongoose');
@@ -81,7 +82,7 @@ async function applyPayment(payment) {
 
 async function main() {
   requireEnv('MONGODB_URI', MONGODB_URI);
-  await mongoose.connect(MONGODB_URI, { autoIndex: true });
+  await mongoose.connect(MONGODB_URI, { ...databaseOptions(), autoIndex: true });
 
   const payments = await Payment.find({
     status: 'paid',

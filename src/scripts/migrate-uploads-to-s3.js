@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../utils/databaseConfig');
 // One-time move of locally stored uploads to S3, rewriting every database
 // field that points at them.
 //
@@ -74,7 +75,7 @@ async function main() {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not set');
   if (!bucket) throw new Error('UPLOADS_S3_BUCKET is not set');
   const s3 = new S3Client({ region });
-  await mongoose.connect(process.env.MONGODB_URI, { autoIndex: false });
+  await mongoose.connect(process.env.MONGODB_URI, { ...databaseOptions(), autoIndex: false });
   console.log(`${isExecute ? 'EXECUTE' : 'DRY RUN'} — bucket ${bucket} (${region}), local dir ${uploadsDir}`);
 
   const uploaded = new Map(); // local relative path → new URL (dedupe across fields)
