@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../utils/databaseConfig');
 const path = require('path');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
@@ -168,7 +169,7 @@ async function seed() {
     throw new Error('MONGODB_URI is not set');
   }
 
-  await mongoose.connect(mongoUri, { autoIndex: true });
+  await mongoose.connect(mongoUri, { ...databaseOptions(), autoIndex: true });
 
   let test = await Test.findOne({ title: TEST_TITLE, subject: SUBJECT });
   if (!test) {

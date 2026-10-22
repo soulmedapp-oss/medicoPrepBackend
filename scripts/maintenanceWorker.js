@@ -1,3 +1,4 @@
+const { databaseOptions } = require('../src/utils/databaseConfig');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { randomUUID } = require('node:crypto');
@@ -10,7 +11,7 @@ let stopping = false;
 process.once('SIGTERM', () => { stopping = true; });
 process.once('SIGINT', () => { stopping = true; });
 (async () => {
-  await mongoose.connect(process.env.MONGODB_URI, { autoIndex: false, maxPoolSize: 20 });
+  await mongoose.connect(process.env.MONGODB_URI, { ...databaseOptions(), autoIndex: false, maxPoolSize: 20 });
   while (!stopping) {
     const owner = randomUUID();
     let claimed = false;
