@@ -2,6 +2,10 @@ name: Release backend containers
 on:
   workflow_dispatch:
     inputs:
+      build_only:
+        description: Build and publish the image without updating ECS (initial bootstrap)
+        type: boolean
+        default: false
       environment:
         type: choice
         options: [dev, qa, uat, prod]
@@ -14,10 +18,36 @@ concurrency:
   group: backend-release-${{ inputs.environment }}
   cancel-in-progress: false
 jobs:
+  branch-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check branch before accessing deployment environment
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REF" == refs/heads/* ]] || { echo 'Select a branch, not a tag'; exit 1; }
+          case "$TARGET_ENVIRONMENT" in
+            dev|qa) ;;
+            uat|prod) [[ "$SOURCE_REF" == refs/heads/main ]] || { echo 'UAT and production require main'; exit 1; } ;;
+            *) echo 'Unknown environment'; exit 1 ;;
+          esac
   release:
+    needs: branch-policy
     environment: ${{ inputs.environment }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
+      DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      DEPLOY_REF: ${{ github.ref }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || '986518320302' }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      ECS_API_SERVICE: ${{ vars.ECS_API_SERVICE }}
+      ECS_TUTOR_SERVICE: ${{ vars.ECS_TUTOR_SERVICE }}
+      ECS_MAINTENANCE_SERVICE: ${{ vars.ECS_MAINTENANCE_SERVICE }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
@@ -30,6 +60,8 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      - name: Validate release targets
+        run: node scripts/check-release-config.cjs ${{ inputs.build_only && '--build-only' || '' }}
       - run: npm ci && npm test
         env:
           NODE_ENV: test
@@ -39,20 +71,14 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: Verify AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
       - name: Build immutable release
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-        run: |
-          set -euo pipefail
-          image="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
-          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
-          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            docker build -t "$image" .
-            docker push "$image"
-            digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
-          fi
-          echo "RELEASE_IMAGE=$REGISTRY/$ECR_REPOSITORY@$digest" >> "$GITHUB_ENV"
+        run: bash scripts/build-release-image.sh
       - name: Deploy and verify; roll back on failure
+        if: ${{ !inputs.build_only }}
         run: bash scripts/release-ecs.sh
