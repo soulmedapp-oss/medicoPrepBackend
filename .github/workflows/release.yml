@@ -65,6 +65,11 @@ jobs:
       - run: npm ci && npm test
         env:
           NODE_ENV: test
+          # Tests must not infer shared S3 storage from deployment account settings.
+          AWS_ACCOUNT_ID: ''
+          APP_ENV: ''
+          S3_BUCKET: ''
+          UPLOADS_S3_BUCKET: ''
           MONGODB_URI: mongodb://127.0.0.1:27017/soulmed_ci_test
           JWT_SECRET: ci-test-only-not-for-deployment
       - uses: aws-actions/configure-aws-credentials@v4
