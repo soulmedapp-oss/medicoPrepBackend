@@ -21,6 +21,7 @@ const questionSchema = new mongoose.Schema(
     // plain image fields, so Manage Questions edits it like a manual question.
     review_workflow: { type: String },
     exam: { type: String, enum: ['', 'FMGE', 'NEET-PG', 'INI-CET'], default: '' },
+    exam_month: { type: Number, default: null, min: 1, max: 12, validate: v => v == null || Number.isInteger(v) },
     exam_year: { type: Number, default: null, min: 1950, validate: v => v == null || (Number.isInteger(v) && v <= new Date().getFullYear()) },
     topic: { type: String, default: '', maxlength: 120 },
     extraction_job_id: { type: mongoose.Schema.Types.ObjectId, immutable: true },

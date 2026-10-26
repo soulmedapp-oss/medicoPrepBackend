@@ -13,7 +13,8 @@ function check(env, buildOnly = false) {
   if (!buildOnly) {
     assert.equal(env.ECS_CLUSTER, prefix, 'Wrong ECS cluster');
     for (const [key, suffix] of [['ECS_API_SERVICE', ''], ['ECS_TUTOR_SERVICE', '-tutor'], ['ECS_MAINTENANCE_SERVICE', '-maintenance']]) assert.equal(env[key], prefix + suffix, 'Wrong service target');
-    assert.match(env.HEALTH_URL || '', /^https:\/\/[a-z0-9]+\.cloudfront\.net\/api\/ready$/, 'Set CloudFront readiness URL');
+    const health = env.HEALTH_URL || '';
+    assert.ok(/^https:\/\/[a-z0-9]+\.cloudfront\.net\/api\/ready$/.test(health) || (target === 'prod' && ['https://soulmed.ai/api/ready', 'https://www.soulmed.ai/api/ready'].includes(health)), 'Set the CloudFront or exact production readiness URL');
   }
 }
 module.exports = { check };
