@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       build_only:
-        description: Build and publish the image without updating ECS (initial bootstrap)
+        description: Publish only; production always uses the infrastructure promotion workflow
         type: boolean
         default: false
       environment:
@@ -61,7 +61,7 @@ jobs:
           node-version: '22'
           cache: npm
       - name: Validate release targets
-        run: node scripts/check-release-config.cjs ${{ inputs.build_only && '--build-only' || '' }}
+        run: node scripts/check-release-config.cjs ${{ (inputs.build_only || inputs.environment == 'prod') && '--build-only' || '' }}
       - run: npm ci && npm test
         env:
           NODE_ENV: test
@@ -85,5 +85,10 @@ jobs:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: bash scripts/build-release-image.sh
       - name: Deploy and verify; roll back on failure
-        if: ${{ !inputs.build_only }}
+        if: ${{ !inputs.build_only && inputs.environment != 'prod' }}
         run: bash scripts/release-ecs.sh
+      - name: Production promotion instructions
+        if: ${{ inputs.environment == 'prod' }}
+        run: |
+          echo 'Production image published and checked. No service was deployed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'In soulmed-infrastructure run Prepare production application release with this image digest, merge its image-review PR, then run Deploy production application release.' >> "$GITHUB_STEP_SUMMARY"

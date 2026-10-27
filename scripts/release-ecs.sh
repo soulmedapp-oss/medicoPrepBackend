@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${DEPLOY_ENVIRONMENT:-}" == prod || "${ECS_CLUSTER:-}" == soulmed-prod-backend ]]; then
+  echo 'Production deployments use the reviewed infrastructure release workflow.' >&2
+  exit 1
+fi
 : "${ECS_CLUSTER:?}" "${ECS_SERVICES:?}" "${CONTAINER_NAME:?}" "${RELEASE_IMAGE:?}"
 [[ "$RELEASE_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] || { echo 'An immutable image digest is required'; exit 1; }
 read -r -a services <<< "$ECS_SERVICES"

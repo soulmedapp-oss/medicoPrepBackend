@@ -10,6 +10,7 @@ function check(env, buildOnly = false) {
   const prefix = `soulmed-${target}-backend`;
   assert.equal(env.ECR_REPOSITORY, prefix, 'Wrong image repository');
   assert.equal(env.AWS_RELEASE_ROLE_ARN, `arn:aws:iam::${account}:role/${prefix}-release`, 'Wrong release role');
+  if (!buildOnly && target === 'prod') assert.fail('Production deployments use the reviewed infrastructure release workflow');
   if (!buildOnly) {
     assert.equal(env.ECS_CLUSTER, prefix, 'Wrong ECS cluster');
     for (const [key, suffix] of [['ECS_API_SERVICE', ''], ['ECS_TUTOR_SERVICE', '-tutor'], ['ECS_MAINTENANCE_SERVICE', '-maintenance']]) assert.equal(env[key], prefix + suffix, 'Wrong service target');
