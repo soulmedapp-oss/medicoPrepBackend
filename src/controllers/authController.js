@@ -746,80 +746,19 @@ async function nicknameAvailable(req, res) {
   }
 }
 
-async function googleAuth(req, res) {
-  try {
-    const { idToken } = req.body;
-    if (!idToken) {
-      return res.status(400).json({ error: 'idToken is required' });
-    }
-    if (!oauthClient) {
-      return res.status(503).json({ error: 'Google sign-in is not configured' });
-    }
-
-    const ticket = await oauthClient.verifyIdToken({
-      idToken,
-      audience: GOOGLE_CLIENT_ID,
-    });
-
-    const googlePayload = ticket.getPayload();
-    if (!googlePayload) {
-      return res.status(401).json({ error: 'Invalid Google token' });
-    }
-
-    const { sub: googleId, email, name, picture } = googlePayload;
-    if (!email) {
-      return res.status(400).json({ error: 'Google account has no email' });
-    }
-    // Only a Google-verified email may be linked to (or create) an account.
-    if (googlePayload.email_verified !== true) {
-      return res.status(403).json({ error: 'Google email is not verified' });
-    }
-
-    // Prefer the account already linked to this Google identity; otherwise link by email.
-    let user = await User.findOne({ googleId });
-    if (!user) {
-      user = await User.findOne({ email });
-      if (user && user.googleId && user.googleId !== googleId) {
-        return res.status(409).json({ error: 'This email is linked to a different Google account' });
-      }
-    }
-    if (user && user.is_active === false) {
-      return res.status(403).json({ error: 'Account is inactive' });
-    }
-    if (user) {
-      user.googleId = googleId;
-      // Never overwrite an existing account's email with the Google one.
-      user.full_name = name || user.full_name;
-      user.profile_image = picture || user.profile_image;
-      if (String(user.email).toLowerCase() === String(email).toLowerCase()) {
-        user.email_verified = true;
-        user.email_verified_at = user.email_verified_at || new Date();
-        user.email_verification_token = undefined;
-        user.email_verification_expires = undefined;
-      }
-      await user.save();
-    } else {
-      user = await User.create({
-        googleId,
-        email,
-        full_name: name || email,
-        profile_image: picture,
-        email_verified: true,
-        email_verified_at: new Date(),
-      });
-    }
-
-    const token = await issueSession(req, res, user);
-    const responsePayload = await attachEffectivePermissions(sanitizeUser(user));
-    responsePayload.feature_locks = await withFeatureLocks(responsePayload, req);
-    enqueueJob(() => updateLoginMeta(user.id, req));
-    return res.json({ user: responsePayload, token });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    reportError(req, err);
-    return res.status(500).json({ error: 'Login failed' });
-  }
-}
+const googleHandlers = require('../auth/google').createGoogleAuth({
+  clientId: GOOGLE_CLIENT_ID, client: oauthClient, secret: JWT_SECRET, User, bcrypt, issueSession,
+  userPayload: async (user, req) => {
+    const refreshed = await expireSubscriptionIfNeeded(user);
+    const payload = await attachEffectivePermissions(sanitizeUser(refreshed || user));
+    payload.feature_locks = await withFeatureLocks(payload, req);
+    return payload;
+  },
+  onLogin: (user, req) => enqueueJob(() => updateLoginMeta(user.id, req)),
+  onError: reportError,
+});
+const googleAuth = googleHandlers.login;
+const googleConfig = googleHandlers.config;
 
 module.exports = {
   refreshSession,
@@ -836,4 +775,5 @@ module.exports = {
   updateMe,
   nicknameAvailable,
   googleAuth,
+  googleConfig,
 };
