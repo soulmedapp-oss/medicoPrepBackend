@@ -80,7 +80,7 @@ function createGoogleAuth({ clientId, client, secret, User, bcrypt, issueSession
       const responseUser = await userPayload(user, req);
       const token = await issueSession(req, res, user);
       res.clearCookie(COOKIE, cookieOptions(req));
-      onLogin(user, req);
+      await onLogin(user, req);
       return res.json({ user: responseUser, token });
     } catch (error) {
       if (error?.code === 11000) return res.status(409).json({ error: 'Account changed during sign-in. Please try again.' });

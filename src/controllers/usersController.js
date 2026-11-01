@@ -106,6 +106,17 @@ function createUsersController({ createNotification } = {}) {
     }
   }
 
+  async function loginHistory(req, res) {
+    res.set('Cache-Control', 'no-store, private');
+    try {
+      const history = require('../auth/loginHistory').createLoginHistory({ User, LoginEvent: require('../models/LoginEvent') });
+      return res.json({ events: await history.list(req.params.id), retention_days: 30, limit: 20 });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load login history' });
+    }
+  }
+
   async function createUser(req, res) {
     try {
       const data = req.body || {};
@@ -493,6 +504,7 @@ function createUsersController({ createNotification } = {}) {
 
   return {
     listUsers,
+    loginHistory,
     createUser,
     setUserRoles,
     updateUser,

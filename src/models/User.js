@@ -22,6 +22,7 @@ const userSchema = new mongoose.Schema(
     is_teacher: { type: Boolean, default: false },
     tests_taken: { type: Number, default: 0 },
     average_score: { type: Number, default: 0 },
+    last_login_method: { type: String, enum: ['google', 'password'] },
     last_login_date: { type: Date },
     last_login_ip: { type: String },
     last_seen_date: { type: Date, index: true },

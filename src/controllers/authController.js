@@ -192,16 +192,12 @@ function getClientIp(req) {
   return candidate.replace(/^::ffff:/, '');
 }
 
-async function updateLoginMeta(userId, req) {
-  const ip = getClientIp(req);
-  const userAgent = String(req.headers['user-agent'] || '');
-  const updates = {
-    last_login_date: new Date(),
-    last_seen_date: new Date(),
-    last_login_ip: ip || undefined,
-    last_login_user_agent: userAgent || undefined,
-  };
-  await User.findByIdAndUpdate(userId, { $set: updates }).catch(() => {});
+const loginHistory = require('../auth/loginHistory').createLoginHistory({
+  User, LoginEvent: require('../models/LoginEvent'),
+  onError: () => require('../lib/logger').logger.warn('Login history could not be fully recorded'),
+});
+async function updateLoginMeta(userId, req, method) {
+  await loginHistory.record(userId, req, method);
 }
 
 function createEmailVerificationToken() {
@@ -408,7 +404,7 @@ async function login(req, res) {
     const token = await issueSession(req, res, user);
     const payload = await attachEffectivePermissions(sanitizeUser(updatedUser || user));
     payload.feature_locks = await withFeatureLocks(payload, req);
-    enqueueJob(() => updateLoginMeta(user.id, req));
+    await updateLoginMeta(user.id, req, 'password');
     return res.json({ user: payload, token });
   } catch (err) {
     reportError(req, err);
@@ -641,7 +637,6 @@ async function updateMe(req, res) {
       'target_exam',
       'profile_image',
       'notify_live_classes',
-      'last_login_date',
       'last_seen_date',
       'nickname',
       'avatar_id',
@@ -754,7 +749,7 @@ const googleHandlers = require('../auth/google').createGoogleAuth({
     payload.feature_locks = await withFeatureLocks(payload, req);
     return payload;
   },
-  onLogin: (user, req) => enqueueJob(() => updateLoginMeta(user.id, req)),
+  onLogin: (user, req) => updateLoginMeta(user.id, req, 'google'),
   onError: reportError,
 });
 const googleAuth = googleHandlers.login;
