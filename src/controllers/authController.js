@@ -68,49 +68,27 @@ function signToken(user) {
 // + CSRF token, all as cookies (src/auth/session.js). The access token is
 // ALSO returned in the body for non-browser clients; the web app ignores it
 // and never stores it.
-async function issueSession(req, res, user) {
-  const accessToken = signToken(user);
-  const refreshToken = session.randomToken();
-  const csrfToken = session.randomToken(16);
-  const current = await User.findById(user._id || user.id).select('refresh_tokens').lean();
-  const next = session.addRefreshToken(current?.refresh_tokens, session.hashToken(refreshToken));
-  await User.updateOne({ _id: user._id || user.id }, { $set: { refresh_tokens: next } });
-  session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
-  return accessToken;
-}
-
-// POST /auth/refresh — trades a valid refresh cookie for a new access cookie
-// and a NEW refresh cookie (rotation). An unknown or expired refresh token
-// ends the session: cookies cleared, 401.
+const sessionControl = require('../auth/sessionControl');
+const sessions = sessionControl.createSessionControl({ User, secret: JWT_SECRET });
+async function issueSession(req, res, user, method = 'password') { return sessions.issue(req, res, user, method); }
 async function refreshSession(req, res) {
+  try { await sessions.refresh(req,res); return res.json({ok:true,expires_in:Math.floor(session.accessTtlMs()/1000)}); }
+  catch(error) { if(error instanceof sessionControl.SessionControlError) { session.clearSessionCookies(req,res);sessionControl.respond(error,res);return; } reportError(req,error);return res.status(500).json({error:'Session refresh failed'}); }
+}
+async function continueSession(req,res) {
   try {
-    const presented = req.cookies?.[session.COOKIE.refresh];
-    if (!presented) {
-      session.clearSessionCookies(req, res);
-      return res.status(401).json({ error: 'Session expired. Please log in again.' });
-    }
-    const presentedHash = session.hashToken(presented);
-    const user = await User.findOne({ 'refresh_tokens.hash': presentedHash }).select('+refresh_tokens');
-    if (!user || user.is_active === false) {
-      session.clearSessionCookies(req, res);
-      return res.status(401).json({ error: 'Session expired. Please log in again.' });
-    }
-    const refreshToken = session.randomToken();
-    const rotated = session.rotateRefreshToken(user.refresh_tokens, presentedHash, session.hashToken(refreshToken));
-    if (!rotated.ok) {
-      await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
-      session.clearSessionCookies(req, res);
-      return res.status(401).json({ error: 'Session expired. Please log in again.' });
-    }
-    await User.updateOne({ _id: user._id }, { $set: { refresh_tokens: rotated.next } });
-    const accessToken = signToken(user);
-    const csrfToken = session.randomToken(16);
-    session.setSessionCookies(req, res, { accessToken, refreshToken, csrfToken });
-    return res.json({ ok: true, expires_in: Math.floor(session.accessTtlMs() / 1000) });
-  } catch (err) {
-    reportError(req, err);
-    return res.status(500).json({ error: 'Failed to refresh session' });
-  }
+    const result=await sessions.confirm(req,res);
+    await updateLoginMeta(result.user._id,req,result.method);
+    const payload=await attachEffectivePermissions(sanitizeUser(result.user));
+    payload.feature_locks=await withFeatureLocks(payload,req);
+    return res.json({user:payload});
+  } catch(error) { if(sessionControl.respond(error,res)) return;reportError(req,error);return res.status(500).json({error:'Session confirmation failed'}); }
+}
+function sessionStatus(req,res) { res.set('Cache-Control','no-store, private');return res.json(sessions.status(req.user)); }
+async function sessionActivity(req,res) {
+  res.set('Cache-Control','no-store, private');
+  try { return res.json(await sessions.activity(req)); }
+  catch(error) { if(sessionControl.respond(error,res)) return;reportError(req,error);return res.status(500).json({error:'Could not confirm session activity'}); }
 }
 
 // POST /auth/logout — forgets this browser's refresh token and clears the
@@ -121,7 +99,7 @@ async function logout(req, res) {
     if (presented) {
       await User.updateOne(
         { 'refresh_tokens.hash': session.hashToken(presented) },
-        { $pull: { refresh_tokens: { hash: session.hashToken(presented) } } }
+        { $set: { refresh_tokens: [], active_session: null }, $inc: { token_version: 1 } }
       );
     }
     session.clearSessionCookies(req, res);
@@ -407,6 +385,7 @@ async function login(req, res) {
     await updateLoginMeta(user.id, req, 'password');
     return res.json({ user: payload, token });
   } catch (err) {
+    if (sessionControl.respond(err,res)) return;
     reportError(req, err);
     return res.status(500).json({ error: 'Login failed' });
   }
@@ -572,6 +551,7 @@ async function resetPassword(req, res) {
     user.password_reset_requested_at = undefined;
     // Revoke every JWT issued before this reset.
     user.token_version = normalizeTokenVersion(user.token_version) + 1;
+    user.active_session = null;
     user.refresh_tokens = []; // and every browser's refresh cookie with them
     await user.save();
 
@@ -742,7 +722,7 @@ async function nicknameAvailable(req, res) {
 }
 
 const googleHandlers = require('../auth/google').createGoogleAuth({
-  clientId: GOOGLE_CLIENT_ID, client: oauthClient, secret: JWT_SECRET, User, bcrypt, issueSession,
+  clientId: GOOGLE_CLIENT_ID, client: oauthClient, secret: JWT_SECRET, User, bcrypt, issueSession: (req,res,user) => issueSession(req,res,user,'google'),
   userPayload: async (user, req) => {
     const refreshed = await expireSubscriptionIfNeeded(user);
     const payload = await attachEffectivePermissions(sanitizeUser(refreshed || user));
@@ -757,6 +737,9 @@ const googleConfig = googleHandlers.config;
 
 module.exports = {
   refreshSession,
+  continueSession,
+  sessionStatus,
+  sessionActivity,
   logout,
   aiToken,
   register,

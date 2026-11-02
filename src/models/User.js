@@ -51,8 +51,13 @@ const userSchema = new mongoose.Schema(
     // Cookie sessions (src/auth/session.js): one entry per signed-in browser,
     // hash of the opaque refresh token only — the raw value lives in the
     // HttpOnly cookie. Rotated on every refresh; cleared on password change.
+    active_session: {
+      type: new mongoose.Schema({ id: String, idle_minutes: Number, warning_seconds: Number, last_active_at: Date, expires_at: Date, absolute_expires_at: Date,
+        user_agent: String, previous_refresh_hash: String, previous_refresh_until: Date }, { _id: false }),
+      default: null,
+    },
     refresh_tokens: {
-      type: [{ hash: { type: String, required: true }, created_at: { type: Date }, expires_at: { type: Date } }],
+      type: [{ hash: { type: String, required: true }, session_id: String, created_at: { type: Date }, expires_at: { type: Date } }],
       default: [],
       select: false,
     },
@@ -74,5 +79,8 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: 'created_date', updatedAt: 'updated_date' } }
 );
+
+userSchema.index({ 'refresh_tokens.hash': 1 }, { sparse: true });
+userSchema.index({ 'active_session.previous_refresh_hash': 1 }, { sparse: true });
 
 module.exports = mongoose.model('User', userSchema);

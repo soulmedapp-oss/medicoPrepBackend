@@ -409,6 +409,10 @@ function initRealtime(serverInstance) {
       if (ws.isAlive === false) { ws.terminate(); continue; }
       ws.isAlive = false;
       ws.ping();
+      if (ws.checkSession && !ws.checkingSession) {
+        ws.checkingSession=true;
+        ws.checkSession().catch(() => ws.close(1008,'Session ended')).finally(() => { ws.checkingSession=false; });
+      }
     }
   }, 30_000);
   heartbeat.unref?.();
@@ -453,10 +457,14 @@ function initRealtime(serverInstance) {
       User.findById(payload.sub).lean()
         .then((user) => {
           if (ws.readyState !== WebSocket.OPEN) return;
-          if (!user || user.is_active === false || !isTokenVersionCurrent(payload, user)) {
+          if (!user || user.is_active === false || payload.scope || !isTokenVersionCurrent(payload, user) || ((payload.sid || cookieToken || user.active_session) && !require('./auth/sessionControl').current(user,payload.sid))) {
             closeUnauthorized();
             return;
           }
+          ws.checkSession = async () => {
+            const latest = await User.findById(payload.sub).lean();
+            if (!latest || latest.is_active === false || !isTokenVersionCurrent(payload,latest) || ((payload.sid || cookieToken || latest.active_session) && !require('./auth/sessionControl').current(latest,payload.sid))) ws.close(1008,'Session ended');
+          };
           ws.userEmail = user.email;
           ws.userId = user._id;
           ws.userRole = user.role;

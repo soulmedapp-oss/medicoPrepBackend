@@ -366,10 +366,11 @@ function createUsersController({ createNotification } = {}) {
       // mute writes nothing but an `$unset`.
       const updateOps = {};
       if (Object.keys(payload).length > 0) updateOps.$set = payload;
-      if (payload.passwordHash) {
+      if (payload.passwordHash || deactivates) {
         // Admin password change revokes the user's existing sessions.
         updateOps.$inc = { token_version: 1 };
         updateOps.$set.refresh_tokens = [];
+        updateOps.$set.active_session = null;
       }
       if (Object.keys(unsetOps).length > 0) {
         updateOps.$unset = unsetOps;
@@ -490,6 +491,9 @@ function createUsersController({ createNotification } = {}) {
       const deactivationCheck = checkUserDeactivation({ actorId: req.user?._id ?? req.userId, targetUser: user, activeAdminCount });
       if (!deactivationCheck.ok) return res.status(409).json({ error: deactivationCheck.message });
       user.is_active = false;
+      user.active_session = null;
+      user.refresh_tokens = [];
+      user.token_version = Number(user.token_version || 0) + 1;
       if (user.admin_status === 'active') {
         user.admin_status = 'inactive';
       }
