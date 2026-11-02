@@ -69,7 +69,7 @@ function randomToken(bytes = 32) {
 
 function signAccessToken(user, normalizeTokenVersion) {
   return jwt.sign(
-    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version) },
+    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}) },
     process.env.JWT_SECRET,
     { expiresIn: ACCESS_TTL }
   );
@@ -89,7 +89,7 @@ function signAiToken(user, normalizeTokenVersion = (v) => (Number.isInteger(Numb
   // `tv` lets the AI service honour revocation (password reset, forced
   // logout) the same way authMiddleware does, instead of waiting for expiry.
   return jwt.sign(
-    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE, tv: normalizeTokenVersion(user.token_version) },
+    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE, tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}) },
     process.env.JWT_SECRET,
     { expiresIn: AI_TOKEN_TTL_SECONDS }
   );
@@ -126,7 +126,7 @@ function rotateRefreshToken(existing, presentedHash, newHash, now = Date.now()) 
 function setSessionCookies(req, res, { accessToken, refreshToken, csrfToken }) {
   const base = cookieBase(req);
   res.cookie(COOKIE.access, accessToken, { ...base, maxAge: accessTtlMs() });
-  res.cookie(COOKIE.refresh, refreshToken, { ...base, sameSite: 'strict', path: REFRESH_PATH, maxAge: refreshTtlMs() });
+  if (refreshToken) res.cookie(COOKIE.refresh, refreshToken, { ...base, sameSite: 'strict', path: REFRESH_PATH, maxAge: refreshTtlMs() });
   res.cookie(COOKIE.csrf, csrfToken, { ...base, httpOnly: false, maxAge: refreshTtlMs() });
 }
 
@@ -175,6 +175,7 @@ function safeEqual(a, b) {
 }
 
 module.exports = {
+  cookieBase,
   COOKIE,
   CSRF_HEADER,
   REFRESH_PATH,

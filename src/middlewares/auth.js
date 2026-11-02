@@ -3,7 +3,7 @@ const User = require('../models/User');
 const { expireSubscriptionIfNeeded } = require('../utils/subscriptionExpiry');
 const { isTokenVersionCurrent } = require('../utils/security');
 const { loadPermissions } = require('../rbac/loadPermissions');
-const { COOKIE, AI_TOKEN_SCOPE } = require('../auth/session');
+const { COOKIE } = require('../auth/session');
 
 const { JWT_SECRET } = process.env;
 
@@ -21,7 +21,7 @@ async function authMiddleware(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET);
     // A token minted for the AI service (POST /auth/ai-token) is readable by
     // page scripts; it must never double as a session for this API.
-    if (payload.scope === AI_TOKEN_SCOPE) {
+    if (payload.scope) {
       return res.status(401).json({ error: 'Invalid token' });
     }
     req.userId = payload.sub;
@@ -33,6 +33,9 @@ async function authMiddleware(req, res, next) {
     // Tokens without a `tv` claim count as version 0.
     if (!isTokenVersionCurrent(payload, user)) {
       return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    if ((payload.sid || req.authVia === 'cookie' || user.active_session) && !require('../auth/sessionControl').current(user,payload.sid)) {
+      return res.status(401).json({error:'This session has ended or was signed out on another device.',code:'SESSION_EXPIRED'});
     }
     user = await expireSubscriptionIfNeeded(user);
     const { roleNames, permissions } = await loadPermissions(user);

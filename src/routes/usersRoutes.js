@@ -9,6 +9,7 @@ function createUsersRoutes({ authMiddleware, createNotification }) {
   const controller = createUsersController({ createNotification });
 
   router.get('/users', authMiddleware, selfService, controller.listUsers);
+  router.get('/users/:id/login-history', authMiddleware, authorize('CanViewAuditLog'), controller.loginHistory);
   router.post('/users', authMiddleware, authorize('CanAddUsers'), controller.createUser);
   router.put('/users/:id/roles', authMiddleware, authorize('CanAssignUserRoles'), controller.setUserRoles);
   router.patch('/users/:id', authMiddleware, authorize.any('CanEditUsers', 'CanDeactivateUsers'), controller.updateUser);

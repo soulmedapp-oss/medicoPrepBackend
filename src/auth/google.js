@@ -80,9 +80,10 @@ function createGoogleAuth({ clientId, client, secret, User, bcrypt, issueSession
       const responseUser = await userPayload(user, req);
       const token = await issueSession(req, res, user);
       res.clearCookie(COOKIE, cookieOptions(req));
-      onLogin(user, req);
+      await onLogin(user, req);
       return res.json({ user: responseUser, token });
     } catch (error) {
+      if (require('./sessionControl').respond(error,res)) return;
       if (error?.code === 11000) return res.status(409).json({ error: 'Account changed during sign-in. Please try again.' });
       onError(req, new Error('Google sign-in internal failure'));
       return res.status(500).json({ error: 'Google sign-in failed. Please try again later.' });

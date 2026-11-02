@@ -2,6 +2,8 @@ function sanitizeUser(user) {
   if (!user) return null;
   const {
     passwordHash,
+    refresh_tokens,
+    active_session,
     __v,
     googleId,
     token_version,

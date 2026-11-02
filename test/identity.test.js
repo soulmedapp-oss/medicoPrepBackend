@@ -282,7 +282,9 @@ test('login: the payload carries feature_locks with exactly the three catalogue 
       };
     },
   }));
-  stub(User, 'findById', () => q({ refresh_tokens: [] }));
+  stub(User, 'findById', () => q({ _id: userId, id: String(userId), token_version: 0, active_session: null, refresh_tokens: [] }));
+  stub(User, 'findOneAndUpdate', async (_query, update) => ({ _id: userId, id: String(userId), ...update.$set }));
+  stub(require('../src/models/LoginEvent'), 'create', async () => ({}));
   stub(User, 'updateOne', async () => ({}));
   stub(User, 'findByIdAndUpdate', () => ({ catch: () => Promise.resolve() }));
   stub(bcrypt, 'compare', async () => true);
@@ -290,6 +292,7 @@ test('login: the payload carries feature_locks with exactly the three catalogue 
   stub(session, 'setSessionCookies', () => {});
 
   const res = mockRes();
+  res.cookie = () => {}; res.clearCookie = () => {};
   await authController.login({ body: { email: 'student@x.com', password: 'pw' }, headers: {} }, res);
 
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));

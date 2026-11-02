@@ -106,6 +106,17 @@ function createUsersController({ createNotification } = {}) {
     }
   }
 
+  async function loginHistory(req, res) {
+    res.set('Cache-Control', 'no-store, private');
+    try {
+      const history = require('../auth/loginHistory').createLoginHistory({ User, LoginEvent: require('../models/LoginEvent') });
+      return res.json({ events: await history.list(req.params.id), retention_days: 30, limit: 20 });
+    } catch (err) {
+      reportError(req, err);
+      return res.status(500).json({ error: 'Failed to load login history' });
+    }
+  }
+
   async function createUser(req, res) {
     try {
       const data = req.body || {};
@@ -355,10 +366,11 @@ function createUsersController({ createNotification } = {}) {
       // mute writes nothing but an `$unset`.
       const updateOps = {};
       if (Object.keys(payload).length > 0) updateOps.$set = payload;
-      if (payload.passwordHash) {
+      if (payload.passwordHash || deactivates) {
         // Admin password change revokes the user's existing sessions.
         updateOps.$inc = { token_version: 1 };
         updateOps.$set.refresh_tokens = [];
+        updateOps.$set.active_session = null;
       }
       if (Object.keys(unsetOps).length > 0) {
         updateOps.$unset = unsetOps;
@@ -479,6 +491,9 @@ function createUsersController({ createNotification } = {}) {
       const deactivationCheck = checkUserDeactivation({ actorId: req.user?._id ?? req.userId, targetUser: user, activeAdminCount });
       if (!deactivationCheck.ok) return res.status(409).json({ error: deactivationCheck.message });
       user.is_active = false;
+      user.active_session = null;
+      user.refresh_tokens = [];
+      user.token_version = Number(user.token_version || 0) + 1;
       if (user.admin_status === 'active') {
         user.admin_status = 'inactive';
       }
@@ -493,6 +508,7 @@ function createUsersController({ createNotification } = {}) {
 
   return {
     listUsers,
+    loginHistory,
     createUser,
     setUserRoles,
     updateUser,

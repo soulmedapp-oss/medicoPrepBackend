@@ -70,6 +70,9 @@ router.get('/google/config', publicRoute, googleLimiter, authController.googleCo
 router.post('/google', publicRoute, googleLimiter, authController.googleAuth);
 // Cookie sessions: the refresh cookie is the credential here (Path-scoped to
 // this route), so no bearer/authMiddleware — publicRoute is the marker.
+router.post('/continue-session', publicRoute, googleLimiter, authController.continueSession);
+router.get('/session-status', authMiddleware, selfService, authController.sessionStatus);
+router.post('/session-activity', authMiddleware, selfService, createRateLimiter({ name:'auth-session-activity',windowMs:60000,max:8,keyGenerator:userOrIpKey }), authController.sessionActivity);
 router.post('/refresh', publicRoute, authController.refreshSession);
 router.post('/logout', publicRoute, authController.logout);
 // The AI service is a separate origin the session cookies never reach; the
