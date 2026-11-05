@@ -25,7 +25,8 @@ async function authMiddleware(req, res, next) {
       return res.status(401).json({ error: 'Invalid token' });
     }
     req.userId = payload.sub;
-    let user = await User.findById(req.userId).lean();
+    req.sessionId = payload.sid;
+    let user = await require('../auth/sessionControl').privateQuery(User.findById(req.userId), false);
     if (!user || user.is_active === false) {
       return res.status(401).json({ error: 'Account is inactive' });
     }

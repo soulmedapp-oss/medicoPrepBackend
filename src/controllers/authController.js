@@ -84,7 +84,7 @@ async function continueSession(req,res) {
     return res.json({user:payload});
   } catch(error) { if(sessionControl.respond(error,res)) return;reportError(req,error);return res.status(500).json({error:'Session confirmation failed'}); }
 }
-function sessionStatus(req,res) { res.set('Cache-Control','no-store, private');return res.json(sessions.status(req.user)); }
+function sessionStatus(req,res) { res.set('Cache-Control','no-store, private');return res.json(sessions.status(req.user,req.sessionId)); }
 async function sessionActivity(req,res) {
   res.set('Cache-Control','no-store, private');
   try { return res.json(await sessions.activity(req)); }
@@ -95,13 +95,7 @@ async function sessionActivity(req,res) {
 // cookies. Idempotent: works with or without a live session.
 async function logout(req, res) {
   try {
-    const presented = req.cookies?.[session.COOKIE.refresh];
-    if (presented) {
-      await User.updateOne(
-        { 'refresh_tokens.hash': session.hashToken(presented) },
-        { $set: { refresh_tokens: [], active_session: null }, $inc: { token_version: 1 } }
-      );
-    }
+    await sessions.logout(req);
     session.clearSessionCookies(req, res);
     return res.json({ ok: true });
   } catch (err) {
@@ -116,7 +110,7 @@ async function logout(req, res) {
 // CSRF check applies: a cross-site page cannot mint one.
 function aiToken(req, res) {
   return res.json({
-    token: session.signAiToken(req.user),
+    token: session.signAiToken(sessionControl.selectedUser(req.user,req.sessionId)),
     expires_in: session.AI_TOKEN_TTL_SECONDS,
   });
 }
@@ -552,6 +546,7 @@ async function resetPassword(req, res) {
     // Revoke every JWT issued before this reset.
     user.token_version = normalizeTokenVersion(user.token_version) + 1;
     user.active_session = null;
+    user.browser_sessions = [];
     user.refresh_tokens = []; // and every browser's refresh cookie with them
     await user.save();
 

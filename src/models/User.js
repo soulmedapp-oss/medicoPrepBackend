@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
 
+const browserSessionSchema = new mongoose.Schema({ id: String, token_version: Number, idle_timeout_enabled: Boolean,
+  idle_minutes: Number, warning_seconds: Number, last_active_at: Date, expires_at: Date, absolute_expires_at: Date,
+  user_agent: String, previous_refresh_hash: String, previous_refresh_until: Date }, { _id: false });
+
 const userSchema = new mongoose.Schema(
   {
     googleId: { type: String, index: true, sparse: true },
@@ -52,12 +56,13 @@ const userSchema = new mongoose.Schema(
     // hash of the opaque refresh token only — the raw value lives in the
     // HttpOnly cookie. Rotated on every refresh; cleared on password change.
     active_session: {
-      type: new mongoose.Schema({ id: String, idle_minutes: Number, warning_seconds: Number, last_active_at: Date, expires_at: Date, absolute_expires_at: Date,
-        user_agent: String, previous_refresh_hash: String, previous_refresh_until: Date }, { _id: false }),
+      type: browserSessionSchema,
       default: null,
     },
+    browser_sessions: { type: [browserSessionSchema], default: [], select: false },
+    session_revision: { type: Number, default: 0, select: false },
     refresh_tokens: {
-      type: [{ hash: { type: String, required: true }, session_id: String, created_at: { type: Date }, expires_at: { type: Date } }],
+      type: [{ hash: { type: String, required: true }, session_id: String, is_grace: Boolean, created_at: { type: Date }, expires_at: { type: Date } }],
       default: [],
       select: false,
     },

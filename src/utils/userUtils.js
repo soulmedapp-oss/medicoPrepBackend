@@ -4,6 +4,8 @@ function sanitizeUser(user) {
     passwordHash,
     refresh_tokens,
     active_session,
+    browser_sessions,
+    session_revision,
     __v,
     googleId,
     token_version,
