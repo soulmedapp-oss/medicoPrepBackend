@@ -454,7 +454,7 @@ function initRealtime(serverInstance) {
         return;
       }
       const payload = jwt.verify(token, JWT_SECRET);
-      User.findById(payload.sub).lean()
+      require('./auth/sessionControl').privateQuery(User.findById(payload.sub), false)
         .then((user) => {
           if (ws.readyState !== WebSocket.OPEN) return;
           if (!user || user.is_active === false || payload.scope || !isTokenVersionCurrent(payload, user) || ((payload.sid || cookieToken || user.active_session) && !require('./auth/sessionControl').current(user,payload.sid))) {
@@ -462,7 +462,7 @@ function initRealtime(serverInstance) {
             return;
           }
           ws.checkSession = async () => {
-            const latest = await User.findById(payload.sub).lean();
+            const latest = await require('./auth/sessionControl').privateQuery(User.findById(payload.sub), false);
             if (!latest || latest.is_active === false || !isTokenVersionCurrent(payload,latest) || ((payload.sid || cookieToken || latest.active_session) && !require('./auth/sessionControl').current(latest,payload.sid))) ws.close(1008,'Session ended');
           };
           ws.userEmail = user.email;

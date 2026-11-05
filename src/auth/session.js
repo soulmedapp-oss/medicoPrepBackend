@@ -69,7 +69,7 @@ function randomToken(bytes = 32) {
 
 function signAccessToken(user, normalizeTokenVersion) {
   return jwt.sign(
-    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}) },
+    { sub: String(user._id || user.id), tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}), session_controls: { idle_timeout_enabled: require('./sessionControl').policy().idle_timeout_enabled, single_device_enabled: require('./sessionControl').policy().single_device_enabled } },
     process.env.JWT_SECRET,
     { expiresIn: ACCESS_TTL }
   );
@@ -89,7 +89,7 @@ function signAiToken(user, normalizeTokenVersion = (v) => (Number.isInteger(Numb
   // `tv` lets the AI service honour revocation (password reset, forced
   // logout) the same way authMiddleware does, instead of waiting for expiry.
   return jwt.sign(
-    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE, tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}) },
+    { sub: String(user._id || user.id), scope: AI_TOKEN_SCOPE, tv: normalizeTokenVersion(user.token_version), ...(user.active_session?.id ? { sid: user.active_session.id } : {}), session_controls: { idle_timeout_enabled: require('./sessionControl').policy().idle_timeout_enabled, single_device_enabled: require('./sessionControl').policy().single_device_enabled } },
     process.env.JWT_SECRET,
     { expiresIn: AI_TOKEN_TTL_SECONDS }
   );

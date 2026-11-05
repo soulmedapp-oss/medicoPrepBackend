@@ -371,6 +371,7 @@ function createUsersController({ createNotification } = {}) {
         updateOps.$inc = { token_version: 1 };
         updateOps.$set.refresh_tokens = [];
         updateOps.$set.active_session = null;
+        updateOps.$set.browser_sessions = [];
       }
       if (Object.keys(unsetOps).length > 0) {
         updateOps.$unset = unsetOps;
@@ -492,6 +493,7 @@ function createUsersController({ createNotification } = {}) {
       if (!deactivationCheck.ok) return res.status(409).json({ error: deactivationCheck.message });
       user.is_active = false;
       user.active_session = null;
+      user.browser_sessions = [];
       user.refresh_tokens = [];
       user.token_version = Number(user.token_version || 0) + 1;
       if (user.admin_status === 'active') {
